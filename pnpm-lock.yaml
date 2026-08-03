@@ -44,6 +44,9 @@ importers:
 
   apps/dashboard:
     dependencies:
+      '@vibetrace/test-fixtures':
+        specifier: workspace:*
+        version: link:../../packages/test-fixtures
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -51,6 +54,9 @@ importers:
         specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
     devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
       '@types/react':
         specifier: 19.2.18
         version: 19.2.18
@@ -69,6 +75,26 @@ importers:
       commander:
         specifier: 15.0.0
         version: 15.0.0
+
+  packages/schema:
+    dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
+  packages/test-fixtures:
+    dependencies:
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
 
 packages:
 

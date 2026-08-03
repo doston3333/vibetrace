@@ -1,0 +1,22 @@
+{
+  "name": "@vibetrace/test-fixtures",
+  "version": "0.1.0",
+  "description": "Deterministic synthetic traces for VibeTrace tests and demos.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./static-dashboard": "./src/static-dashboard.ts"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@vibetrace/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3"
+  }
+}
