@@ -486,6 +486,89 @@ describe('encrypted Storage', () => {
     storage.close();
   });
 
+  it('replaces analyzer findings while preserving durable human reviews', async () => {
+    const { storage, sessionId } = await setup();
+    const rawId = storage.appendRaw(sessionId, raw(1));
+    const eventId = storage.appendNormalized(
+      event(sessionId, rawId, 1),
+      'normalizer-v1',
+    );
+    const finding = {
+      id: 'stable-finding',
+      sessionId,
+      ruleId: 'deterministic-rule',
+      detectorVersion: '0.1.0',
+      category: 'verification',
+      severity: 'medium',
+      title: 'Initial title',
+      explanation: 'Initial explanation',
+      recommendation: 'Inspect the evidence.',
+      evidenceEventIds: [eventId],
+      counterevidenceEventIds: [],
+      state: 'open',
+    };
+    storage.replaceFindings(sessionId, ['deterministic-rule'], [finding]);
+    expect(
+      storage.reviewFinding(finding.id, {
+        decision: 'confirmed',
+        categoryOverride: 'user-category',
+        note: 'Confirmed from the linked output.',
+      }),
+    ).toBe(true);
+    storage.replaceFindings(
+      sessionId,
+      ['deterministic-rule'],
+      [
+        {
+          ...finding,
+          detectorVersion: '0.2.0',
+          title: 'Updated title',
+          category: 'new-detector-category',
+        },
+      ],
+    );
+    expect(storage.listFindings(sessionId)).toMatchObject([
+      {
+        id: finding.id,
+        detectorVersion: '0.2.0',
+        title: 'Updated title',
+        category: 'user-category',
+        state: 'confirmed',
+        review: {
+          decision: 'confirmed',
+          categoryOverride: 'user-category',
+          note: 'Confirmed from the linked output.',
+        },
+      },
+    ]);
+    storage.replaceFindings(sessionId, ['deterministic-rule'], []);
+    expect(storage.listFindings(sessionId)).toEqual([]);
+    storage.replaceFindings(sessionId, ['deterministic-rule'], [finding]);
+    expect(storage.listFindings(sessionId)[0]).toMatchObject({
+      state: 'confirmed',
+      category: 'user-category',
+    });
+    expect(storage.getSession(sessionId)?.primaryFinding).toBe('Initial title');
+    storage.reviewFinding(finding.id, { decision: 'rejected' });
+    expect(storage.getSession(sessionId)?.primaryFinding).toBeUndefined();
+    storage.reviewFinding(finding.id, { decision: 'open' });
+    expect(() =>
+      storage.replaceFindings(sessionId, ['other-rule'], [finding]),
+    ).toThrow('not owned');
+    expect(() =>
+      storage.replaceFindings(
+        sessionId,
+        ['deterministic-rule'],
+        [{ ...finding, evidenceEventIds: ['missing'] }],
+      ),
+    ).toThrow('nonexistent');
+    expect(storage.listFindings(sessionId)).toHaveLength(1);
+    expect(storage.reviewFinding('missing', { decision: 'rejected' })).toBe(
+      false,
+    );
+    storage.close();
+  });
+
   it('imports and queries 10,000 synthetic events', async () => {
     const { storage, sessionId } = await setup();
     for (let sequence = 1; sequence <= 10_000; sequence += 1) {

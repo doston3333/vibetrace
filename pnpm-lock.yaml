@@ -133,6 +133,9 @@ importers:
       '@fastify/static':
         specifier: 10.1.2
         version: 10.1.2
+      '@vibetrace/diagnostics':
+        specifier: workspace:*
+        version: link:../diagnostics
       '@vibetrace/schema':
         specifier: workspace:*
         version: link:../schema
@@ -149,6 +152,25 @@ importers:
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
+
+  packages/diagnostics:
+    dependencies:
+      '@vibetrace/enrichment':
+        specifier: workspace:*
+        version: link:../enrichment
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@vibetrace/storage':
+        specifier: workspace:*
+        version: link:../storage
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      '@vibetrace/test-fixtures':
+        specifier: workspace:*
+        version: link:../test-fixtures
 
   packages/enrichment:
     dependencies:

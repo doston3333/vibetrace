@@ -1085,6 +1085,46 @@ textarea::placeholder {
   text-transform: uppercase;
 }
 
+.finding-review {
+  background: var(--paper-deep);
+  border-left: 0.2rem solid var(--blue-ink);
+  display: grid;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+}
+
+.finding-review > span {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.finding-review > div,
+.finding-review form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.finding-review button {
+  background: var(--paper-bright);
+  border: 1px solid var(--rule-strong);
+  cursor: pointer;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.75rem;
+  text-transform: capitalize;
+}
+
+.finding-review button[aria-pressed='true'] {
+  background: var(--blue-ink);
+  color: var(--paper-bright);
+}
+
+.finding-review label {
+  flex: 1 1 14rem;
+}
+
 .diff-history > button {
   align-items: center;
   grid-template-columns: 3.5rem 1fr;

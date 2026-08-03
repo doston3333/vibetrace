@@ -198,6 +198,8 @@ export interface SpoolFaults {
 export interface SpoolImportOptions extends SpoolFaults {
   readonly now?: () => number;
   readonly temporaryGraceMs?: number;
+  /** Observe a segment only after its database commit and durable archive move. */
+  readonly onCommittedSession?: (sessionId: string) => void;
 }
 
 export interface SpoolPaths {
@@ -330,7 +332,10 @@ export async function importSegments(
   storage: Storage,
   paths: SpoolPaths,
   options: SpoolImportOptions = {},
-): Promise<{ readonly imported: number; readonly quarantined: number }> {
+): Promise<{
+  readonly imported: number;
+  readonly quarantined: number;
+}> {
   await ensureSpool(paths);
   let importedCount = 0;
   let quarantined = 0;
@@ -411,6 +416,7 @@ export async function importSegments(
       await rename(path, archived);
       await syncDirectory(paths.archive);
       importedCount += 1;
+      options.onCommittedSession?.(input.event.sessionId);
     } catch (error) {
       if (error instanceof StorageImportConflictError) {
         await quarantine(paths, entry, 'IMPORT_CONFLICT');
@@ -421,7 +427,10 @@ export async function importSegments(
       throw error;
     }
   }
-  return { imported: importedCount, quarantined };
+  return {
+    imported: importedCount,
+    quarantined,
+  };
 }
 
 /** Test-only size limit accessor; production import always uses the bounded constant. */

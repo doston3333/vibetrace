@@ -56,6 +56,12 @@ export interface Finding {
   readonly evidenceEventIds: readonly string[];
   readonly counterevidenceEventIds: readonly string[];
   readonly state: string;
+  readonly review?: {
+    readonly decision?: 'open' | 'confirmed' | 'rejected';
+    readonly categoryOverride?: string;
+    readonly note?: string;
+    readonly updatedAt: string;
+  };
 }
 
 export interface Annotation {
@@ -224,6 +230,19 @@ export const api = {
     input: { label?: string; note?: string },
   ): Promise<void> {
     await jsonRequest(`/api/v1/annotations/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  },
+  async reviewFinding(
+    id: string,
+    input: {
+      decision?: 'open' | 'confirmed' | 'rejected';
+      categoryOverride?: string;
+      note?: string;
+    },
+  ): Promise<void> {
+    await jsonRequest(`/api/v1/findings/${encodeURIComponent(id)}/review`, {
       method: 'PATCH',
       body: JSON.stringify(input),
     });

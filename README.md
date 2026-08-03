@@ -2,7 +2,7 @@
 
 VibeTrace is a local-first, open-source forensic debugger and evaluation environment for AI coding sessions.
 
-The current MVP foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, and Codex lifecycle-hook capture. Dashboard forensics, diagnostics rules, and portable bundle workflows are built in later roadmap slices.
+The current MVP foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, Codex lifecycle-hook capture, a responsive forensic dashboard, and evidence-linked deterministic diagnostics. Portable encrypted bundle workflows are built in the next roadmap slice.
 
 ## Documentation
 
@@ -11,6 +11,8 @@ The current MVP foundation includes the canonical trace schema and deterministic
 - [Canonical event schema](docs/architecture/event-schema.md)
 - [Capture modes and gaps](docs/architecture/capture-modes.md)
 - [Privacy and encryption](docs/architecture/privacy.md)
+- [Deterministic diagnostic rules](docs/diagnostics/rules.md)
+- [Diagnostic fixture precision/recall report](docs/diagnostics/precision-recall.md)
 - [ADR 0001: Local-first](docs/decisions/0001-local-first.md)
 - [ADR 0002: Canonical event schema](docs/decisions/0002-canonical-event-schema.md)
 - [ADR 0003: Codex-first capture](docs/decisions/0003-codex-first-capture.md)
@@ -32,6 +34,8 @@ The current MVP foundation includes the canonical trace schema and deterministic
 - `packages/adapter-codex` — versioned Codex hook, installer, doctor, and transcript adapter
 - `packages/cli` — the `vibetrace` command-line interface
 - `packages/daemon` — authenticated loopback API and crash-safe spool importer
+- `packages/diagnostics` — versioned deterministic rules and labeled fixture corpus
+- `packages/enrichment` — repository, command, verification, and run-fingerprint evidence
 - `packages/schema` — canonical trace model and stable identifiers
 - `packages/storage` — encrypted SQLCipher-compatible storage and blob layer
 - `packages/test-fixtures` — deterministic trace corpora

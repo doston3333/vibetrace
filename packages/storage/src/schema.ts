@@ -152,6 +152,14 @@ export const findings = sqliteTable('findings', {
   state: text('state').notNull(),
 });
 
+export const findingReviews = sqliteTable('finding_reviews', {
+  findingId: text('finding_id').primaryKey(),
+  decision: text('decision'),
+  categoryOverride: text('category_override'),
+  note: text('note'),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const annotations = sqliteTable('annotations', {
   id: text('id').primaryKey(),
   targetType: text('target_type').notNull(),

@@ -70,10 +70,18 @@ export interface ForensicWorkbenchProps {
   readonly annotations: readonly Annotation[];
   readonly loadingMore?: boolean;
   readonly savingAnnotation?: boolean;
+  readonly savingFindingReview?: string;
   readonly onSaveAnnotation: (value: {
     label: string;
     note?: string;
   }) => Promise<void>;
+  readonly onReviewFinding: (
+    id: string,
+    input: {
+      decision?: 'open' | 'confirmed' | 'rejected';
+      categoryOverride?: string;
+    },
+  ) => Promise<void>;
 }
 
 /** The facts-first forensic workbench; no source HTML is ever interpreted. */
@@ -86,7 +94,9 @@ export function ForensicWorkbench({
   annotations,
   loadingMore = false,
   savingAnnotation = false,
+  savingFindingReview,
   onSaveAnnotation,
+  onReviewFinding,
 }: ForensicWorkbenchProps) {
   const [selectedId, setSelectedId] = useState<string>();
   const [view, setView] = useState<WorkbenchView>('timeline');
@@ -213,7 +223,12 @@ export function ForensicWorkbench({
         <CoveragePanel coverage={coverage} onSelect={selectEvidence} />
       ) : null}
       {view === 'findings' ? (
-        <FindingsPanel findings={findings} onSelect={selectEvidence} />
+        <FindingsPanel
+          findings={findings}
+          onSelect={selectEvidence}
+          onReview={onReviewFinding}
+          savingReview={savingFindingReview}
+        />
       ) : null}
       {view === 'annotations' ? (
         <AnnotationsPanel
@@ -269,6 +284,20 @@ export function SessionPage() {
         queryKey: ['annotations', 'session', sessionId],
       }),
   });
+  const reviewFinding = useMutation({
+    mutationFn: ({
+      id,
+      input,
+    }: {
+      id: string;
+      input: {
+        decision?: 'open' | 'confirmed' | 'rejected';
+        categoryOverride?: string;
+      };
+    }) => api.reviewFinding(id, input),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['findings', sessionId] }),
+  });
   const { fetchNextPage, hasNextPage, isFetchingNextPage } = eventPages;
   useEffect(() => {
     if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
@@ -314,8 +343,14 @@ export function SessionPage() {
       annotations={annotations.data}
       loadingMore={eventPages.hasNextPage || eventPages.isFetchingNextPage}
       savingAnnotation={saveAnnotation.isPending}
+      savingFindingReview={
+        reviewFinding.isPending ? reviewFinding.variables?.id : undefined
+      }
       onSaveAnnotation={async (value) => {
         await saveAnnotation.mutateAsync(value);
+      }}
+      onReviewFinding={async (id, input) => {
+        await reviewFinding.mutateAsync({ id, input });
       }}
     />
   );

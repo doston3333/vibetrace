@@ -131,12 +131,16 @@ const findings: readonly Finding[] = [
   },
 ];
 
-function renderWorkbench(save = vi.fn(async () => undefined)) {
+function renderWorkbench(
+  save = vi.fn(async () => undefined),
+  review = vi.fn(async () => undefined),
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return {
     save,
+    review,
     ...render(
       <QueryClientProvider client={client}>
         <ForensicWorkbench
@@ -147,6 +151,7 @@ function renderWorkbench(save = vi.fn(async () => undefined)) {
           findings={findings}
           annotations={[]}
           onSaveAnnotation={save}
+          onReviewFinding={review}
         />
       </QueryClientProvider>,
     ),
@@ -207,7 +212,8 @@ describe('forensic dashboard', () => {
   it('supports keyboard evidence navigation, findings jumps, coverage, and annotations', async () => {
     const user = userEvent.setup();
     const save = vi.fn(async () => undefined);
-    renderWorkbench(save);
+    const review = vi.fn(async () => undefined);
+    renderWorkbench(save, review);
     const timeline = screen.getByRole('listbox', { name: /Use arrow keys/ });
     fireEvent.keyDown(timeline, { key: 'ArrowDown' });
     expect(screen.getByRole('heading', { name: 'File changed' })).toBeTruthy();
@@ -216,6 +222,10 @@ describe('forensic dashboard', () => {
     expect(
       screen.getByRole('heading', { name: 'No tests after final change' }),
     ).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'confirmed' }));
+    expect(review).toHaveBeenCalledWith('finding-1', {
+      decision: 'confirmed',
+    });
     await user.click(screen.getByRole('button', { name: 'View evidence' }));
     expect(
       screen.getByRole('heading', { name: 'Evidence timeline' }),

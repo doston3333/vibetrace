@@ -138,9 +138,19 @@ export function CoveragePanel({
 export function FindingsPanel({
   findings,
   onSelect,
+  onReview,
+  savingReview,
 }: {
   readonly findings: readonly Finding[];
   readonly onSelect: (id: string) => void;
+  readonly onReview: (
+    id: string,
+    input: {
+      decision?: 'open' | 'confirmed' | 'rejected';
+      categoryOverride?: string;
+    },
+  ) => Promise<void>;
+  readonly savingReview?: string;
 }) {
   return (
     <section className="panel-page" aria-labelledby="findings-title">
@@ -176,6 +186,11 @@ export function FindingsPanel({
                     </button>
                   ))}
                 </div>
+                <FindingReviewControls
+                  finding={finding}
+                  saving={savingReview === finding.id}
+                  onReview={onReview}
+                />
               </div>
             </article>
           ))
@@ -183,13 +198,71 @@ export function FindingsPanel({
           <div className="teaching-empty">
             <strong>No findings yet.</strong>
             <p>
-              Deterministic rules run in the next analysis slice. Observable
-              events remain available now.
+              No deterministic rule matched the captured evidence. Observable
+              events remain available for manual review.
             </p>
           </div>
         )}
       </div>
     </section>
+  );
+}
+
+function FindingReviewControls({
+  finding,
+  saving,
+  onReview,
+}: {
+  readonly finding: Finding;
+  readonly saving: boolean;
+  readonly onReview: (
+    id: string,
+    input: {
+      decision?: 'open' | 'confirmed' | 'rejected';
+      categoryOverride?: string;
+    },
+  ) => Promise<void>;
+}) {
+  const [category, setCategory] = useState(
+    finding.review?.categoryOverride ?? finding.category,
+  );
+  return (
+    <div className="finding-review" aria-label={`Review ${finding.title}`}>
+      <span>
+        Human review · <strong>{finding.state}</strong>
+      </span>
+      <div>
+        {(['confirmed', 'rejected', 'open'] as const).map((decision) => (
+          <button
+            type="button"
+            key={decision}
+            disabled={saving}
+            aria-pressed={finding.state === decision}
+            onClick={() => onReview(finding.id, { decision })}
+          >
+            {decision === 'open' ? 'Reopen' : decision}
+          </button>
+        ))}
+      </div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onReview(finding.id, { categoryOverride: category.trim() });
+        }}
+      >
+        <label>
+          Review category
+          <input
+            required
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+          />
+        </label>
+        <button type="submit" disabled={saving || !category.trim()}>
+          Save category
+        </button>
+      </form>
+    </div>
   );
 }
 

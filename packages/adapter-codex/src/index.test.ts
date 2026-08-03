@@ -27,6 +27,7 @@ import {
   CODEX_ADAPTER_VERSION,
   CODEX_HOOK_EVENTS,
   collectCodexHook,
+  deriveCodexApprovalCoverageSegment,
   deriveCodexCommandSegments,
   deriveCodexRepositorySegments,
   detectCodexVersion,
@@ -492,6 +493,62 @@ describe('Codex hook contracts', () => {
         tool_response: { output: 'object output is valid' },
       }).hook_event_name,
     ).toBe('PostToolUse');
+  });
+
+  it('normalizes structured PostToolUse failure and decline outcomes', () => {
+    const post = fixture('PostToolUse');
+    expect(
+      normalizeCodexHook({ ...post, tool_response: { isError: true } }).event
+        .status,
+    ).toBe('failed');
+    expect(
+      normalizeCodexHook({ ...post, tool_response: { exitCode: 1 } }).event
+        .status,
+    ).toBe('failed');
+    expect(
+      normalizeCodexHook({ ...post, tool_response: { status: 'declined' } })
+        .event.status,
+    ).toBe('declined');
+    expect(
+      normalizeCodexHook({ ...post, tool_response: { output: 'ok' } }).event
+        .status,
+    ).toBe('completed');
+  });
+
+  it('makes the missing PermissionRequest resolution visible as a capture gap', async () => {
+    const stateDir = await directory();
+    const storage = await Storage.initialize({
+      stateDir,
+      keyProvider: new MemoryKeyProvider(),
+    });
+    const input = parseCodexHook(fixture('PermissionRequest'));
+    const parent = normalizeCodexHook(input, { sourceVersion: '0.144.3' });
+    expect(
+      deriveCodexApprovalCoverageSegment(input, parent)?.event,
+    ).toMatchObject({
+      type: 'capture.gap',
+      payload: {
+        dataClass: 'approvals',
+        affectedEventTypes: ['permission.resolved'],
+      },
+      provenance: { captureMode: 'partial' },
+    });
+    await collectCodexHook(JSON.stringify(input), {
+      stateDir,
+      sourceVersion: '0.144.3',
+      enrichTranscript: false,
+      enrichRepository: false,
+    });
+    await expect(importSpool(storage, stateDir)).resolves.toEqual({
+      imported: 2,
+      quarantined: 0,
+    });
+    expect(
+      storage
+        .listEvents({ sessionId: parent.event.sessionId })
+        .map((item) => item.event.type),
+    ).toEqual(['permission.requested', 'capture.gap']);
+    storage.close();
   });
 
   it('keeps PreToolUse and PostToolUse identities distinct and imports both once', async () => {

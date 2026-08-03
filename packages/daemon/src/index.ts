@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import fastify, { type FastifyInstance } from 'fastify';
+import { analyzeAndPersist } from '@vibetrace/diagnostics';
 import { Storage, type StoredNormalizedEvent } from '@vibetrace/storage';
 import { z } from 'zod';
 
@@ -91,6 +92,20 @@ const annotationListQuerySchema = z
     targetId: z.string().min(1).max(512).optional(),
   })
   .strict();
+const findingReviewSchema = z
+  .object({
+    decision: z.enum(['open', 'confirmed', 'rejected']).optional(),
+    categoryOverride: z.string().min(1).max(128).optional(),
+    note: z.string().max(16_384).optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.decision !== undefined ||
+      value.categoryOverride !== undefined ||
+      value.note !== undefined,
+    { message: 'At least one review field is required.' },
+  );
 const SAFE_ARTIFACT_MEDIA_TYPES = new Set([
   'application/json',
   'text/csv',
@@ -467,16 +482,24 @@ export async function startDaemon(
       lastImportedAt: undefined as string | undefined,
       lastErrorCode: undefined as string | undefined,
     };
+    const pendingAnalysis = new Set<string>();
     let importing: Promise<void> | undefined;
     const importOnce = async (): Promise<void> => {
       if (importing) return importing;
       importing = (async () => {
         try {
-          const result = await importSegments(
-            storage,
-            spoolPaths(stateDir),
-            options.spoolFaults,
-          );
+          const spoolOptions = options.spoolFaults;
+          const result = await importSegments(storage, spoolPaths(stateDir), {
+            ...spoolOptions,
+            onCommittedSession(sessionId) {
+              spoolOptions?.onCommittedSession?.(sessionId);
+              pendingAnalysis.add(sessionId);
+            },
+          });
+          for (const sessionId of pendingAnalysis) {
+            analyzeAndPersist(storage, sessionId);
+            pendingAnalysis.delete(sessionId);
+          }
           importer.status = 'idle';
           importer.lastErrorCode = undefined;
           if (result.imported > 0 || result.quarantined > 0)
@@ -750,6 +773,28 @@ export async function startDaemon(
       if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
       return storage.getSession(id)
         ? { findings: storage.listFindings(id) }
+        : reply.code(404).send({ code: 'NOT_FOUND' });
+    });
+    app.post('/api/v1/sessions/:id/analyze', async (request, reply) => {
+      const id = sessionId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
+      if (!storage.getSession(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const events = storage.listEvents({ sessionId: id, limit: 1 });
+      if (events.length === 0)
+        return reply.code(409).send({ code: 'SESSION_HAS_NO_EVENTS' });
+      return { analysis: analyzeAndPersist(storage, id) };
+    });
+    app.patch('/api/v1/findings/:id/review', async (request, reply) => {
+      const params = z
+        .object({ id: z.string().min(1).max(128) })
+        .strict()
+        .safeParse(request.params);
+      const body = findingReviewSchema.safeParse(request.body);
+      if (!params.success || !body.success)
+        return reply.code(400).send({ code: 'INVALID_FINDING_REVIEW' });
+      return storage.reviewFinding(params.data.id, body.data)
+        ? { finding: params.data.id, review: body.data }
         : reply.code(404).send({ code: 'NOT_FOUND' });
     });
     app.get('/api/v1/annotations', async (request, reply) => {

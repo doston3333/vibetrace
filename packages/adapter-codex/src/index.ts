@@ -432,6 +432,51 @@ export function deriveCodexCommandSegments(
   ];
 }
 
+/** Record the hook contract's missing post-prompt approval decision explicitly. */
+export function deriveCodexApprovalCoverageSegment(
+  hook: CodexHookInput,
+  parent: SpoolSegment,
+): SpoolSegment | undefined {
+  if (hook.hook_event_name !== 'PermissionRequest') return undefined;
+  const sourceEventId = `${parent.raw.sourceEventId}:permission-resolution-gap`;
+  const sequence = parent.event.sequence + 1;
+  const parentEvent = { ...parent.event };
+  delete parentEvent.status;
+  const event = TraceEventSchema.parse({
+    ...parentEvent,
+    id: createEventId({
+      adapter: ADAPTER_ID,
+      sourceVersion: parent.raw.sourceVersion,
+      sourceSessionId: parent.raw.sourceSessionId,
+      sourceEventId,
+      sourceSequence: sequence,
+      type: 'capture.gap',
+    }),
+    parentEventId: parent.event.id,
+    sequence,
+    source: 'vibetrace',
+    type: 'capture.gap',
+    subtype: 'codex-hook.permission-resolution',
+    payload: {
+      dataClass: 'approvals',
+      state: 'partial',
+      reason:
+        'PermissionRequest runs before the user decision; the Codex hook payload does not expose the eventual resolution.',
+      expectedSource: 'codex-approval-resolution',
+      observedSources: ['codex-hook:PermissionRequest'],
+      affectedEventTypes: ['permission.resolved'],
+    },
+    provenance: { ...parent.event.provenance, captureMode: 'partial' },
+  });
+  return SpoolSegmentSchema.parse({
+    ...parent,
+    session: { ...parent.session, captureMode: 'partial' },
+    raw: { ...parent.raw, sourceEventId },
+    event,
+    normalizerId: `codex-hook-coverage-${CODEX_ADAPTER_VERSION}`,
+  });
+}
+
 /** Repository children reserve offsets 100+ so command children at 1–2 never collide. */
 export function deriveCodexRepositorySegments(
   parent: SpoolSegment,
@@ -629,6 +674,41 @@ function normalizedSourceVersion(value: string | undefined): string {
   return trimmed && trimmed.length <= 128 ? trimmed : 'unknown';
 }
 
+function observedToolStatus(
+  response: JsonValue,
+): 'completed' | 'failed' | 'declined' {
+  if (
+    response === null ||
+    typeof response !== 'object' ||
+    Array.isArray(response)
+  )
+    return 'completed';
+  const value = response as JsonObject;
+  const status = [value.status, value.outcome, value.decision].find(
+    (candidate) => typeof candidate === 'string',
+  );
+  if (
+    typeof status === 'string' &&
+    /^(?:declined|denied|rejected|cancelled|canceled)$/i.test(status)
+  )
+    return 'declined';
+  if (
+    typeof status === 'string' &&
+    /^(?:failed|failure|error|errored|timeout|timed_out)$/i.test(status)
+  )
+    return 'failed';
+  const exitCode = value.exit_code ?? value.exitCode;
+  if (
+    (typeof exitCode === 'number' && exitCode !== 0) ||
+    value.isError === true ||
+    value.is_error === true ||
+    value.success === false ||
+    value.ok === false
+  )
+    return 'failed';
+  return 'completed';
+}
+
 function mapping(input: CodexHookInput): {
   readonly type: EventType;
   readonly source: TraceEvent['source'];
@@ -679,7 +759,7 @@ function mapping(input: CodexHookInput): {
         type: 'tool.completed',
         source: 'tool',
         payload: { ...raw, toolName: input.tool_name },
-        status: 'completed',
+        status: observedToolStatus(input.tool_response),
       };
     case 'PreCompact':
       return {
@@ -1841,6 +1921,13 @@ export async function collectCodexHook(
         await writeSegment(paths, derived);
   } catch {
     // Deliberately silent: command enrichment is best-effort only.
+  }
+
+  try {
+    const coverage = deriveCodexApprovalCoverageSegment(parsed, segment);
+    if (coverage) await writeSegment(paths, coverage);
+  } catch {
+    // Coverage metadata is best-effort and cannot block Codex.
   }
 
   try {

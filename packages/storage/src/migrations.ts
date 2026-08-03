@@ -83,6 +83,16 @@ ALTER TABLE sessions ADD COLUMN deleted_at TEXT;
 CREATE INDEX sessions_visible_started_at ON sessions(deleted_at, started_at);
 `,
   },
+  {
+    id: 3,
+    sql: `
+CREATE TABLE finding_reviews (
+  finding_id TEXT PRIMARY KEY, decision TEXT, category_override TEXT, note TEXT,
+  updated_at TEXT NOT NULL,
+  CHECK(decision IS NULL OR decision IN ('open', 'confirmed', 'rejected'))
+);
+`,
+  },
 ];
 
 /** Apply only migrations not already recorded in the encrypted database. */

@@ -1,13 +1,18 @@
 {
-  "name": "@vibetrace/daemon",
+  "name": "@vibetrace/diagnostics",
   "version": "0.1.0",
-  "description": "Loopback-only local ingest daemon for VibeTrace.",
+  "description": "Deterministic, evidence-linked diagnostic rules for VibeTrace.",
   "type": "module",
   "exports": {
     ".": {
       "types": "./src/index.ts",
       "development": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./fixtures": {
+      "types": "./src/fixtures.ts",
+      "development": "./src/fixtures.ts",
+      "default": "./dist/fixtures.js"
     }
   },
   "scripts": {
@@ -17,15 +22,12 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@fastify/cookie": "11.1.2",
-    "@fastify/static": "10.1.2",
-    "@vibetrace/diagnostics": "workspace:*",
+    "@vibetrace/enrichment": "workspace:*",
     "@vibetrace/schema": "workspace:*",
-    "@vibetrace/storage": "workspace:*",
-    "fastify": "5.11.2",
-    "zod": "4.3.6"
+    "@vibetrace/storage": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "24.13.3"
+    "@types/node": "24.13.3",
+    "@vibetrace/test-fixtures": "workspace:*"
   }
 }

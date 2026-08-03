@@ -130,6 +130,17 @@ export interface FindingInput {
   readonly state?: string;
 }
 
+/** Human review data remains stable while analyzer-owned findings are replaced. */
+export interface FindingReviewInput {
+  readonly decision?: 'open' | 'confirmed' | 'rejected';
+  readonly categoryOverride?: string;
+  readonly note?: string;
+}
+
+export interface StoredFindingReview extends FindingReviewInput {
+  readonly updatedAt: string;
+}
+
 /** Generic encrypted metadata-bearing artifact input. */
 export interface ArtifactInput {
   readonly id: string;
@@ -190,8 +201,10 @@ export type StoredArtifact = ArtifactInput;
 /** A persisted annotation. */
 export type StoredAnnotation = AnnotationInput;
 
-/** A persisted deterministic finding. */
-export type StoredFinding = FindingInput;
+/** A persisted deterministic finding with an optional durable human review. */
+export interface StoredFinding extends FindingInput {
+  readonly review?: StoredFindingReview;
+}
 
 /** A user-controlled export redaction profile. */
 export interface RedactionProfileInput {
@@ -244,7 +257,7 @@ function fromJson<T>(value: unknown): T {
 const SESSION_SELECT = `s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.ended_at, s.status, s.capture_mode, s.title, s.model, s.source_version, s.base_commit, s.final_commit, s.run_fingerprint_json,
   (SELECT COUNT(*) FROM normalized_events n WHERE n.session_id = s.id) AS event_count,
   (SELECT COUNT(*) FROM findings f WHERE f.session_id = s.id) AS finding_count,
-  (SELECT f.title FROM findings f WHERE f.session_id = s.id ORDER BY f.severity DESC, f.id ASC LIMIT 1) AS primary_finding`;
+  (SELECT f.title FROM findings f LEFT JOIN finding_reviews r ON r.finding_id = f.id WHERE f.session_id = s.id AND COALESCE(r.decision, f.state) != 'rejected' ORDER BY f.severity DESC, f.id ASC LIMIT 1) AS primary_finding`;
 
 function storedSession(row: Row): StoredSession {
   return {
@@ -1087,13 +1100,162 @@ export class Storage {
     transaction();
   }
 
+  /** Atomically replace findings owned by a rule set while retaining human reviews. */
+  replaceFindings(
+    sessionId: string,
+    ownedRuleIds: readonly string[],
+    inputs: readonly FindingInput[],
+  ): void {
+    assertText(sessionId, 'sessionId');
+    const rules = [...new Set(ownedRuleIds)];
+    if (rules.length === 0)
+      throw new Error('replaceFindings requires at least one owned rule ID.');
+    for (const ruleId of rules) assertText(ruleId, 'ownedRuleId');
+    const ruleSet = new Set(rules);
+    const findingIds = new Set<string>();
+    for (const input of inputs) {
+      if (input.sessionId !== sessionId)
+        throw new Error('Replacement finding belongs to another session.');
+      if (!ruleSet.has(input.ruleId))
+        throw new Error('Replacement finding is not owned by this rule set.');
+      if (findingIds.has(input.id))
+        throw new Error('Replacement findings contain a duplicate ID.');
+      findingIds.add(input.id);
+      for (const [name, value] of Object.entries({
+        id: input.id,
+        ruleId: input.ruleId,
+        detectorVersion: input.detectorVersion,
+        category: input.category,
+        severity: input.severity,
+        title: input.title,
+        explanation: input.explanation,
+        recommendation: input.recommendation,
+      }))
+        assertText(value, `finding.${name}`);
+      if (input.evidenceEventIds.length === 0)
+        throw new Error('Findings require at least one evidence event ID.');
+    }
+    const transaction = this.#database.transaction(() => {
+      if (!this.getSession(sessionId))
+        throw new Error('Cannot replace findings for a missing session.');
+      for (const input of inputs) {
+        for (const id of [
+          ...input.evidenceEventIds,
+          ...(input.counterevidenceEventIds ?? []),
+        ]) {
+          const row = this.#database
+            .prepare(
+              'SELECT id FROM normalized_events WHERE id = ? AND session_id = ?',
+            )
+            .get(id, sessionId);
+          if (!row)
+            throw new Error(
+              `Finding references nonexistent normalized event ${id}.`,
+            );
+        }
+        const existing = this.#database
+          .prepare('SELECT session_id FROM findings WHERE id = ?')
+          .get(input.id) as { session_id: string } | undefined;
+        if (existing && existing.session_id !== sessionId)
+          throw new Error('Finding ID belongs to another session.');
+        this.#database
+          .prepare(
+            `INSERT INTO findings (id, session_id, rule_id, detector_version, category, severity, confidence, title, explanation, evidence_event_ids_json, counterevidence_event_ids_json, recommendation, state)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               rule_id = excluded.rule_id,
+               detector_version = excluded.detector_version,
+               category = excluded.category,
+               severity = excluded.severity,
+               confidence = excluded.confidence,
+               title = excluded.title,
+               explanation = excluded.explanation,
+               evidence_event_ids_json = excluded.evidence_event_ids_json,
+               counterevidence_event_ids_json = excluded.counterevidence_event_ids_json,
+               recommendation = excluded.recommendation,
+               state = excluded.state`,
+          )
+          .run(
+            input.id,
+            sessionId,
+            input.ruleId,
+            input.detectorVersion,
+            input.category,
+            input.severity,
+            input.confidence ?? null,
+            input.title,
+            input.explanation,
+            json(input.evidenceEventIds),
+            json(input.counterevidenceEventIds ?? []),
+            input.recommendation,
+            input.state ?? 'open',
+          );
+      }
+      const rulePlaceholders = rules.map(() => '?').join(', ');
+      const ids = [...findingIds];
+      const keepClause =
+        ids.length > 0
+          ? ` AND id NOT IN (${ids.map(() => '?').join(', ')})`
+          : '';
+      this.#database
+        .prepare(
+          `DELETE FROM findings WHERE session_id = ? AND rule_id IN (${rulePlaceholders})${keepClause}`,
+        )
+        .run(sessionId, ...rules, ...ids);
+    });
+    transaction();
+  }
+
+  /** Replace one human finding review without mutating analyzer-owned evidence. */
+  reviewFinding(id: string, input: FindingReviewInput): boolean {
+    assertText(id, 'finding.id');
+    if (input.categoryOverride !== undefined)
+      assertText(input.categoryOverride, 'finding.review.categoryOverride');
+    if (input.note !== undefined && input.note.length > 16_384)
+      throw new Error('finding.review.note is too long.');
+    const exists = this.#database
+      .prepare('SELECT id FROM findings WHERE id = ?')
+      .get(id);
+    if (!exists) return false;
+    const current = this.#database
+      .prepare(
+        'SELECT decision, category_override, note FROM finding_reviews WHERE finding_id = ?',
+      )
+      .get(id) as Row | undefined;
+    this.#database
+      .prepare(
+        `INSERT INTO finding_reviews (finding_id, decision, category_override, note, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(finding_id) DO UPDATE SET
+           decision = excluded.decision,
+           category_override = excluded.category_override,
+           note = excluded.note,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        id,
+        input.decision ?? current?.decision ?? null,
+        input.categoryOverride ?? current?.category_override ?? null,
+        input.note ?? current?.note ?? null,
+        this.#clock.now().toISOString(),
+      );
+    return true;
+  }
+
   /** List findings for a visible session. */
   listFindings(sessionId: string): readonly StoredFinding[] {
     if (!this.getSession(sessionId)) return [];
     return (
       this.#database
         .prepare(
-          'SELECT id, session_id, rule_id, detector_version, category, severity, confidence, title, explanation, recommendation, evidence_event_ids_json, counterevidence_event_ids_json, state FROM findings WHERE session_id = ? ORDER BY id ASC',
+          `SELECT f.id, f.session_id, f.rule_id, f.detector_version,
+             COALESCE(r.category_override, f.category) AS category,
+             f.severity, f.confidence, f.title, f.explanation, f.recommendation,
+             f.evidence_event_ids_json, f.counterevidence_event_ids_json,
+             COALESCE(r.decision, f.state) AS state,
+             r.decision, r.category_override, r.note, r.updated_at
+           FROM findings f LEFT JOIN finding_reviews r ON r.finding_id = f.id
+           WHERE f.session_id = ? ORDER BY f.id ASC`,
         )
         .all(sessionId) as Row[]
     ).map((row) => ({
@@ -1111,6 +1273,23 @@ export class Storage {
         row.counterevidence_event_ids_json,
       ),
       state: String(row.state),
+      ...(row.updated_at
+        ? {
+            review: {
+              updatedAt: String(row.updated_at),
+              ...(row.decision
+                ? {
+                    decision: String(row.decision) as
+                      'open' | 'confirmed' | 'rejected',
+                  }
+                : {}),
+              ...(row.category_override
+                ? { categoryOverride: String(row.category_override) }
+                : {}),
+              ...(row.note ? { note: String(row.note) } : {}),
+            },
+          }
+        : {}),
       ...(row.confidence === null
         ? {}
         : { confidence: Number(row.confidence) }),

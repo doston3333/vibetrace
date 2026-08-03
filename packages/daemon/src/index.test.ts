@@ -107,6 +107,24 @@ function segment(sequence = 1): SpoolSegment {
   };
 }
 
+function failedCommandSegment(sequence: number): SpoolSegment {
+  const input = segment(sequence);
+  input.event = {
+    ...input.event,
+    id: createEventId({
+      adapter: 'test',
+      sourceSessionId: 'source-session',
+      sourceSequence: sequence,
+      type: 'command.completed',
+    }),
+    source: 'tool',
+    type: 'command.completed',
+    payload: { command: 'pnpm test', category: 'test', exitCode: 1 },
+    rawPayload: { command: 'pnpm test', exitCode: 1 },
+  };
+  return input;
+}
+
 describe('sealed spool', () => {
   it('keeps the final name invisible until the pre-rename pause is released', async () => {
     const { path, storage } = await state();
@@ -612,6 +630,64 @@ describe('daemon API', () => {
       })
     ).json() as { importer: { status: string } };
     expect(health.importer.status).toBe('idle');
+    await daemon.close();
+    storage.close();
+  });
+
+  it('analyzes imported sessions and preserves finding reviews across reruns', async () => {
+    const { path, storage } = await state();
+    await writeSegment(spoolPaths(path), failedCommandSegment(1));
+    await writeSegment(spoolPaths(path), failedCommandSegment(2));
+    const daemon = await startDaemon({ stateDir: path, storage });
+    const headers = { authorization: `Bearer ${daemon.token}` };
+    const sessionId = segment().event.sessionId;
+    const initial = storage.listFindings(sessionId);
+    const repeated = initial.find(
+      (finding) => finding.ruleId === 'repeated-identical-failed-command',
+    );
+    expect(repeated).toBeDefined();
+    expect(
+      (
+        await daemon.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/findings/${repeated!.id}/review`,
+          headers,
+          payload: {
+            decision: 'confirmed',
+            categoryOverride: 'confirmed-loop',
+            note: 'The retry used the same command.',
+          },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await daemon.app.inject({
+          method: 'POST',
+          url: `/api/v1/sessions/${sessionId}/analyze`,
+          headers,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      storage
+        .listFindings(sessionId)
+        .find((finding) => finding.id === repeated!.id),
+    ).toMatchObject({
+      state: 'confirmed',
+      category: 'confirmed-loop',
+      review: { note: 'The retry used the same command.' },
+    });
+    expect(
+      (
+        await daemon.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/findings/${repeated!.id}/review`,
+          headers,
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(400);
     await daemon.close();
     storage.close();
   });
