@@ -99,7 +99,18 @@ export interface EventFilter {
   readonly toolName?: string;
   readonly from?: string;
   readonly to?: string;
+  readonly afterSequence?: number;
+  readonly afterId?: string;
   readonly limit?: number;
+}
+
+/** Safe metadata filters for the forensic sessions index. */
+export interface SessionFilter {
+  readonly project?: string;
+  readonly model?: string;
+  readonly result?: string;
+  readonly category?: string;
+  readonly captureMode?: string;
 }
 
 /** A deterministic finding. Evidence IDs must refer to normalized events. */
@@ -159,6 +170,7 @@ export interface StoredSession {
   readonly source: string;
   readonly sourceSessionId: string;
   readonly startedAt: string;
+  readonly endedAt?: string;
   readonly status: string;
   readonly captureMode: string;
   readonly title?: string;
@@ -167,6 +179,9 @@ export interface StoredSession {
   readonly baseCommit?: string;
   readonly finalCommit?: string;
   readonly runFingerprint?: RunFingerprint;
+  readonly eventCount: number;
+  readonly findingCount: number;
+  readonly primaryFinding?: string;
 }
 
 /** A persisted metadata artifact. */
@@ -224,6 +239,44 @@ function json(value: unknown): string {
 }
 function fromJson<T>(value: unknown): T {
   return JSON.parse(String(value)) as T;
+}
+
+const SESSION_SELECT = `s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.ended_at, s.status, s.capture_mode, s.title, s.model, s.source_version, s.base_commit, s.final_commit, s.run_fingerprint_json,
+  (SELECT COUNT(*) FROM normalized_events n WHERE n.session_id = s.id) AS event_count,
+  (SELECT COUNT(*) FROM findings f WHERE f.session_id = s.id) AS finding_count,
+  (SELECT f.title FROM findings f WHERE f.session_id = s.id ORDER BY f.severity DESC, f.id ASC LIMIT 1) AS primary_finding`;
+
+function storedSession(row: Row): StoredSession {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    displayName: String(row.display_name),
+    source: String(row.source),
+    sourceSessionId: String(row.source_session_id),
+    startedAt: String(row.started_at),
+    ...(row.ended_at ? { endedAt: String(row.ended_at) } : {}),
+    status: String(row.status),
+    captureMode: String(row.capture_mode),
+    ...(row.title ? { title: String(row.title) } : {}),
+    ...(row.model ? { model: String(row.model) } : {}),
+    ...(row.source_version
+      ? { sourceVersion: String(row.source_version) }
+      : {}),
+    ...(row.base_commit ? { baseCommit: String(row.base_commit) } : {}),
+    ...(row.final_commit ? { finalCommit: String(row.final_commit) } : {}),
+    ...(row.run_fingerprint_json
+      ? {
+          runFingerprint: RunFingerprintSchema.parse(
+            fromJson(row.run_fingerprint_json),
+          ),
+        }
+      : {}),
+    eventCount: Number(row.event_count),
+    findingCount: Number(row.finding_count),
+    ...(row.primary_finding
+      ? { primaryFinding: String(row.primary_finding) }
+      : {}),
+  };
 }
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -581,38 +634,44 @@ export class Storage {
   }
 
   /** List non-deleted sessions without exposing encrypted project paths. */
-  listSessions(includeDeleted = false, limit = 500): readonly StoredSession[] {
+  listSessions(
+    includeDeleted = false,
+    limit = 500,
+    filter: SessionFilter = {},
+  ): readonly StoredSession[] {
     if (!Number.isInteger(limit) || limit < 1 || limit > 10_000)
       throw new Error('session limit must be between 1 and 10000.');
+    const conditions = includeDeleted ? [] : ['s.deleted_at IS NULL'];
+    const values: unknown[] = [];
+    if (filter.project) {
+      conditions.push('(s.project_id = ? OR p.display_name = ?)');
+      values.push(filter.project, filter.project);
+    }
+    if (filter.model) {
+      conditions.push('s.model = ?');
+      values.push(filter.model);
+    }
+    if (filter.result) {
+      conditions.push('s.status = ?');
+      values.push(filter.result);
+    }
+    if (filter.captureMode) {
+      conditions.push('s.capture_mode = ?');
+      values.push(filter.captureMode);
+    }
+    if (filter.category) {
+      conditions.push(
+        'EXISTS (SELECT 1 FROM findings f WHERE f.session_id = s.id AND f.category = ?)',
+      );
+      values.push(filter.category);
+    }
+    values.push(limit);
     const rows = this.#database
       .prepare(
-        `SELECT s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.status, s.capture_mode, s.title, s.model, s.source_version, s.base_commit, s.final_commit, s.run_fingerprint_json FROM sessions s JOIN projects p ON p.id = s.project_id ${includeDeleted ? '' : 'WHERE s.deleted_at IS NULL'} ORDER BY s.started_at DESC LIMIT ?`,
+        `SELECT ${SESSION_SELECT} FROM sessions s JOIN projects p ON p.id = s.project_id ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''} ORDER BY s.started_at DESC, s.id ASC LIMIT ?`,
       )
-      .all(limit) as Row[];
-    return rows.map((row) => ({
-      id: String(row.id),
-      projectId: String(row.project_id),
-      displayName: String(row.display_name),
-      source: String(row.source),
-      sourceSessionId: String(row.source_session_id),
-      startedAt: String(row.started_at),
-      status: String(row.status),
-      captureMode: String(row.capture_mode),
-      ...(row.title ? { title: String(row.title) } : {}),
-      ...(row.model ? { model: String(row.model) } : {}),
-      ...(row.source_version
-        ? { sourceVersion: String(row.source_version) }
-        : {}),
-      ...(row.base_commit ? { baseCommit: String(row.base_commit) } : {}),
-      ...(row.final_commit ? { finalCommit: String(row.final_commit) } : {}),
-      ...(row.run_fingerprint_json
-        ? {
-            runFingerprint: RunFingerprintSchema.parse(
-              fromJson(row.run_fingerprint_json),
-            ),
-          }
-        : {}),
-    }));
+      .all(...values) as Row[];
+    return rows.map(storedSession);
   }
 
   /** Find one non-deleted session. */
@@ -620,34 +679,11 @@ export class Storage {
     assertText(id, 'session.id');
     const row = this.#database
       .prepare(
-        `SELECT s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.status, s.capture_mode, s.title, s.model, s.source_version, s.base_commit, s.final_commit, s.run_fingerprint_json FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ? ${includeDeleted ? '' : 'AND s.deleted_at IS NULL'}`,
+        `SELECT ${SESSION_SELECT} FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ? ${includeDeleted ? '' : 'AND s.deleted_at IS NULL'}`,
       )
       .get(id) as Row | undefined;
     if (!row) return undefined;
-    return {
-      id: String(row.id),
-      projectId: String(row.project_id),
-      displayName: String(row.display_name),
-      source: String(row.source),
-      sourceSessionId: String(row.source_session_id),
-      startedAt: String(row.started_at),
-      status: String(row.status),
-      captureMode: String(row.capture_mode),
-      ...(row.title ? { title: String(row.title) } : {}),
-      ...(row.model ? { model: String(row.model) } : {}),
-      ...(row.source_version
-        ? { sourceVersion: String(row.source_version) }
-        : {}),
-      ...(row.base_commit ? { baseCommit: String(row.base_commit) } : {}),
-      ...(row.final_commit ? { finalCommit: String(row.final_commit) } : {}),
-      ...(row.run_fingerprint_json
-        ? {
-            runFingerprint: RunFingerprintSchema.parse(
-              fromJson(row.run_fingerprint_json),
-            ),
-          }
-        : {}),
-    };
+    return storedSession(row);
   }
 
   /** Hide a session while preserving its immutable raw and normalized evidence. */
@@ -822,6 +858,14 @@ export class Storage {
       conditions.push('timestamp <= ?');
       values.push(filter.to);
     }
+    if ((filter.afterSequence === undefined) !== (filter.afterId === undefined))
+      throw new Error('Event cursor requires afterSequence and afterId.');
+    if (filter.afterSequence !== undefined && filter.afterId !== undefined) {
+      assertPositiveInteger(filter.afterSequence, 'filter.afterSequence');
+      assertText(filter.afterId, 'filter.afterId');
+      conditions.push('(sequence > ? OR (sequence = ? AND id > ?))');
+      values.push(filter.afterSequence, filter.afterSequence, filter.afterId);
+    }
     const limit = filter.limit ?? 500;
     if (!Number.isInteger(limit) || limit < 1 || limit > 10_000)
       throw new Error('filter.limit must be between 1 and 10000.');
@@ -875,6 +919,32 @@ export class Storage {
       ...(row.tool_name ? { toolName: String(row.tool_name) } : {}),
       event: fromJson<TraceEvent>(row.event_json),
     }));
+  }
+
+  /** Look up one artifact only within its visible parent session. */
+  getArtifact(sessionId: string, id: string): StoredArtifact | undefined {
+    assertText(sessionId, 'sessionId');
+    assertText(id, 'artifact.id');
+    if (!this.getSession(sessionId)) return undefined;
+    const row = this.#database
+      .prepare(
+        'SELECT id, session_id, event_id, kind, path_encrypted, path_hash, content_hash, blob_hash, metadata_json FROM artifacts WHERE session_id = ? AND id = ?',
+      )
+      .get(sessionId, id) as Row | undefined;
+    if (!row) return undefined;
+    return {
+      id: String(row.id),
+      sessionId: String(row.session_id),
+      kind: String(row.kind),
+      metadata: fromJson<JsonObject>(row.metadata_json),
+      ...(row.event_id ? { eventId: String(row.event_id) } : {}),
+      ...(row.path_encrypted
+        ? { pathEncrypted: String(row.path_encrypted) }
+        : {}),
+      ...(row.path_hash ? { pathHash: String(row.path_hash) } : {}),
+      ...(row.content_hash ? { contentHash: String(row.content_hash) } : {}),
+      ...(row.blob_hash ? { blobHash: String(row.blob_hash) } : {}),
+    };
   }
 
   /** Store a metadata artifact. */

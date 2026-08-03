@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import {
   mkdir,
   mkdtemp,
@@ -493,6 +494,13 @@ describe('daemon API', () => {
     expect(redeemed.statusCode).toBe(200);
     expect(redeemed.headers['set-cookie']).toContain('HttpOnly');
     expect(redeemed.headers['set-cookie']).toContain('SameSite=Strict');
+    const deepLink = await daemon.app.inject({
+      method: 'GET',
+      url: '/sessions/example-session',
+      headers: { cookie: redeemed.headers['set-cookie'] as string },
+    });
+    expect(deepLink.statusCode).toBe(200);
+    expect(deepLink.headers['content-type']).toContain('text/html');
     expect(
       (
         await daemon.app.inject({
@@ -604,6 +612,166 @@ describe('daemon API', () => {
       })
     ).json() as { importer: { status: string } };
     expect(health.importer.status).toBe('idle');
+    await daemon.close();
+    storage.close();
+  });
+
+  it('paginates, searches, reports coverage, streams artifacts, and filters annotations', async () => {
+    const { path, storage } = await state();
+    await writeSegment(spoolPaths(path), segment(1));
+    await writeSegment(spoolPaths(path), segment(2));
+    const gap = segment(3);
+    gap.event = {
+      ...gap.event,
+      id: createEventId({
+        adapter: 'test',
+        sourceSessionId: 'source-session',
+        sourceSequence: 3,
+        type: 'capture.gap',
+      }),
+      source: 'harness',
+      type: 'capture.gap',
+      payload: {
+        dataClass: 'plans',
+        state: 'partial',
+        reason: 'Transcript enrichment was incomplete.',
+        observedSources: ['hook lifecycle'],
+      },
+      rawPayload: { dataClass: 'plans' },
+    };
+    await writeSegment(spoolPaths(path), gap);
+    const daemon = await startDaemon({ stateDir: path, storage });
+    const headers = { authorization: `Bearer ${daemon.token}` };
+    const sessionId = segment().event.sessionId;
+
+    const first = (
+      await daemon.app.inject({
+        method: 'GET',
+        url: `/api/v1/sessions/${sessionId}/events?limit=1`,
+        headers,
+      })
+    ).json() as {
+      events: { id: string; sequence: number }[];
+      nextCursor: { afterId: string; afterSequence: number };
+    };
+    expect(first.events).toHaveLength(1);
+    const second = (
+      await daemon.app.inject({
+        method: 'GET',
+        url: `/api/v1/sessions/${sessionId}/events?limit=1&afterSequence=${first.nextCursor.afterSequence}&afterId=${first.nextCursor.afterId}`,
+        headers,
+      })
+    ).json() as { events: { id: string }[] };
+    expect(second.events).toHaveLength(1);
+    expect(second.events[0]!.id).not.toBe(first.events[0]!.id);
+
+    expect(
+      (
+        await daemon.app.inject({
+          method: 'GET',
+          url: `/api/v1/sessions/${sessionId}/events/search?q=safe&limit=1`,
+          headers,
+        })
+      ).json(),
+    ).toMatchObject({ events: [{ sessionId }] });
+    const listed = (
+      await daemon.app.inject({
+        method: 'GET',
+        url: '/api/v1/sessions?project=Project&captureMode=standard',
+        headers,
+      })
+    ).json() as { sessions: { eventCount: number }[] };
+    expect(listed.sessions).toMatchObject([{ eventCount: 3 }]);
+
+    const coverage = (
+      await daemon.app.inject({
+        method: 'GET',
+        url: `/api/v1/sessions/${sessionId}/coverage`,
+        headers,
+      })
+    ).json() as { coverage: { dataClass: string; state: string }[] };
+    expect(coverage.coverage).toHaveLength(5);
+    expect(coverage.coverage).toContainEqual(
+      expect.objectContaining({ dataClass: 'conversation', state: 'captured' }),
+    );
+    expect(coverage.coverage).toContainEqual(
+      expect.objectContaining({
+        dataClass: 'context',
+        state: 'partial',
+        sources: ['hook lifecycle'],
+        gaps: [
+          expect.objectContaining({
+            reason: 'Transcript enrichment was incomplete.',
+          }),
+        ],
+      }),
+    );
+
+    const blob = await storage.blobs.put(
+      Readable.from([Buffer.from('artifact evidence')]),
+    );
+    storage.createArtifact({
+      id: 'artifact-api',
+      sessionId,
+      eventId: first.events[0]!.id,
+      kind: 'command-output',
+      blobHash: blob.address,
+      metadata: { mediaType: 'text/plain' },
+    });
+    storage.createArtifact({
+      id: 'artifact-hostile-html',
+      sessionId,
+      eventId: first.events[0]!.id,
+      kind: 'command-output',
+      blobHash: blob.address,
+      metadata: { mediaType: 'text/html' },
+    });
+    const artifact = await daemon.app.inject({
+      method: 'GET',
+      url: `/api/v1/sessions/${sessionId}/artifacts/artifact-api/content`,
+      headers,
+    });
+    expect(artifact.statusCode).toBe(200);
+    expect(artifact.body).toBe('artifact evidence');
+    expect(artifact.headers['cache-control']).toBe('no-store');
+    expect(artifact.headers['x-content-type-options']).toBe('nosniff');
+    expect(artifact.headers['content-type']).toContain('text/plain');
+    const hostileArtifact = await daemon.app.inject({
+      method: 'GET',
+      url: `/api/v1/sessions/${sessionId}/artifacts/artifact-hostile-html/content`,
+      headers,
+    });
+    expect(hostileArtifact.statusCode).toBe(200);
+    expect(hostileArtifact.headers['content-type']).toContain(
+      'application/octet-stream',
+    );
+    expect(hostileArtifact.headers['content-disposition']).toBe(
+      'attachment; filename="vibetrace-artifact"',
+    );
+
+    for (const [targetId, label] of [
+      [sessionId, 'outcome:partial'],
+      [first.events[0]!.id, 'evidence:reviewed'],
+    ])
+      expect(
+        (
+          await daemon.app.inject({
+            method: 'POST',
+            url: '/api/v1/annotations',
+            headers,
+            payload: { targetType: 'session', targetId, label },
+          })
+        ).statusCode,
+      ).toBe(201);
+    const annotations = (
+      await daemon.app.inject({
+        method: 'GET',
+        url: `/api/v1/annotations?targetType=session&targetId=${sessionId}`,
+        headers,
+      })
+    ).json() as { annotations: { targetId: string }[] };
+    expect(annotations.annotations).toMatchObject([{ targetId: sessionId }]);
+
     await daemon.close();
     storage.close();
   });

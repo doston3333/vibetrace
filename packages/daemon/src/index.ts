@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import fastify, { type FastifyInstance } from 'fastify';
-import { Storage } from '@vibetrace/storage';
+import { Storage, type StoredNormalizedEvent } from '@vibetrace/storage';
 import { z } from 'zod';
 
 import {
@@ -54,8 +54,50 @@ const annotationSchema = z
   .strict();
 const sessionIdSchema = z.string().min(1).max(128);
 const sessionListQuerySchema = z
-  .object({ limit: z.coerce.number().int().min(1).max(10_000).optional() })
+  .object({
+    limit: z.coerce.number().int().min(1).max(10_000).optional(),
+    project: z.string().min(1).max(512).optional(),
+    model: z.string().min(1).max(512).optional(),
+    result: z.string().min(1).max(128).optional(),
+    category: z.string().min(1).max(128).optional(),
+    captureMode: z.string().min(1).max(128).optional(),
+  })
   .strict();
+const eventListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(2_000).default(500),
+    type: z.string().min(1).max(128).optional(),
+    toolName: z.string().min(1).max(1_024).optional(),
+    from: z.string().datetime().optional(),
+    to: z.string().datetime().optional(),
+    afterSequence: z.coerce.number().int().positive().optional(),
+    afterId: z.string().min(1).max(128).optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      (value.afterSequence === undefined) === (value.afterId === undefined),
+    { message: 'Cursor fields must be supplied together.' },
+  );
+const eventSearchQuerySchema = z
+  .object({
+    q: z.string().trim().min(1).max(512),
+    limit: z.coerce.number().int().min(1).max(1_000).default(200),
+  })
+  .strict();
+const annotationListQuerySchema = z
+  .object({
+    targetType: z.string().min(1).max(64).optional(),
+    targetId: z.string().min(1).max(512).optional(),
+  })
+  .strict();
+const SAFE_ARTIFACT_MEDIA_TYPES = new Set([
+  'application/json',
+  'text/csv',
+  'text/plain',
+  'text/x-diff',
+  'text/x-patch',
+]);
 
 /** The on-disk, secret-free description of one daemon instance. */
 export interface DaemonDescriptor {
@@ -95,6 +137,112 @@ export interface RunningDaemon {
 interface Ticket {
   readonly expiresAt: number;
   used: boolean;
+}
+
+export type CoverageState = 'captured' | 'partial' | 'absent' | 'unknown';
+export interface CoverageDatum {
+  readonly dataClass:
+    'conversation' | 'context' | 'tools' | 'code' | 'verification';
+  readonly state: CoverageState;
+  readonly sources: readonly string[];
+  readonly gaps: readonly {
+    eventId: string;
+    state: string;
+    reason: string;
+    adapter: string;
+  }[];
+}
+
+const COVERAGE_CLASSES = [
+  'conversation',
+  'context',
+  'tools',
+  'code',
+  'verification',
+] as const;
+type CoverageClass = (typeof COVERAGE_CLASSES)[number];
+
+function eventCoverageClass(type: string): CoverageClass | undefined {
+  if (/^(message\.|turn\.|session\.)/.test(type)) return 'conversation';
+  if (/^(instruction\.|skill\.|context\.|subagent\.)/.test(type))
+    return 'context';
+  if (/^(tool\.|command\.|permission\.)/.test(type)) return 'tools';
+  if (/^(file\.|git\.)/.test(type)) return 'code';
+  if (/^(test|lint|build|typecheck)\./.test(type)) return 'verification';
+  return undefined;
+}
+
+function gapCoverageClass(value: unknown): CoverageClass | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (/prompt|message|conversation|turn/i.test(value)) return 'conversation';
+  if (
+    /instruction|skill|context|reason|plan|subagent|token|transcript/i.test(
+      value,
+    )
+  )
+    return 'context';
+  if (/tool|command|permission|approval|terminal/i.test(value)) return 'tools';
+  if (/file|diff|repository|git/i.test(value)) return 'code';
+  if (/test|lint|build|typecheck|verification/i.test(value))
+    return 'verification';
+  return undefined;
+}
+
+/** Derive evidence-only coverage; absence is never inferred as a successful capture. */
+export function deriveCaptureCoverage(
+  events: readonly StoredNormalizedEvent[],
+): readonly CoverageDatum[] {
+  const observed = new Map<CoverageClass, Set<string>>();
+  const gaps = new Map<CoverageClass, CoverageDatum['gaps'][number][]>();
+  for (const stored of events) {
+    const event = stored.event;
+    if (event.type === 'capture.gap') {
+      const payload = event.payload as Record<string, unknown>;
+      const dataClass = gapCoverageClass(payload.dataClass);
+      if (!dataClass) continue;
+      const sources = observed.get(dataClass) ?? new Set<string>();
+      if (Array.isArray(payload.observedSources))
+        for (const source of payload.observedSources)
+          if (typeof source === 'string' && source.length > 0)
+            sources.add(source.slice(0, 256));
+      if (sources.size > 0) observed.set(dataClass, sources);
+      const values = gaps.get(dataClass) ?? [];
+      values.push({
+        eventId: event.id,
+        state:
+          typeof payload.state === 'string'
+            ? payload.state.slice(0, 64)
+            : 'unknown',
+        reason:
+          typeof payload.reason === 'string'
+            ? payload.reason.slice(0, 512)
+            : 'Capture source did not provide a safe reason.',
+        adapter: event.provenance.adapter,
+      });
+      gaps.set(dataClass, values);
+      continue;
+    }
+    const dataClass = eventCoverageClass(event.type);
+    if (!dataClass) continue;
+    const sources = observed.get(dataClass) ?? new Set<string>();
+    sources.add(`${event.source} · ${event.provenance.adapter}`);
+    observed.set(dataClass, sources);
+  }
+  return COVERAGE_CLASSES.map((dataClass) => {
+    const sources = [...(observed.get(dataClass) ?? [])].sort();
+    const classGaps = gaps.get(dataClass) ?? [];
+    const state: CoverageState =
+      sources.length > 0 && classGaps.length === 0
+        ? 'captured'
+        : sources.length > 0
+          ? 'partial'
+          : classGaps.some((gap) => gap.state === 'partial')
+            ? 'partial'
+            : classGaps.some((gap) => gap.state === 'absent')
+              ? 'absent'
+              : 'unknown';
+    return { dataClass, state, sources, gaps: classGaps };
+  });
 }
 
 /** Resolve the only supported state directory shape; relative overrides are unsafe. */
@@ -470,7 +618,15 @@ export async function startDaemon(
     app.get('/api/v1/sessions', async (request, reply) => {
       const parsed = sessionListQuerySchema.safeParse(request.query);
       return parsed.success
-        ? { sessions: storage.listSessions(false, parsed.data.limit) }
+        ? {
+            sessions: storage.listSessions(false, parsed.data.limit, {
+              project: parsed.data.project,
+              model: parsed.data.model,
+              result: parsed.data.result,
+              category: parsed.data.category,
+              captureMode: parsed.data.captureMode,
+            }),
+          }
         : reply.code(400).send({ code: 'INVALID_QUERY' });
     });
     app.get('/api/v1/sessions/:id', async (request, reply) => {
@@ -493,7 +649,37 @@ export async function startDaemon(
       if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
       if (!storage.getSession(id))
         return reply.code(404).send({ code: 'NOT_FOUND' });
-      return { events: storage.listEvents({ sessionId: id }) };
+      const parsed = eventListQuerySchema.safeParse(request.query);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_QUERY' });
+      const events = storage.listEvents({
+        sessionId: id,
+        ...parsed.data,
+      });
+      const last = events.at(-1);
+      return {
+        events,
+        ...(events.length === parsed.data.limit && last
+          ? {
+              nextCursor: {
+                afterSequence: last.sequence,
+                afterId: last.id,
+              },
+            }
+          : {}),
+      };
+    });
+    app.get('/api/v1/sessions/:id/events/search', async (request, reply) => {
+      const id = sessionId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
+      if (!storage.getSession(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const parsed = eventSearchQuerySchema.safeParse(request.query);
+      return parsed.success
+        ? {
+            events: storage.searchEvents(id, parsed.data.q, parsed.data.limit),
+          }
+        : reply.code(400).send({ code: 'INVALID_QUERY' });
     });
     app.get('/api/v1/sessions/:id/artifacts', async (request, reply) => {
       const id = sessionId(request);
@@ -502,12 +688,62 @@ export async function startDaemon(
         ? { artifacts: storage.listArtifacts(id) }
         : reply.code(404).send({ code: 'NOT_FOUND' });
     });
+    app.get(
+      '/api/v1/sessions/:id/artifacts/:artifactId/content',
+      async (request, reply) => {
+        const parsed = z
+          .object({
+            id: sessionIdSchema,
+            artifactId: z.string().min(1).max(256),
+          })
+          .strict()
+          .safeParse(request.params);
+        if (!parsed.success)
+          return reply.code(400).send({ code: 'INVALID_ARTIFACT_ID' });
+        const artifact = storage.getArtifact(
+          parsed.data.id,
+          parsed.data.artifactId,
+        );
+        if (!artifact?.blobHash)
+          return reply.code(404).send({ code: 'NOT_FOUND' });
+        const candidate = artifact.metadata.mediaType;
+        const normalized =
+          typeof candidate === 'string' ? candidate.toLowerCase() : '';
+        const inline = SAFE_ARTIFACT_MEDIA_TYPES.has(normalized);
+        const mediaType = inline ? normalized : 'application/octet-stream';
+        const stream = await storage.blobs.open(artifact.blobHash);
+        return reply
+          .header('cache-control', 'no-store')
+          .header(
+            'content-disposition',
+            inline ? 'inline' : 'attachment; filename="vibetrace-artifact"',
+          )
+          .header('x-content-type-options', 'nosniff')
+          .type(mediaType)
+          .send(stream);
+      },
+    );
     app.get('/api/v1/sessions/:id/coverage', async (request, reply) => {
       const id = sessionId(request);
       if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
-      return storage.getSession(id)
-        ? { coverage: { status: 'not_available' } }
-        : reply.code(404).send({ code: 'NOT_FOUND' });
+      if (!storage.getSession(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const events: StoredNormalizedEvent[] = [];
+      let cursor: { afterSequence: number; afterId: string } | undefined;
+      do {
+        const page = storage.listEvents({
+          sessionId: id,
+          limit: 10_000,
+          ...(cursor ?? {}),
+        });
+        events.push(...page);
+        const last = page.at(-1);
+        cursor =
+          page.length === 10_000 && last
+            ? { afterSequence: last.sequence, afterId: last.id }
+            : undefined;
+      } while (cursor);
+      return { coverage: deriveCaptureCoverage(events) };
     });
     app.get('/api/v1/sessions/:id/findings', async (request, reply) => {
       const id = sessionId(request);
@@ -516,9 +752,17 @@ export async function startDaemon(
         ? { findings: storage.listFindings(id) }
         : reply.code(404).send({ code: 'NOT_FOUND' });
     });
-    app.get('/api/v1/annotations', async () => ({
-      annotations: storage.listAnnotations(),
-    }));
+    app.get('/api/v1/annotations', async (request, reply) => {
+      const parsed = annotationListQuerySchema.safeParse(request.query);
+      return parsed.success
+        ? {
+            annotations: storage.listAnnotations(
+              parsed.data.targetType,
+              parsed.data.targetId,
+            ),
+          }
+        : reply.code(400).send({ code: 'INVALID_QUERY' });
+    });
     app.post('/api/v1/annotations', async (request, reply) => {
       const parsed = annotationSchema.safeParse(request.body);
       if (!parsed.success)
@@ -573,7 +817,13 @@ export async function startDaemon(
       );
       return reply.code(202).send({ ok: true });
     });
-    app.get('/', async (request, reply) => {
+    const serveDashboard = async (
+      request: { cookies: Record<string, string | undefined> },
+      reply: {
+        sendFile(name: string): unknown;
+        type(mediaType: string): { send(body: string): unknown };
+      },
+    ) => {
       if (sessions.has(request.cookies.vibetrace_session ?? ''))
         if (dashboardAvailable) return reply.sendFile('index.html');
       if (sessions.has(request.cookies.vibetrace_session ?? ''))
@@ -587,7 +837,9 @@ export async function startDaemon(
         .send(
           '<!doctype html><meta charset="utf-8"><script>fetch("/api/v1/auth/browser-session",{method:"POST"}).then(r=>{if(r.ok)location.replace("/")})</script>',
         );
-    });
+    };
+    app.get('/', serveDashboard);
+    app.get('/sessions/*', serveDashboard);
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
     const url = new URL(address);
     const descriptor = {

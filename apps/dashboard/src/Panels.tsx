@@ -1,0 +1,351 @@
+import { useState, type FormEvent } from 'react';
+
+import type {
+  Annotation,
+  Artifact,
+  CoverageDatum,
+  Finding,
+  SessionSummary,
+  StoredEvent,
+} from './api.js';
+import { eventDetail, eventTitle, formatDuration } from './forensics.js';
+
+export function SessionOverview({
+  session,
+  events,
+  findings,
+  gaps,
+}: {
+  readonly session: SessionSummary;
+  readonly events: readonly StoredEvent[];
+  readonly findings: readonly Finding[];
+  readonly gaps: number;
+}) {
+  const failed = events.filter(
+    (item) =>
+      item.event.status === 'failed' ||
+      (typeof (item.event.payload as { exitCode?: unknown }).exitCode ===
+        'number' &&
+        (item.event.payload as { exitCode: number }).exitCode !== 0),
+  ).length;
+  return (
+    <section className="session-overview" aria-labelledby="session-title">
+      <div className="case-heading">
+        <div>
+          <p className="eyebrow">
+            Case file · {session.source} · {session.captureMode} capture
+          </p>
+          <h1 id="session-title">{session.title ?? session.displayName}</h1>
+          <p>
+            {session.model ?? 'Model not exposed'} ·{' '}
+            {formatDuration(session.startedAt, session.endedAt)} ·{' '}
+            {new Date(session.startedAt).toLocaleString()}
+          </p>
+        </div>
+        <div className="outcome-stamp" data-status={session.status}>
+          <span>Observed result</span>
+          <strong>{session.status.replaceAll('_', ' ')}</strong>
+        </div>
+      </div>
+      <dl className="evidence-totals">
+        <div>
+          <dt>Events</dt>
+          <dd>
+            {Math.max(session.eventCount, events.length).toLocaleString()}
+          </dd>
+        </div>
+        <div>
+          <dt>Failures</dt>
+          <dd>{failed.toLocaleString()}</dd>
+        </div>
+        <div>
+          <dt>Capture gaps</dt>
+          <dd>{gaps.toLocaleString()}</dd>
+        </div>
+        <div>
+          <dt>Findings</dt>
+          <dd>
+            {Math.max(session.findingCount, findings.length).toLocaleString()}
+          </dd>
+        </div>
+      </dl>
+      {findings[0] ? (
+        <div className="primary-hypothesis">
+          <span>Primary deterministic finding</span>
+          <strong>{findings[0].title}</strong>
+          <p>{findings[0].explanation}</p>
+        </div>
+      ) : (
+        <div className="primary-hypothesis is-empty">
+          <span>Analysis status</span>
+          <strong>No deterministic finding has been persisted yet.</strong>
+          <p>
+            The timeline remains facts-first; absence of a finding is not a
+            quality claim.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function CoveragePanel({
+  coverage,
+  onSelect,
+}: {
+  readonly coverage: readonly CoverageDatum[];
+  readonly onSelect: (id: string) => void;
+}) {
+  return (
+    <section className="panel-page" aria-labelledby="coverage-title">
+      <header>
+        <p className="eyebrow">Observable completeness</p>
+        <h2 id="coverage-title">Capture coverage</h2>
+        <p>
+          Missing evidence is shown explicitly. Unknown does not mean absent.
+        </p>
+      </header>
+      <div className="coverage-ledger">
+        {coverage.map((item) => (
+          <article key={item.dataClass} data-state={item.state}>
+            <div className="coverage-status">
+              <span aria-hidden="true" />
+              <strong>{item.dataClass}</strong>
+              <em>{item.state}</em>
+            </div>
+            <p>
+              {item.sources.length > 0
+                ? `Observed from ${item.sources.join(', ')}.`
+                : 'No canonical source event was observed.'}
+            </p>
+            {item.gaps.map((gap) => (
+              <button
+                key={gap.eventId}
+                type="button"
+                onClick={() => onSelect(gap.eventId)}
+              >
+                <span>{gap.adapter}</span>
+                {gap.reason}
+              </button>
+            ))}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function FindingsPanel({
+  findings,
+  onSelect,
+}: {
+  readonly findings: readonly Finding[];
+  readonly onSelect: (id: string) => void;
+}) {
+  return (
+    <section className="panel-page" aria-labelledby="findings-title">
+      <header>
+        <p className="eyebrow">Deterministic analysis</p>
+        <h2 id="findings-title">Evidence-linked findings</h2>
+        <p>Findings remain separate from source facts and user labels.</p>
+      </header>
+      <div className="finding-list">
+        {findings.length > 0 ? (
+          findings.map((finding, index) => (
+            <article key={finding.id} data-severity={finding.severity}>
+              <span className="finding-number">
+                F-{String(index + 1).padStart(2, '0')}
+              </span>
+              <div>
+                <p className="finding-meta">
+                  {finding.category} · {finding.severity} · {finding.ruleId}
+                </p>
+                <h3>{finding.title}</h3>
+                <p>{finding.explanation}</p>
+                <p className="recommendation">
+                  <strong>Recommendation:</strong> {finding.recommendation}
+                </p>
+                <div className="evidence-links">
+                  {finding.evidenceEventIds.map((eventId) => (
+                    <button
+                      type="button"
+                      key={eventId}
+                      onClick={() => onSelect(eventId)}
+                    >
+                      View evidence
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </article>
+          ))
+        ) : (
+          <div className="teaching-empty">
+            <strong>No findings yet.</strong>
+            <p>
+              Deterministic rules run in the next analysis slice. Observable
+              events remain available now.
+            </p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function DiffHistory({
+  events,
+  artifacts,
+  findings,
+  onSelect,
+}: {
+  readonly events: readonly StoredEvent[];
+  readonly artifacts: readonly Artifact[];
+  readonly findings: readonly Finding[];
+  readonly onSelect: (id: string) => void;
+}) {
+  const changes = events.filter((item) =>
+    ['file.changed', 'git.snapshot'].includes(item.type),
+  );
+  return (
+    <section className="panel-page" aria-labelledby="diff-title">
+      <header>
+        <p className="eyebrow">Repository reconstruction</p>
+        <h2 id="diff-title">Diff history</h2>
+        <p>
+          Snapshots are cumulative observations, not automatic tool attribution.
+        </p>
+      </header>
+      <div className="diff-history">
+        {changes.map((item) => {
+          const linked = artifacts.filter(
+            (artifact) => artifact.eventId === item.id,
+          );
+          const findingCount = findings.filter((finding) =>
+            finding.evidenceEventIds.includes(item.id),
+          ).length;
+          return (
+            <button
+              type="button"
+              key={item.id}
+              onClick={() => onSelect(item.id)}
+            >
+              <span className="diff-sequence">#{item.sequence}</span>
+              <span>
+                <strong>{eventTitle(item.event)}</strong>
+                <small>{eventDetail(item.event) || item.type}</small>
+              </span>
+              <em>
+                {linked.length} artifacts · {findingCount} findings
+              </em>
+            </button>
+          );
+        })}
+        {changes.length === 0 ? (
+          <div className="teaching-empty">
+            <strong>No repository change was observed.</strong>
+            <p>
+              Check capture coverage to distinguish an unchanged repository from
+              missing evidence.
+            </p>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+export function AnnotationsPanel({
+  annotations,
+  targetId,
+  saving,
+  onSave,
+}: {
+  readonly annotations: readonly Annotation[];
+  readonly targetId: string;
+  readonly saving: boolean;
+  readonly onSave: (value: { label: string; note?: string }) => Promise<void>;
+}) {
+  const [category, setCategory] = useState('outcome');
+  const [label, setLabel] = useState('');
+  const [note, setNote] = useState('');
+  const [saved, setSaved] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!label.trim()) return;
+    await onSave({
+      label: `${category}:${label.trim()}`,
+      ...(note.trim() ? { note: note.trim() } : {}),
+    });
+    setLabel('');
+    setNote('');
+    setSaved(true);
+  };
+  return (
+    <section
+      className="panel-page annotations-page"
+      aria-labelledby="annotations-title"
+    >
+      <header>
+        <p className="eyebrow">Human review</p>
+        <h2 id="annotations-title">Annotations</h2>
+        <p>User labels remain distinct from facts and analyzer findings.</p>
+      </header>
+      <form onSubmit={(event) => void submit(event)}>
+        <label>
+          Label type
+          <select
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+          >
+            <option value="outcome">Outcome</option>
+            <option value="primary-cause">Primary cause</option>
+            <option value="finding-validity">Finding validity</option>
+            <option value="note">Review note</option>
+          </select>
+        </label>
+        <label>
+          Label
+          <input
+            required
+            value={label}
+            onChange={(event) => setLabel(event.target.value)}
+            placeholder="Example: partial failure"
+          />
+        </label>
+        <label className="note-field">
+          Evidence note
+          <textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="Explain what supports this label."
+          />
+        </label>
+        <button
+          className="ink-button"
+          type="submit"
+          disabled={saving || !label.trim()}
+        >
+          {saving ? 'Saving annotation…' : 'Save annotation'}
+        </button>
+        {saved ? (
+          <p role="status">Annotation saved to this local case file.</p>
+        ) : null}
+      </form>
+      <div className="annotation-ledger">
+        {annotations
+          .filter((annotation) => annotation.targetId === targetId)
+          .map((annotation) => (
+            <article key={annotation.id}>
+              <span>User label</span>
+              <strong>{annotation.label ?? 'note'}</strong>
+              {annotation.note ? <p>{annotation.note}</p> : null}
+              <time dateTime={annotation.createdAt}>
+                {new Date(annotation.createdAt).toLocaleString()}
+              </time>
+            </article>
+          ))}
+      </div>
+    </section>
+  );
+}

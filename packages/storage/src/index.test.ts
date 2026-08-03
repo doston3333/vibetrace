@@ -436,6 +436,26 @@ describe('encrypted Storage', () => {
     expect(
       storage.searchEvents(sessionId, 'needle').map((item) => item.id),
     ).toEqual(expected);
+    const firstPage = storage.listEvents({ sessionId, limit: 1 });
+    expect(firstPage.map((item) => item.id)).toEqual(expected.slice(0, 1));
+    const cursor = firstPage[0]!;
+    expect(
+      storage
+        .listEvents({
+          sessionId,
+          limit: 1,
+          afterSequence: cursor.sequence,
+          afterId: cursor.id,
+        })
+        .map((item) => item.id),
+    ).toEqual(expected.slice(1));
+    expect(() =>
+      storage.listEvents({
+        sessionId,
+        limit: 1,
+        afterSequence: cursor.sequence,
+      }),
+    ).toThrow('afterSequence and afterId');
     storage.close();
   });
 

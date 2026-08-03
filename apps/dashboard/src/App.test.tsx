@@ -1,19 +1,241 @@
-import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
 
-import { App } from './App.js';
+import { performance } from 'node:perf_hooks';
 
-describe('App', () => {
-  it('opens the 1,000-event static trace and exposes an event inspector', () => {
-    const markup = renderToStaticMarkup(<App />);
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createSyntheticTrace } from '@vibetrace/test-fixtures';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { userEvent } from '@testing-library/user-event';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-    expect(markup).toContain('<h1>VibeTrace</h1>');
-    expect(markup).toContain('1,000</strong> captured fixture events');
-    expect(markup).toContain('capture mode: <strong>standard</strong>');
-    expect(markup).toContain('id="event-inspector">Event inspector</h2>');
-    expect(markup).toContain('Event 1: <strong>file.read</strong>');
-    expect(markup).toContain('&lt;synthetic-trace-content&gt;');
-    expect(markup).not.toContain('<synthetic-trace-content>');
-    expect(markup).toContain('This sample is not live capture.');
+import { ForensicWorkbench } from './App.js';
+import type {
+  CoverageDatum,
+  Finding,
+  SessionSummary,
+  StoredEvent,
+} from './api.js';
+import {
+  buildTimelineModel,
+  matchesEvent,
+  safeDisplayText,
+} from './forensics.js';
+
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get: () => 640,
+  });
+  HTMLElement.prototype.getBoundingClientRect = () =>
+    ({
+      bottom: 640,
+      height: 640,
+      left: 0,
+      right: 1200,
+      top: 0,
+      width: 1200,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+const trace = createSyntheticTrace({
+  eventCount: 20000,
+  scenario: 'code-change-tests',
+  seed: 501,
+});
+const events: readonly StoredEvent[] = trace.events.map((event) => ({
+  id: event.id,
+  rawEventId: event.provenance.rawEventId ?? `raw-${event.sequence}`,
+  sessionId: event.sessionId,
+  sequence: event.sequence,
+  timestamp: event.timestamp,
+  type: event.type,
+  ...(event.toolName ? { toolName: event.toolName } : {}),
+  event,
+}));
+const session: SessionSummary = {
+  id: trace.sessionId,
+  projectId: 'vibetrace',
+  displayName: 'VibeTrace',
+  source: 'codex-hooks',
+  sourceSessionId: 'opaque',
+  startedAt: events[0]!.timestamp,
+  endedAt: events.at(-1)!.timestamp,
+  status: 'completed',
+  captureMode: 'standard',
+  title: 'Reconstruct authorization failure',
+  model: 'gpt-5.6-codex',
+  eventCount: events.length,
+  findingCount: 1,
+  primaryFinding: 'No tests after final change',
+};
+const coverage: readonly CoverageDatum[] = [
+  {
+    dataClass: 'conversation',
+    state: 'captured',
+    sources: ['user · codex-hooks'],
+    gaps: [],
+  },
+  {
+    dataClass: 'context',
+    state: 'partial',
+    sources: ['harness · codex-hooks'],
+    gaps: [
+      {
+        eventId: events[8]!.id,
+        state: 'partial',
+        reason: 'Transcript enrichment was incomplete.',
+        adapter: 'codex-hooks',
+      },
+    ],
+  },
+  {
+    dataClass: 'tools',
+    state: 'captured',
+    sources: ['tool · codex-hooks'],
+    gaps: [],
+  },
+  {
+    dataClass: 'code',
+    state: 'captured',
+    sources: ['vcs · codex-hooks'],
+    gaps: [],
+  },
+  {
+    dataClass: 'verification',
+    state: 'captured',
+    sources: ['tool · codex-hooks'],
+    gaps: [],
+  },
+];
+const findings: readonly Finding[] = [
+  {
+    id: 'finding-1',
+    sessionId: trace.sessionId,
+    ruleId: 'no-tests-after-final-change',
+    detectorVersion: '0.1.0',
+    category: 'verification',
+    severity: 'high',
+    title: 'No tests after final change',
+    explanation: 'A later file change has no observed verification.',
+    recommendation: 'Run the relevant test command after the final change.',
+    evidenceEventIds: [events[6]!.id],
+    counterevidenceEventIds: [],
+    state: 'open',
+  },
+];
+
+function renderWorkbench(save = vi.fn(async () => undefined)) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return {
+    save,
+    ...render(
+      <QueryClientProvider client={client}>
+        <ForensicWorkbench
+          session={session}
+          events={events}
+          artifacts={[]}
+          coverage={coverage}
+          findings={findings}
+          annotations={[]}
+          onSaveAnnotation={save}
+        />
+      </QueryClientProvider>,
+    ),
+  };
+}
+
+describe('forensic dashboard', () => {
+  it('builds and filters the 20,000-event timeline within a bounded interaction budget', () => {
+    const started = performance.now();
+    const model = buildTimelineModel(events);
+    const matches = model.filter((item) =>
+      matchesEvent(item, {
+        search: 'pnpm test',
+        lane: 'all',
+        status: 'all',
+      }),
+    );
+    const elapsed = performance.now() - started;
+    expect(model).toHaveLength(20_000);
+    expect(matches.length).toBeGreaterThan(0);
+    expect(elapsed).toBeLessThan(750);
+    expect(safeDisplayText('\u001b[31m-removed\n+added\u001b[0m')).toBe(
+      '-removed\n+added',
+    );
+  });
+
+  it('renders a virtualized five-lane workbench and keeps untrusted markup inert', async () => {
+    const { container } = renderWorkbench();
+    expect(
+      screen.getByRole('heading', { name: 'Evidence timeline' }),
+    ).toBeTruthy();
+    expect(screen.getByText('20,000 observable events')).toBeTruthy();
+    expect(
+      screen.getByRole('listbox', { name: /Use arrow keys/ }),
+    ).toBeTruthy();
+    expect(container.querySelectorAll('.timeline-row').length).toBeLessThan(
+      200,
+    );
+    expect(
+      (container.querySelector('.timeline-virtual-space') as HTMLElement).style
+        .height,
+    ).toBe('1440000px');
+    expect(container.querySelector('synthetic-trace-content')).toBeNull();
+
+    const friendly = screen.getByRole('tab', { name: 'friendly' });
+    const raw = screen.getByRole('tab', { name: 'raw' });
+    friendly.focus();
+    fireEvent.keyDown(friendly, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(raw);
+    expect(raw.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(
+      'event-tab-raw',
+    );
+    expect(screen.getByText(/synthetic-trace-content/)).toBeTruthy();
+    expect(container.querySelector('script')).toBeNull();
+  });
+
+  it('supports keyboard evidence navigation, findings jumps, coverage, and annotations', async () => {
+    const user = userEvent.setup();
+    const save = vi.fn(async () => undefined);
+    renderWorkbench(save);
+    const timeline = screen.getByRole('listbox', { name: /Use arrow keys/ });
+    fireEvent.keyDown(timeline, { key: 'ArrowDown' });
+    expect(screen.getByRole('heading', { name: 'File changed' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /Findings 1/ }));
+    expect(
+      screen.getByRole('heading', { name: 'No tests after final change' }),
+    ).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'View evidence' }));
+    expect(
+      screen.getByRole('heading', { name: 'Evidence timeline' }),
+    ).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Coverage' }));
+    expect(
+      screen.getByText('Transcript enrichment was incomplete.'),
+    ).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /Annotations 0/ }));
+    await user.type(screen.getByLabelText('Label'), 'partial failure');
+    await user.type(
+      screen.getByLabelText('Evidence note'),
+      'Tests were not rerun.',
+    );
+    await user.click(screen.getByRole('button', { name: 'Save annotation' }));
+    expect(save).toHaveBeenCalledWith({
+      label: 'outcome:partial failure',
+      note: 'Tests were not rerun.',
+    });
   });
 });
