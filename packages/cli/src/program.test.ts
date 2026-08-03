@@ -177,4 +177,195 @@ describe('createProgram', () => {
     expect(collected).toEqual(['{"hook_event_name":"Stop"}']);
     expect(outputs).toHaveLength(outputCount);
   });
+
+  it('previews before encrypted export and routes import and session management through the daemon', async () => {
+    const state = await mkdtemp(join(tmpdir(), 'vibetrace-cli-bundle-'));
+    directories.push(state);
+    const origin = 'http://127.0.0.1:45679';
+    const token = 'c'.repeat(43);
+    const manifestHash = 'd'.repeat(64);
+    const passphrase = 'portable test passphrase';
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const request = (async (
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const value = String(url);
+      requests.push({ url: value, init });
+      if (value.endsWith('/exports/preview'))
+        return new Response(
+          JSON.stringify({
+            preview: {
+              manifestHash,
+              manifest: { format: 'vibetrace-portable', records: [] },
+            },
+          }),
+          { status: 200 },
+        );
+      if (value.endsWith('/exports')) {
+        const body = JSON.parse(String(init?.body)) as {
+          destination: string;
+        };
+        return new Response(
+          JSON.stringify({
+            bundle: { destination: body.destination, manifestHash },
+          }),
+          { status: 200 },
+        );
+      }
+      if (value.endsWith('/imports'))
+        return new Response(
+          JSON.stringify({
+            import: {
+              sessionId: 'session-1',
+              imported: true,
+              eventCount: 7,
+              artifactCount: 2,
+            },
+          }),
+          { status: 200 },
+        );
+      if (value.endsWith('/sessions'))
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                id: 'session-1',
+                startedAt: '2026-01-01T00:00:00.000Z',
+                status: 'completed',
+                displayName: 'Project',
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      if (value.endsWith('/sessions/session-1') && init?.method === 'DELETE')
+        return new Response(undefined, { status: 204 });
+      if (value.endsWith('/sessions/session-1'))
+        return new Response(
+          JSON.stringify({ session: { id: 'session-1', status: 'completed' } }),
+          { status: 200 },
+        );
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    const outputs: string[] = [];
+    const secrets = [passphrase, passphrase, passphrase];
+    const program = createProgram({
+      stateDir: () => state,
+      fetch: request,
+      waitForReady: async () => ({
+        origin,
+        instanceId: '00000000-0000-4000-8000-000000000001',
+        token,
+      }),
+      spawn: () => undefined,
+      readSecret: async () => secrets.shift() ?? '',
+      output: (line) => outputs.push(line),
+    });
+    const destination = join(state, 'exported.vibetrace.age');
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'export',
+      'session-1',
+      '--profile',
+      'share-safe',
+      '--restore',
+      '/payload/safeFalsePositive',
+      '--output',
+      destination,
+    ]);
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'import',
+      join(state, 'incoming.vibetrace.age'),
+    ]);
+    await program.parseAsync(['node', 'vibetrace', 'sessions', 'list']);
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'sessions',
+      'show',
+      'session-1',
+    ]);
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'sessions',
+      'delete',
+      'session-1',
+    ]);
+
+    const previewIndex = requests.findIndex((item) =>
+      item.url.endsWith('/exports/preview'),
+    );
+    const exportIndex = requests.findIndex((item) =>
+      item.url.endsWith('/exports'),
+    );
+    expect(previewIndex).toBeGreaterThanOrEqual(0);
+    expect(exportIndex).toBeGreaterThan(previewIndex);
+    const exportBody = JSON.parse(
+      String(requests[exportIndex]?.init?.body),
+    ) as Record<string, unknown>;
+    expect(exportBody).toMatchObject({
+      destination,
+      expectedManifestHash: manifestHash,
+      passphrase,
+      profile: {
+        kind: 'share-safe',
+        restorePointers: ['/payload/safeFalsePositive'],
+      },
+    });
+    expect(
+      requests.every((item) =>
+        JSON.stringify(item.init?.headers).includes(token),
+      ),
+    ).toBe(true);
+    expect(outputs.join('\n')).not.toContain(passphrase);
+    expect(outputs).toContain(`Encrypted bundle written to ${destination}.`);
+    expect(outputs).toContain(
+      'Imported session session-1 (7 events, 2 artifacts).',
+    );
+    expect(outputs).toContain(
+      'session-1\t2026-01-01T00:00:00.000Z\tcompleted\tProject',
+    );
+    expect(outputs).toContain('Deleted session session-1.');
+  });
+
+  it('does not submit an export when hidden passphrase confirmation differs', async () => {
+    const calls: string[] = [];
+    const responses = ['first secret value', 'different secret value'];
+    const program = createProgram({
+      stateDir: () => '/tmp/vibetrace-cli-mismatch',
+      spawn: () => undefined,
+      waitForReady: async () => ({
+        origin: 'http://127.0.0.1:40000',
+        instanceId: '00000000-0000-4000-8000-000000000002',
+        token: 'e'.repeat(43),
+      }),
+      fetch: (async (url: string | URL | Request) => {
+        calls.push(String(url));
+        return new Response(
+          JSON.stringify({
+            preview: { manifestHash: 'f'.repeat(64), manifest: {} },
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch,
+      readSecret: async () => responses.shift() ?? '',
+      output: () => undefined,
+    });
+    await expect(
+      program.parseAsync([
+        'node',
+        'vibetrace',
+        'export',
+        'session-1',
+        '--profile',
+        'metadata-only',
+      ]),
+    ).rejects.toThrow('do not match');
+    expect(calls.filter((url) => url.endsWith('/exports'))).toHaveLength(0);
+  });
 });

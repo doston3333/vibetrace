@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -13,6 +13,7 @@ import {
   type CodexDoctorReport,
   type HookChangeResult,
 } from '@vibetrace/adapter-codex';
+import { ExportProfileSchema, type ExportProfile } from '@vibetrace/bundle';
 import {
   readDescriptor,
   recoverStaleState,
@@ -28,6 +29,7 @@ export interface CliDependencies {
   readonly output?: (line: string) => void;
   readonly fetch?: typeof fetch;
   readonly readStdin?: (maxBytes: number) => Promise<string | undefined>;
+  readonly readSecret?: (prompt: string) => Promise<string>;
   readonly collectCodexHook?: (text: string) => Promise<boolean>;
   readonly installCodexHooks?: (options: {
     readonly dryRun?: boolean;
@@ -42,6 +44,70 @@ export interface CliDependencies {
   ) => Promise<
     { origin: string; instanceId: string; token: string } | undefined
   >;
+}
+
+async function readHiddenSecret(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY)
+    throw new Error('A terminal is required to read the bundle passphrase.');
+  process.stdout.write(prompt);
+  const input = process.stdin;
+  const wasRaw = input.isRaw;
+  input.setRawMode(true);
+  input.resume();
+  input.setEncoding('utf8');
+  return new Promise<string>((resolveSecret, reject) => {
+    let value = '';
+    const finish = (error?: Error): void => {
+      input.off('data', onData);
+      input.setRawMode(Boolean(wasRaw));
+      input.pause();
+      process.stdout.write('\n');
+      if (error) reject(error);
+      else resolveSecret(value);
+    };
+    const onData = (chunk: string | Buffer): void => {
+      const text = String(chunk);
+      for (const character of text) {
+        if (character === '\r' || character === '\n') {
+          finish();
+          return;
+        }
+        if (character === '\u0003' || character === '\u0004') {
+          finish(new Error('Passphrase entry cancelled.'));
+          return;
+        }
+        if (character === '\u007f' || character === '\b') {
+          value = [...value].slice(0, -1).join('');
+          continue;
+        }
+        if (character >= ' ') value += character;
+      }
+    };
+    input.on('data', onData);
+  });
+}
+
+function exportProfile(
+  value: string,
+  restores: readonly string[],
+): ExportProfile {
+  const profile =
+    value === 'metadata-only'
+      ? { kind: 'metadata-only' as const }
+      : value === 'share-safe'
+        ? { kind: 'share-safe' as const, restorePointers: [...restores] }
+        : value.startsWith('custom:') && value.length > 'custom:'.length
+          ? {
+              kind: 'custom' as const,
+              id: value.slice('custom:'.length),
+              restorePointers: [...restores],
+            }
+          : undefined;
+  if (!profile)
+    throw new Error(
+      'Profile must be metadata-only, share-safe, or custom:<id>.',
+    );
+  return ExportProfileSchema.parse(profile);
 }
 
 async function readBoundedStdin(maxBytes: number): Promise<string | undefined> {
@@ -159,6 +225,32 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
   const ready =
     dependencies.waitForReady ??
     ((directory: string) => waitForReady(directory, request));
+  const secret = dependencies.readSecret ?? readHiddenSecret;
+  const api = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
+    const directory = stateDir();
+    await start(directory, spawnDaemon, request);
+    const running = await ready(directory);
+    if (!running) throw new Error('Daemon did not become ready.');
+    const response = await request(`${running.origin}/api/v1${path}`, {
+      ...init,
+      headers: {
+        authorization: `Bearer ${running.token}`,
+        ...(init.body ? { 'content-type': 'application/json' } : {}),
+        ...init.headers,
+      },
+    });
+    if (!response.ok) {
+      const failure = (await response.json().catch(() => ({}))) as {
+        code?: unknown;
+      };
+      throw new Error(
+        `VibeTrace request failed: ${typeof failure.code === 'string' ? failure.code : response.status}.`,
+      );
+    }
+    return response.status === 204
+      ? (undefined as T)
+      : ((await response.json()) as T);
+  };
   const program = new Command()
     .name('vibetrace')
     .description('VibeTrace local forensic debugger.')
@@ -223,6 +315,134 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       );
       if (!handoff.ok) throw new Error('Could not prepare browser handoff.');
       openBrowser(`${running.origin}/`);
+    });
+
+  const sessions = program
+    .command('sessions')
+    .description('List, inspect, or delete captured sessions.');
+  sessions
+    .command('list')
+    .description('List captured sessions.')
+    .option('--json', 'Print stable JSON.')
+    .action(async (options: { json?: boolean }) => {
+      const result = await api<{
+        sessions: readonly {
+          id: string;
+          startedAt: string;
+          status: string;
+          title?: string;
+          displayName: string;
+        }[];
+      }>('/sessions');
+      if (options.json) output(JSON.stringify(result));
+      else if (result.sessions.length === 0) output('No sessions.');
+      else
+        for (const session of result.sessions)
+          output(
+            [
+              session.id,
+              session.startedAt,
+              session.status,
+              session.title ?? session.displayName,
+            ].join('\t'),
+          );
+    });
+  sessions
+    .command('show <session>')
+    .description('Show one captured session.')
+    .action(async (session: string) => {
+      const result = await api<{ session: unknown }>(
+        `/sessions/${encodeURIComponent(session)}`,
+      );
+      output(JSON.stringify(result.session, undefined, 2));
+    });
+  sessions
+    .command('delete <session>')
+    .description('Tombstone one captured session while retaining raw evidence.')
+    .action(async (session: string) => {
+      await api<void>(`/sessions/${encodeURIComponent(session)}`, {
+        method: 'DELETE',
+      });
+      output(`Deleted session ${session}.`);
+    });
+
+  program
+    .command('export <session>')
+    .description('Preview, scrub, and encrypt one portable session bundle.')
+    .requiredOption(
+      '--profile <profile>',
+      'metadata-only, share-safe, or custom:<id>',
+    )
+    .option('-o, --output <path>', 'Output .vibetrace.age path.')
+    .option(
+      '--restore <pointer...>',
+      'Restore JSON pointers only in this derived export view.',
+      [],
+    )
+    .action(
+      async (
+        session: string,
+        options: {
+          profile: string;
+          output?: string;
+          restore: string[];
+        },
+      ) => {
+        const profile = exportProfile(options.profile, options.restore);
+        const destination = resolve(
+          options.output ??
+            `${session.replaceAll(/[^A-Za-z0-9._-]/g, '_')}.vibetrace.age`,
+        );
+        const previewResult = await api<{
+          preview: { manifestHash: string; manifest: unknown };
+        }>('/exports/preview', {
+          method: 'POST',
+          body: JSON.stringify({ sessionId: session, profile }),
+        });
+        output(JSON.stringify(previewResult.preview.manifest, undefined, 2));
+        output(`Manifest SHA-256: ${previewResult.preview.manifestHash}`);
+        const passphrase = await secret('Bundle passphrase: ');
+        const confirmation = await secret('Confirm passphrase: ');
+        if (passphrase !== confirmation)
+          throw new Error('Bundle passphrases do not match.');
+        const result = await api<{
+          bundle: { destination: string; manifestHash: string };
+        }>('/exports', {
+          method: 'POST',
+          body: JSON.stringify({
+            sessionId: session,
+            profile,
+            destination,
+            passphrase,
+            expectedManifestHash: previewResult.preview.manifestHash,
+          }),
+        });
+        output(`Encrypted bundle written to ${result.bundle.destination}.`);
+      },
+    );
+
+  program
+    .command('import <bundle>')
+    .description('Decrypt, validate, and import a portable VibeTrace bundle.')
+    .action(async (bundle: string) => {
+      const source = resolve(bundle);
+      const passphrase = await secret('Bundle passphrase: ');
+      const result = await api<{
+        import: {
+          sessionId: string;
+          imported: boolean;
+          eventCount: number;
+          artifactCount: number;
+        };
+      }>('/imports', {
+        method: 'POST',
+        body: JSON.stringify({ source, passphrase }),
+      });
+      output(
+        result.import.imported
+          ? `Imported session ${result.import.sessionId} (${result.import.eventCount} events, ${result.import.artifactCount} artifacts).`
+          : `Bundle already imported for session ${result.import.sessionId}.`,
+      );
     });
 
   const init = program

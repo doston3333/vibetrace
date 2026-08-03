@@ -297,6 +297,73 @@ describe('encrypted Storage', () => {
     db.close();
   });
 
+  it('resolves export profiles and rolls back nested portable-import work atomically', async () => {
+    const { storage, sessionId } = await setup();
+    storage.createRedactionProfile({
+      id: 'share-team',
+      name: 'Share with team',
+      rules: { base: 'share-safe', artifactDenyIds: ['private-log'] },
+    });
+    expect(storage.getRedactionProfile('share-team')).toMatchObject({
+      id: 'share-team',
+      name: 'Share with team',
+    });
+    expect(storage.getRedactionProfile('Share with team')?.rules).toEqual({
+      base: 'share-safe',
+      artifactDenyIds: ['private-log'],
+    });
+
+    const manifestHash = 'd'.repeat(64);
+    expect(() =>
+      storage.transaction(() => {
+        storage.importEvent({
+          project: { id: 'project', displayName: 'Project' },
+          session: {
+            id: sessionId,
+            projectId: 'project',
+            source: 'test-adapter',
+            sourceSessionId: 'source-session',
+            startedAt: '2026-01-01T00:00:00.000Z',
+            endedAt: '2026-01-01T00:01:00.000Z',
+            status: 'active',
+            captureMode: 'full',
+          },
+          raw: raw(2),
+          event: event(sessionId, 'replaced-during-import', 2),
+          normalizerId: 'normalizer-v1',
+        });
+        storage.recordBundleImport(manifestHash, sessionId);
+        throw new Error('rollback sentinel');
+      }),
+    ).toThrow('rollback sentinel');
+    expect(storage.listEvents({ sessionId })).toEqual([]);
+    expect(storage.getSession(sessionId)?.endedAt).toBeUndefined();
+    expect(storage.hasBundleImport(manifestHash)).toBe(false);
+
+    storage.importEvent({
+      project: { id: 'project', displayName: 'Project' },
+      session: {
+        id: sessionId,
+        projectId: 'project',
+        source: 'test-adapter',
+        sourceSessionId: 'source-session',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        endedAt: '2026-01-01T00:01:00.000Z',
+        status: 'active',
+        captureMode: 'full',
+      },
+      raw: raw(2),
+      event: event(sessionId, 'replaced-during-import', 2),
+      normalizerId: 'normalizer-v1',
+    });
+    expect(storage.getSession(sessionId)?.endedAt).toBe(
+      '2026-01-01T00:01:00.000Z',
+    );
+    storage.recordBundleImport(manifestHash, sessionId);
+    expect(storage.hasBundleImport(manifestHash)).toBe(true);
+    storage.close();
+  });
+
   it('idempotently imports artifacts and rejects every immutable collision', async () => {
     const { storage, sessionId } = await setup();
     const rawId = storage.appendRaw(sessionId, raw(1));

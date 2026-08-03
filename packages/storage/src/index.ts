@@ -60,6 +60,7 @@ export interface SessionInput {
   readonly source: string;
   readonly sourceSessionId: string;
   readonly startedAt: string;
+  readonly endedAt?: string;
   readonly status: string;
   readonly captureMode: string;
   readonly title?: string;
@@ -211,6 +212,10 @@ export interface RedactionProfileInput {
   readonly id: string;
   readonly name: string;
   readonly rules: JsonObject;
+}
+
+export interface StoredRedactionProfile extends RedactionProfileInput {
+  readonly createdAt: string;
 }
 
 /** A deterministic imported identity conflict, safe for spool quarantine. */
@@ -435,6 +440,11 @@ export class Storage {
     this.#root.fill(0);
   }
 
+  /** Run a bounded synchronous unit atomically, including nested repository calls. */
+  transaction<T>(operation: () => T): T {
+    return this.#database.transaction(operation)();
+  }
+
   /** Re-wrap the unchanged root secret under a new local passphrase. */
   async changePassphrase(passphrase: string): Promise<void> {
     await writePassphraseEnvelope(this.#stateDir, passphrase, this.#root);
@@ -467,11 +477,12 @@ export class Storage {
     assertText(input.status, 'session.status');
     assertText(input.captureMode, 'session.captureMode');
     assertIso(input.startedAt, 'session.startedAt');
+    if (input.endedAt) assertIso(input.endedAt, 'session.endedAt');
     assertGitObjectId(input.baseCommit, 'session.baseCommit');
     assertGitObjectId(input.finalCommit, 'session.finalCommit');
     this.#database
       .prepare(
-        'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, status, capture_mode, model, source_version, base_commit, final_commit, run_fingerprint_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, ended_at, status, capture_mode, model, source_version, base_commit, final_commit, run_fingerprint_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         input.id,
@@ -480,6 +491,7 @@ export class Storage {
         input.sourceSessionId,
         input.title ?? null,
         input.startedAt,
+        input.endedAt ?? null,
         input.status,
         input.captureMode,
         input.model ?? null,
@@ -494,6 +506,8 @@ export class Storage {
 
   /** Import one raw/canonical pair with its project and session in one transaction. */
   importEvent(input: ImportedEventInput): string {
+    if (input.session.endedAt)
+      assertIso(input.session.endedAt, 'session.endedAt');
     assertGitObjectId(input.session.baseCommit, 'session.baseCommit');
     assertGitObjectId(input.session.finalCommit, 'session.finalCommit');
     const transaction = this.#database.transaction(() => {
@@ -516,7 +530,7 @@ export class Storage {
         throw new Error('Project identity collision.');
       this.#database
         .prepare(
-          'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, status, capture_mode, model, source_version, base_commit, final_commit, run_fingerprint_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, source_session_id) DO NOTHING',
+          'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, ended_at, status, capture_mode, model, source_version, base_commit, final_commit, run_fingerprint_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, source_session_id) DO NOTHING',
         )
         .run(
           input.session.id,
@@ -525,6 +539,7 @@ export class Storage {
           input.session.sourceSessionId,
           input.session.title ?? null,
           input.session.startedAt,
+          input.session.endedAt ?? null,
           input.session.status,
           input.session.captureMode,
           input.session.model ?? null,
@@ -537,13 +552,14 @@ export class Storage {
         );
       const session = this.#database
         .prepare(
-          'SELECT id, project_id, deleted_at, base_commit, final_commit, run_fingerprint_json FROM sessions WHERE source = ? AND source_session_id = ?',
+          'SELECT id, project_id, deleted_at, ended_at, base_commit, final_commit, run_fingerprint_json FROM sessions WHERE source = ? AND source_session_id = ?',
         )
         .get(input.session.source, input.session.sourceSessionId) as
         | {
             id: string;
             project_id: string;
             deleted_at: string | null;
+            ended_at: string | null;
             base_commit: string | null;
             final_commit: string | null;
             run_fingerprint_json: string | null;
@@ -569,12 +585,17 @@ export class Storage {
         ? json(RunFingerprintSchema.parse(input.session.runFingerprint))
         : undefined;
       stable(session.base_commit, input.session.baseCommit);
+      stable(session.ended_at, input.session.endedAt);
       stable(session.run_fingerprint_json, fingerprint);
       stable(session.final_commit, input.session.finalCommit);
       if (session.base_commit === null && input.session.baseCommit)
         this.#database
           .prepare('UPDATE sessions SET base_commit = ? WHERE id = ?')
           .run(input.session.baseCommit, session.id);
+      if (session.ended_at === null && input.session.endedAt)
+        this.#database
+          .prepare('UPDATE sessions SET ended_at = ? WHERE id = ?')
+          .run(input.session.endedAt, session.id);
       if (session.run_fingerprint_json === null && fingerprint)
         this.#database
           .prepare('UPDATE sessions SET run_fingerprint_json = ? WHERE id = ?')
@@ -1386,6 +1407,47 @@ export class Storage {
         json(input.rules),
         this.#clock.now().toISOString(),
       );
+  }
+
+  /** Resolve a custom export profile by immutable ID or human-readable name. */
+  getRedactionProfile(idOrName: string): StoredRedactionProfile | undefined {
+    assertText(idOrName, 'redactionProfile.idOrName');
+    const row = this.#database
+      .prepare(
+        'SELECT id, name, rules_json, created_at FROM redaction_profiles WHERE id = ? OR name = ? LIMIT 1',
+      )
+      .get(idOrName, idOrName) as Row | undefined;
+    return row
+      ? {
+          id: String(row.id),
+          name: String(row.name),
+          rules: fromJson<JsonObject>(row.rules_json),
+          createdAt: String(row.created_at),
+        }
+      : undefined;
+  }
+
+  /** True only after an entire portable bundle metadata transaction committed. */
+  hasBundleImport(manifestHash: string): boolean {
+    if (!/^[a-f0-9]{64}$/.test(manifestHash))
+      throw new Error('Invalid bundle manifest hash.');
+    return Boolean(
+      this.#database
+        .prepare('SELECT 1 FROM bundle_imports WHERE manifest_hash = ?')
+        .get(manifestHash),
+    );
+  }
+
+  /** Record the idempotency marker inside the same transaction as imported data. */
+  recordBundleImport(manifestHash: string, sessionId: string): void {
+    if (!/^[a-f0-9]{64}$/.test(manifestHash))
+      throw new Error('Invalid bundle manifest hash.');
+    assertText(sessionId, 'bundleImport.sessionId');
+    this.#database
+      .prepare(
+        'INSERT INTO bundle_imports (manifest_hash, session_id, imported_at) VALUES (?, ?, ?)',
+      )
+      .run(manifestHash, sessionId, this.#clock.now().toISOString());
   }
 
   /** Persist blob metadata after a successful encrypted put. */

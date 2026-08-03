@@ -22,6 +22,7 @@ The Fastify API binds only to loopback or a local Unix socket. It requires a ran
 - Trace content is escaped before UI rendering and never executed during import or display.
 - Raw environment-variable values are not persisted by default.
 - Redaction produces a derived export view; it never changes the private raw event or encrypted local original.
+- Portable bundles are always passphrase-encrypted with standard age encryption and contain only the records named by the approved manifest.
 - Capture gaps make unavailable sensitive or non-sensitive data explicit without inventing it.
 
-See [overview](overview.md) for the storage and API flow and [ADR 0005](../decisions/0005-encryption-at-rest.md) for the decision record.
+See [portable encrypted bundles](portable-bundles.md) for the export/import boundary, [overview](overview.md) for the storage and API flow, and [ADR 0005](../decisions/0005-encryption-at-rest.md) for the decision record.

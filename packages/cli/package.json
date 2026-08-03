@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@vibetrace/adapter-codex": "workspace:*",
+    "@vibetrace/bundle": "workspace:*",
     "@vibetrace/daemon": "workspace:*",
     "commander": "15.0.0"
   }

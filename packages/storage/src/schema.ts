@@ -180,6 +180,14 @@ export const redactionProfiles = sqliteTable(
   (table) => [uniqueIndex('redaction_profiles_name').on(table.name)],
 );
 
+export const bundleImports = sqliteTable('bundle_imports', {
+  manifestHash: text('manifest_hash').primaryKey(),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id),
+  importedAt: text('imported_at').notNull(),
+});
+
 export const blobObjects = sqliteTable('blob_objects', {
   address: text('address').primaryKey(),
   keyId: text('key_id').notNull(),

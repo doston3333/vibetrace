@@ -93,6 +93,15 @@ CREATE TABLE finding_reviews (
 );
 `,
   },
+  {
+    id: 4,
+    sql: `
+CREATE TABLE bundle_imports (
+  manifest_hash TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+  imported_at TEXT NOT NULL
+);
+`,
+  },
 ];
 
 /** Apply only migrations not already recorded in the encrypted database. */

@@ -601,7 +601,7 @@ describe('daemon API', () => {
           headers: bearer,
         })
       ).statusCode,
-    ).toBe(501);
+    ).toBe(404);
     expect(
       (
         await daemon.app.inject({
@@ -610,7 +610,135 @@ describe('daemon API', () => {
           headers: bearer,
         })
       ).statusCode,
-    ).toBe(501);
+    ).toBe(404);
+    await daemon.close();
+    storage.close();
+  });
+
+  it('validates authenticated bundle preview, export, and import requests without echoing passphrases', async () => {
+    const { path, storage } = await state();
+    const calls: string[] = [];
+    const manifestHash = 'a'.repeat(64);
+    const daemon = await startDaemon({
+      stateDir: path,
+      storage,
+      bundleOperations: {
+        preview: async (_storage, sessionId, profile) => {
+          calls.push(`preview:${sessionId}:${profile.kind}`);
+          return { manifestHash, manifest: {} as never };
+        },
+        export: async (_storage, options) => {
+          calls.push(
+            `export:${options.sessionId}:${options.passphrase.length > 10}`,
+          );
+          return { manifestHash, manifest: {} as never };
+        },
+        import: async (_storage, options) => {
+          calls.push(
+            `import:${options.source}:${options.passphrase.length > 10}`,
+          );
+          if (options.source.endsWith('collision.vibetrace.age'))
+            throw new Error('Bundle ID collision has different local content.');
+          return {
+            manifestHash,
+            sessionId: 'portable-session',
+            imported: true,
+            eventCount: 3,
+            artifactCount: 1,
+          };
+        },
+      },
+    });
+    const headers = { authorization: `Bearer ${daemon.token}` };
+    const passphrase = 'route-secret-passphrase';
+    const preview = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/exports/preview',
+      headers,
+      payload: {
+        sessionId: 'portable-session',
+        profile: { kind: 'share-safe', restorePointers: [] },
+      },
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({ preview: { manifestHash } });
+
+    expect(
+      (
+        await daemon.app.inject({
+          method: 'POST',
+          url: '/api/v1/exports',
+          headers,
+          payload: {
+            sessionId: 'portable-session',
+            profile: { kind: 'share-safe', restorePointers: [] },
+            destination: 'relative.vibetrace.age',
+            passphrase,
+            expectedManifestHash: manifestHash,
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
+    const destination = join(path, 'portable.vibetrace.age');
+    const exported = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/exports',
+      headers,
+      payload: {
+        sessionId: 'portable-session',
+        profile: { kind: 'share-safe', restorePointers: [] },
+        destination,
+        passphrase,
+        expectedManifestHash: manifestHash,
+      },
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.body).not.toContain(passphrase);
+    expect(exported.json()).toMatchObject({
+      bundle: { destination, manifestHash },
+    });
+
+    const source = join(path, 'portable-source.vibetrace.age');
+    const imported = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/imports',
+      headers,
+      payload: { source, passphrase },
+    });
+    expect(imported.statusCode).toBe(200);
+    expect(imported.body).not.toContain(passphrase);
+    expect(imported.json()).toMatchObject({
+      import: { imported: true, eventCount: 3 },
+    });
+    expect(
+      (
+        await daemon.app.inject({
+          method: 'POST',
+          url: '/api/v1/imports',
+          headers,
+          payload: {
+            source: join(path, 'collision.vibetrace.age'),
+            passphrase,
+          },
+        })
+      ).statusCode,
+    ).toBe(409);
+    expect(
+      (
+        await daemon.app.inject({
+          method: 'POST',
+          url: '/api/v1/imports',
+          headers: { ...headers, origin: 'http://evil.test' },
+          payload: { source, passphrase },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(calls).toEqual([
+      'preview:portable-session:share-safe',
+      'export:portable-session:true',
+      `import:${source}:true`,
+      `import:${join(path, 'collision.vibetrace.age')}:true`,
+    ]);
     await daemon.close();
     storage.close();
   });

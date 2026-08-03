@@ -20,6 +20,16 @@ import { fileURLToPath } from 'node:url';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import fastify, { type FastifyInstance } from 'fastify';
+import {
+  ExportProfileSchema,
+  createBundlePreview,
+  exportBundle,
+  importBundle,
+  type BundleImportResult,
+  type BundlePreview,
+  type ExportBundleOptions,
+  type ImportBundleOptions,
+} from '@vibetrace/bundle';
 import { analyzeAndPersist } from '@vibetrace/diagnostics';
 import { Storage, type StoredNormalizedEvent } from '@vibetrace/storage';
 import { z } from 'zod';
@@ -106,6 +116,26 @@ const findingReviewSchema = z
       value.note !== undefined,
     { message: 'At least one review field is required.' },
   );
+const bundlePassphraseSchema = z.string().min(10).max(1_024);
+const bundlePreviewSchema = z
+  .object({
+    sessionId: sessionIdSchema,
+    profile: ExportProfileSchema,
+  })
+  .strict();
+const bundleExportSchema = bundlePreviewSchema
+  .extend({
+    destination: z.string().min(1).max(32_768),
+    passphrase: bundlePassphraseSchema,
+    expectedManifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+const bundleImportSchema = z
+  .object({
+    source: z.string().min(1).max(32_768),
+    passphrase: bundlePassphraseSchema,
+  })
+  .strict();
 const SAFE_ARTIFACT_MEDIA_TYPES = new Set([
   'application/json',
   'text/csv',
@@ -136,6 +166,24 @@ export interface DaemonOptions {
   readonly clock?: DaemonClock;
   readonly dashboardDir?: string;
   readonly spoolFaults?: SpoolImportOptions;
+  readonly bundleOperations?: BundleOperations;
+}
+
+/** Test seam around CPU-heavy encryption while preserving route validation. */
+export interface BundleOperations {
+  preview(
+    storage: Storage,
+    sessionId: string,
+    profile: ExportBundleOptions['profile'],
+  ): Promise<BundlePreview>;
+  export(
+    storage: Storage,
+    options: ExportBundleOptions,
+  ): Promise<BundlePreview>;
+  import(
+    storage: Storage,
+    options: ImportBundleOptions,
+  ): Promise<BundleImportResult>;
 }
 
 /** Injectable fetch boundary used to verify descriptor checks never leak tokens. */
@@ -201,6 +249,22 @@ function gapCoverageClass(value: unknown): CoverageClass | undefined {
   if (/test|lint|build|typecheck|verification/i.test(value))
     return 'verification';
   return undefined;
+}
+
+function bundleFailure(error: unknown): {
+  readonly status: 400 | 404 | 409;
+  readonly code: string;
+} {
+  const message = error instanceof Error ? error.message : '';
+  if (message === 'Session was not found.')
+    return { status: 404, code: 'NOT_FOUND' };
+  if (message.includes('preview is stale'))
+    return { status: 409, code: 'BUNDLE_PREVIEW_STALE' };
+  if (message.includes('already exists'))
+    return { status: 409, code: 'BUNDLE_DESTINATION_EXISTS' };
+  if (message.includes('collision'))
+    return { status: 409, code: 'BUNDLE_ID_COLLISION' };
+  return { status: 400, code: 'INVALID_BUNDLE_OR_PASSPHRASE' };
 }
 
 /** Derive evidence-only coverage; absence is never inferred as a successful capture. */
@@ -449,6 +513,11 @@ export async function startDaemon(
   try {
     const storage = options.storage ?? (await Storage.open({ stateDir }));
     openedStorage = storage;
+    const bundleOperations: BundleOperations = options.bundleOperations ?? {
+      preview: createBundlePreview,
+      export: exportBundle,
+      import: importBundle,
+    };
     const token = await loadOrCreateToken(stateDir);
     await ensureSpool(spoolPaths(stateDir));
     app = fastify({ logger: false, bodyLimit: 1_048_576 });
@@ -838,17 +907,53 @@ export async function startDaemon(
         ? reply.code(204).send()
         : reply.code(404).send({ code: 'NOT_FOUND' }),
     );
-    app.route({
-      method: ['GET', 'POST'],
-      url: '/api/v1/imports',
-      handler: async (_request, reply) =>
-        reply.code(501).send({ code: 'NOT_AVAILABLE_UNTIL_BUNDLE_SLICE' }),
+    app.post('/api/v1/exports/preview', async (request, reply) => {
+      const parsed = bundlePreviewSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_BUNDLE_REQUEST' });
+      try {
+        return {
+          preview: await bundleOperations.preview(
+            storage,
+            parsed.data.sessionId,
+            parsed.data.profile,
+          ),
+        };
+      } catch (error) {
+        const failure = bundleFailure(error);
+        return reply.code(failure.status).send({ code: failure.code });
+      }
     });
-    app.route({
-      method: ['GET', 'POST'],
-      url: '/api/v1/exports',
-      handler: async (_request, reply) =>
-        reply.code(501).send({ code: 'NOT_AVAILABLE_UNTIL_BUNDLE_SLICE' }),
+    app.post('/api/v1/exports', async (request, reply) => {
+      const parsed = bundleExportSchema.safeParse(request.body);
+      if (!parsed.success || !isAbsolute(parsed.data.destination))
+        return reply.code(400).send({ code: 'INVALID_BUNDLE_REQUEST' });
+      try {
+        const preview = await bundleOperations.export(storage, parsed.data);
+        return {
+          bundle: {
+            destination: parsed.data.destination,
+            manifestHash: preview.manifestHash,
+            manifest: preview.manifest,
+          },
+        };
+      } catch (error) {
+        const failure = bundleFailure(error);
+        return reply.code(failure.status).send({ code: failure.code });
+      }
+    });
+    app.post('/api/v1/imports', async (request, reply) => {
+      const parsed = bundleImportSchema.safeParse(request.body);
+      if (!parsed.success || !isAbsolute(parsed.data.source))
+        return reply.code(400).send({ code: 'INVALID_BUNDLE_REQUEST' });
+      try {
+        return {
+          import: await bundleOperations.import(storage, parsed.data),
+        };
+      } catch (error) {
+        const failure = bundleFailure(error);
+        return reply.code(failure.status).send({ code: failure.code });
+      }
     });
     let shutdownOnce: Promise<void> | undefined;
     app.post('/api/v1/admin/shutdown', async (request, reply) => {
