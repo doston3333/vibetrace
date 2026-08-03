@@ -30,6 +30,15 @@ import {
   type SpoolImportOptions,
 } from './spool.js';
 
+export {
+  SpoolSegmentSchema,
+  ensureSpool,
+  spoolPaths,
+  writeSegment,
+  type SpoolPaths,
+  type SpoolSegment,
+} from './spool.js';
+
 const API_VERSION = 'v1';
 const TOKEN_BYTES = 32;
 const ticketSchema = z

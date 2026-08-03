@@ -2,7 +2,7 @@
 
 VibeTrace is a local-first, open-source forensic debugger and evaluation environment for AI coding sessions.
 
-VT-001 provides the repository foundation: a dashboard placeholder, a CLI placeholder, workspace tooling, and CI. The architecture documents and accepted decisions below define the approved MVP direction; capture, storage, diagnostics, exports, and evaluations are not implemented yet.
+The current MVP foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, and Codex lifecycle-hook capture. Dashboard forensics, diagnostics rules, and portable bundle workflows are built in later roadmap slices.
 
 ## Documentation
 
@@ -28,8 +28,13 @@ VT-001 provides the repository foundation: a dashboard placeholder, a CLI placeh
 
 ## Workspace layout
 
-- `apps/dashboard` — React and Vite dashboard placeholder
-- `packages/cli` — `vibetrace` command-line placeholder
+- `apps/dashboard` — React and Vite forensic dashboard
+- `packages/adapter-codex` — versioned Codex hook, installer, doctor, and transcript adapter
+- `packages/cli` — the `vibetrace` command-line interface
+- `packages/daemon` — authenticated loopback API and crash-safe spool importer
+- `packages/schema` — canonical trace model and stable identifiers
+- `packages/storage` — encrypted SQLCipher-compatible storage and blob layer
+- `packages/test-fixtures` — deterministic trace corpora
 
 ## Commands
 
@@ -44,7 +49,29 @@ pnpm build
 
 ## Local use
 
-Start the dashboard placeholder:
+Preview and install the Codex integration, then approve the exact handler definitions in Codex with `/hooks`:
+
+```bash
+pnpm exec vibetrace init codex --dry-run
+pnpm exec vibetrace init codex
+pnpm exec vibetrace doctor
+```
+
+Captured hooks write directly to the local spool even when the daemon is stopped. Start and open the local dashboard separately:
+
+```bash
+pnpm exec vibetrace start
+pnpm exec vibetrace open
+```
+
+Remove only the exact manifest-owned handlers with:
+
+```bash
+pnpm exec vibetrace uninstall codex --dry-run
+pnpm exec vibetrace uninstall codex
+```
+
+Start the dashboard during development:
 
 ```bash
 pnpm --filter @vibetrace/dashboard dev

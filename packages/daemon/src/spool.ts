@@ -13,7 +13,7 @@ import {
 import { join } from 'node:path';
 
 import { RawSourceEventSchema, TraceEventSchema } from '@vibetrace/schema';
-import { createSessionId } from '@vibetrace/schema';
+import { createSessionId, createTurnId } from '@vibetrace/schema';
 import {
   StorageImportConflictError,
   type ImportedEventInput,
@@ -105,6 +105,29 @@ export const SpoolSegmentSchema = z
         code: 'custom',
         message: 'Adapters must not supply a raw event ID.',
         path: ['event', 'provenance', 'rawEventId'],
+      });
+    if (
+      (value.raw.sourceTurnId === undefined) !==
+      (value.event.turnId === undefined)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Raw and canonical turn identities must appear together.',
+        path: ['event', 'turnId'],
+      });
+    if (
+      value.raw.sourceTurnId !== undefined &&
+      value.event.turnId !==
+        createTurnId(
+          value.raw.adapter,
+          value.raw.sourceSessionId,
+          value.raw.sourceTurnId,
+        )
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Event turn ID is not stable.',
+        path: ['event', 'turnId'],
       });
     if (value.event.sequence < 1)
       ctx.addIssue({

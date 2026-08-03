@@ -70,8 +70,30 @@ importers:
         specifier: 8.2.0
         version: 8.2.0(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.5)
 
+  packages/adapter-codex:
+    dependencies:
+      '@vibetrace/daemon':
+        specifier: workspace:*
+        version: link:../daemon
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      '@vibetrace/storage':
+        specifier: workspace:*
+        version: link:../storage
+
   packages/cli:
     dependencies:
+      '@vibetrace/adapter-codex':
+        specifier: workspace:*
+        version: link:../adapter-codex
       '@vibetrace/daemon':
         specifier: workspace:*
         version: link:../daemon

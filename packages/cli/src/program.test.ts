@@ -26,6 +26,8 @@ describe('createProgram', () => {
     );
     expect(program.helpInformation()).toContain('start');
     expect(program.helpInformation()).toContain('stop');
+    expect(program.helpInformation()).toContain('doctor');
+    expect(program.helpInformation()).not.toContain('hook collect');
   });
 
   it('runs root lifecycle commands through injected process, browser, readiness, and HTTP boundaries', async () => {
@@ -101,5 +103,78 @@ describe('createProgram', () => {
     expect(opened[0]).not.toContain(token);
     expect(opened[0]).not.toContain('b'.repeat(43));
     expect(outputs).toContain('running');
+  });
+
+  it('routes install, uninstall, doctor, and the silent hidden collector', async () => {
+    const outputs: string[] = [];
+    const installCalls: Array<{ dryRun?: boolean }> = [];
+    const uninstallCalls: Array<{ dryRun?: boolean }> = [];
+    const collected: string[] = [];
+    const exitCodes: number[] = [];
+    const program = createProgram({
+      output: (line) => outputs.push(line),
+      readStdin: async () => '{"hook_event_name":"Stop"}',
+      collectCodexHook: async (text) => {
+        collected.push(text);
+        return true;
+      },
+      installCodexHooks: async (options) => {
+        installCalls.push(options);
+        return { changed: true, preview: 'install preview', warnings: [] };
+      },
+      uninstallCodexHooks: async (options) => {
+        uninstallCalls.push(options);
+        return { changed: true, preview: 'uninstall preview', warnings: [] };
+      },
+      doctorCodex: async () => ({
+        ok: false,
+        checkedAt: '2026-08-03T12:00:00.000Z',
+        checks: [
+          {
+            id: 'hook-config',
+            status: 'fail',
+            message: 'missing',
+            remediation: 'run init',
+          },
+        ],
+      }),
+      setExitCode: (code) => exitCodes.push(code),
+    });
+
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'init',
+      'codex',
+      '--dry-run',
+    ]);
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'uninstall',
+      'codex',
+      '--dry-run',
+    ]);
+    await program.parseAsync(['node', 'vibetrace', 'doctor', '--json']);
+    const outputCount = outputs.length;
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'hook',
+      'collect',
+      '--installation',
+      '00000000-0000-4000-8000-000000000000',
+    ]);
+
+    expect(installCalls).toEqual([{ dryRun: true }]);
+    expect(uninstallCalls).toEqual([{ dryRun: true }]);
+    expect(outputs).toContain('install preview');
+    expect(outputs).toContain('uninstall preview');
+    expect(
+      JSON.parse(outputs.find((line) => line.startsWith('{')) as string),
+    ).toMatchObject({ ok: false });
+    expect(exitCodes).toEqual([1]);
+    expect(collected).toEqual(['{"hook_event_name":"Stop"}']);
+    expect(outputs).toHaveLength(outputCount);
   });
 });

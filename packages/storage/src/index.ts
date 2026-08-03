@@ -456,6 +456,40 @@ export class Storage {
         throw new Error('Session identity collision.');
       if (session.deleted_at !== null)
         throw new Error('Cannot append to a deleted session.');
+      if (input.event.type === 'session.completed')
+        this.#database
+          .prepare('UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?')
+          .run('completed', input.event.timestamp, input.session.id);
+      if (input.event.turnId) {
+        if (!input.raw.sourceTurnId)
+          throw new Error('Turn event is missing its source turn identity.');
+        this.#database
+          .prepare(
+            'INSERT INTO turns (id, session_id, source_turn_id, sequence, started_at, status) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING',
+          )
+          .run(
+            input.event.turnId,
+            input.session.id,
+            input.raw.sourceTurnId,
+            input.event.sequence,
+            input.event.timestamp,
+            input.event.type === 'turn.completed' ? 'completed' : 'active',
+          );
+        const turn = this.#database
+          .prepare('SELECT session_id, source_turn_id FROM turns WHERE id = ?')
+          .get(input.event.turnId) as
+          { session_id: string; source_turn_id: string | null } | undefined;
+        if (
+          !turn ||
+          turn.session_id !== input.session.id ||
+          turn.source_turn_id !== input.raw.sourceTurnId
+        )
+          throw new Error('Turn identity collision.');
+        if (input.event.type === 'turn.completed')
+          this.#database
+            .prepare('UPDATE turns SET status = ?, ended_at = ? WHERE id = ?')
+            .run('completed', input.event.timestamp, input.event.turnId);
+      }
       const rawId = this.appendRaw(input.session.id, input.raw);
       if (input.event.sessionId !== input.session.id)
         throw new Error(
