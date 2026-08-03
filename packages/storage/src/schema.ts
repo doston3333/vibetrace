@@ -28,6 +28,7 @@ export const sessions = sqliteTable(
     title: text('title'),
     startedAt: text('started_at').notNull(),
     endedAt: text('ended_at'),
+    deletedAt: text('deleted_at'),
     status: text('status').notNull(),
     captureMode: text('capture_mode').notNull(),
     captureScore: real('capture_score'),

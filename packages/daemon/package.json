@@ -1,7 +1,7 @@
 {
-  "name": "@vibetrace/storage",
+  "name": "@vibetrace/daemon",
   "version": "0.1.0",
-  "description": "Encrypted local SQLite metadata and blob storage for VibeTrace.",
+  "description": "Loopback-only local ingest daemon for VibeTrace.",
   "type": "module",
   "exports": {
     ".": {
@@ -17,13 +17,14 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@napi-rs/keyring": "1.3.0",
+    "@fastify/cookie": "11.1.2",
+    "@fastify/static": "10.1.2",
     "@vibetrace/schema": "workspace:*",
-    "better-sqlite3-multiple-ciphers": "12.11.1",
-    "drizzle-orm": "0.45.2"
+    "@vibetrace/storage": "workspace:*",
+    "fastify": "5.11.2",
+    "zod": "4.3.6"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.3"
   }
 }

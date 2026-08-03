@@ -76,6 +76,13 @@ CREATE TABLE encryption_keys (
 CREATE TRIGGER raw_events_no_update BEFORE UPDATE ON raw_events BEGIN SELECT RAISE(ABORT, 'raw_events are immutable'); END;
 CREATE TRIGGER raw_events_no_delete BEFORE DELETE ON raw_events BEGIN SELECT RAISE(ABORT, 'raw_events are immutable'); END;`,
   },
+  {
+    id: 2,
+    sql: `
+ALTER TABLE sessions ADD COLUMN deleted_at TEXT;
+CREATE INDEX sessions_visible_started_at ON sessions(deleted_at, started_at);
+`,
+  },
 ];
 
 /** Apply only migrations not already recorded in the encrypted database. */

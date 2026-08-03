@@ -201,6 +201,22 @@ describe('encrypted Storage', () => {
     db.close();
   });
 
+  it('tombstones sessions without deleting immutable raw evidence', async () => {
+    const { storage, sessionId, provider, path } = await setup();
+    const rawId = storage.appendRaw(sessionId, raw(1));
+    storage.appendNormalized(event(sessionId, rawId, 1), 'normalizer-v1');
+    expect(storage.deleteSession(sessionId)).toBe(true);
+    expect(storage.getSession(sessionId)).toBeUndefined();
+    expect(storage.listEvents({ sessionId })).toEqual([]);
+    expect(storage.searchEvents(sessionId, 'needle')).toEqual([]);
+    storage.close();
+    const db = await directDatabase(path, provider);
+    expect(
+      db.prepare('SELECT id FROM raw_events WHERE id = ?').get(rawId),
+    ).toMatchObject({ id: rawId });
+    db.close();
+  });
+
   it('canonicalizes raw hashes and rejects source/normalized identity collisions', async () => {
     const { storage, sessionId } = await setup();
     const first = {

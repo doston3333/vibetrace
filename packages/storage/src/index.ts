@@ -136,11 +136,52 @@ export interface AnnotationInput {
   readonly note?: string;
 }
 
+/** A project and session envelope persisted atomically with one imported event. */
+export interface ImportedEventInput {
+  readonly project: ProjectInput;
+  readonly session: SessionInput;
+  readonly raw: RawSourceEvent;
+  readonly event: TraceEvent;
+  readonly normalizerId: string;
+}
+
+/** Safe session metadata for daemon consumers; encrypted paths are never exposed. */
+export interface StoredSession {
+  readonly id: string;
+  readonly projectId: string;
+  readonly displayName: string;
+  readonly source: string;
+  readonly sourceSessionId: string;
+  readonly startedAt: string;
+  readonly status: string;
+  readonly captureMode: string;
+  readonly title?: string;
+  readonly model?: string;
+  readonly sourceVersion?: string;
+}
+
+/** A persisted metadata artifact. */
+export type StoredArtifact = ArtifactInput;
+
+/** A persisted annotation. */
+export type StoredAnnotation = AnnotationInput;
+
+/** A persisted deterministic finding. */
+export type StoredFinding = FindingInput;
+
 /** A user-controlled export redaction profile. */
 export interface RedactionProfileInput {
   readonly id: string;
   readonly name: string;
   readonly rules: JsonObject;
+}
+
+/** A deterministic imported identity conflict, safe for spool quarantine. */
+export class StorageImportConflictError extends Error {
+  constructor() {
+    super('Imported event conflicts with immutable stored identity.');
+    this.name = 'StorageImportConflictError';
+  }
 }
 
 type SqliteDatabase = import('better-sqlite3').Database;
@@ -364,6 +405,150 @@ export class Storage {
       );
   }
 
+  /** Import one raw/canonical pair with its project and session in one transaction. */
+  importEvent(input: ImportedEventInput): string {
+    const transaction = this.#database.transaction(() => {
+      this.#database
+        .prepare(
+          'INSERT INTO projects (id, display_name, root_path_encrypted, path_hash, vcs_remote_hash, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING',
+        )
+        .run(
+          input.project.id,
+          input.project.displayName,
+          input.project.rootPathEncrypted ?? null,
+          input.project.pathHash ?? null,
+          input.project.vcsRemoteHash ?? null,
+          this.#clock.now().toISOString(),
+        );
+      const project = this.#database
+        .prepare('SELECT display_name FROM projects WHERE id = ?')
+        .get(input.project.id) as { display_name: string } | undefined;
+      if (!project || project.display_name !== input.project.displayName)
+        throw new Error('Project identity collision.');
+      this.#database
+        .prepare(
+          'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, status, capture_mode, model, source_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, source_session_id) DO NOTHING',
+        )
+        .run(
+          input.session.id,
+          input.session.projectId,
+          input.session.source,
+          input.session.sourceSessionId,
+          input.session.title ?? null,
+          input.session.startedAt,
+          input.session.status,
+          input.session.captureMode,
+          input.session.model ?? null,
+          input.session.sourceVersion ?? null,
+        );
+      const session = this.#database
+        .prepare(
+          'SELECT id, project_id, deleted_at FROM sessions WHERE source = ? AND source_session_id = ?',
+        )
+        .get(input.session.source, input.session.sourceSessionId) as
+        | { id: string; project_id: string; deleted_at: string | null }
+        | undefined;
+      if (
+        !session ||
+        session.id !== input.session.id ||
+        session.project_id !== input.session.projectId
+      )
+        throw new Error('Session identity collision.');
+      if (session.deleted_at !== null)
+        throw new Error('Cannot append to a deleted session.');
+      const rawId = this.appendRaw(input.session.id, input.raw);
+      if (input.event.sessionId !== input.session.id)
+        throw new Error(
+          'Normalized event session does not match import session.',
+        );
+      this.appendNormalized(
+        {
+          ...input.event,
+          provenance: { ...input.event.provenance, rawEventId: rawId },
+        },
+        input.normalizerId,
+      );
+      return rawId;
+    });
+    try {
+      return transaction();
+    } catch (error) {
+      if (error instanceof StorageImportConflictError) throw error;
+      if (
+        error instanceof Error &&
+        /collision|belongs to a different session|Cannot append to a deleted session|Session identity/.test(
+          error.message,
+        )
+      )
+        throw new StorageImportConflictError();
+      throw error;
+    }
+  }
+
+  /** List non-deleted sessions without exposing encrypted project paths. */
+  listSessions(includeDeleted = false, limit = 500): readonly StoredSession[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10_000)
+      throw new Error('session limit must be between 1 and 10000.');
+    const rows = this.#database
+      .prepare(
+        `SELECT s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.status, s.capture_mode, s.title, s.model, s.source_version FROM sessions s JOIN projects p ON p.id = s.project_id ${includeDeleted ? '' : 'WHERE s.deleted_at IS NULL'} ORDER BY s.started_at DESC LIMIT ?`,
+      )
+      .all(limit) as Row[];
+    return rows.map((row) => ({
+      id: String(row.id),
+      projectId: String(row.project_id),
+      displayName: String(row.display_name),
+      source: String(row.source),
+      sourceSessionId: String(row.source_session_id),
+      startedAt: String(row.started_at),
+      status: String(row.status),
+      captureMode: String(row.capture_mode),
+      ...(row.title ? { title: String(row.title) } : {}),
+      ...(row.model ? { model: String(row.model) } : {}),
+      ...(row.source_version
+        ? { sourceVersion: String(row.source_version) }
+        : {}),
+    }));
+  }
+
+  /** Find one non-deleted session. */
+  getSession(id: string, includeDeleted = false): StoredSession | undefined {
+    assertText(id, 'session.id');
+    const row = this.#database
+      .prepare(
+        `SELECT s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.status, s.capture_mode, s.title, s.model, s.source_version FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ? ${includeDeleted ? '' : 'AND s.deleted_at IS NULL'}`,
+      )
+      .get(id) as Row | undefined;
+    if (!row) return undefined;
+    return {
+      id: String(row.id),
+      projectId: String(row.project_id),
+      displayName: String(row.display_name),
+      source: String(row.source),
+      sourceSessionId: String(row.source_session_id),
+      startedAt: String(row.started_at),
+      status: String(row.status),
+      captureMode: String(row.capture_mode),
+      ...(row.title ? { title: String(row.title) } : {}),
+      ...(row.model ? { model: String(row.model) } : {}),
+      ...(row.source_version
+        ? { sourceVersion: String(row.source_version) }
+        : {}),
+    };
+  }
+
+  /** Hide a session while preserving its immutable raw and normalized evidence. */
+  deleteSession(id: string): boolean {
+    assertText(id, 'session.id');
+    return (
+      this.#database
+        .prepare(
+          'UPDATE sessions SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL',
+        )
+        .run(this.#clock.now().toISOString(), id).changes > 0
+    );
+  }
+
   /** Append a turn. */
   createTurn(input: TurnInput): void {
     assertText(input.id, 'turn.id');
@@ -503,6 +688,7 @@ export class Storage {
   /** List canonical events by session and optional type, tool, and time bounds. */
   listEvents(filter: EventFilter): readonly StoredNormalizedEvent[] {
     assertText(filter.sessionId, 'filter.sessionId');
+    if (!this.getSession(filter.sessionId)) return [];
     const conditions = ['session_id = ?'];
     const values: unknown[] = [filter.sessionId];
     if (filter.type) {
@@ -551,6 +737,7 @@ export class Storage {
     limit = 100,
   ): readonly StoredNormalizedEvent[] {
     assertText(sessionId, 'sessionId');
+    if (!this.getSession(sessionId)) return [];
     assertText(query, 'query');
     if (query.trim().length === 0) throw new Error('query must not be blank.');
     if (!Number.isInteger(limit) || limit < 1 || limit > 1_000)
@@ -597,6 +784,30 @@ export class Storage {
         input.blobHash ?? null,
         json(input.metadata),
       );
+  }
+
+  /** List metadata artifacts attached to a visible session. */
+  listArtifacts(sessionId: string): readonly StoredArtifact[] {
+    if (!this.getSession(sessionId)) return [];
+    return (
+      this.#database
+        .prepare(
+          'SELECT id, session_id, event_id, kind, path_encrypted, path_hash, content_hash, blob_hash, metadata_json FROM artifacts WHERE session_id = ? ORDER BY id ASC',
+        )
+        .all(sessionId) as Row[]
+    ).map((row) => ({
+      id: String(row.id),
+      sessionId: String(row.session_id),
+      kind: String(row.kind),
+      metadata: fromJson<JsonObject>(row.metadata_json),
+      ...(row.event_id ? { eventId: String(row.event_id) } : {}),
+      ...(row.path_encrypted
+        ? { pathEncrypted: String(row.path_encrypted) }
+        : {}),
+      ...(row.path_hash ? { pathHash: String(row.path_hash) } : {}),
+      ...(row.content_hash ? { contentHash: String(row.content_hash) } : {}),
+      ...(row.blob_hash ? { blobHash: String(row.blob_hash) } : {}),
+    }));
   }
 
   /** Store a finding after atomically validating every evidence event ID. */
@@ -654,6 +865,36 @@ export class Storage {
     transaction();
   }
 
+  /** List findings for a visible session. */
+  listFindings(sessionId: string): readonly StoredFinding[] {
+    if (!this.getSession(sessionId)) return [];
+    return (
+      this.#database
+        .prepare(
+          'SELECT id, session_id, rule_id, detector_version, category, severity, confidence, title, explanation, recommendation, evidence_event_ids_json, counterevidence_event_ids_json, state FROM findings WHERE session_id = ? ORDER BY id ASC',
+        )
+        .all(sessionId) as Row[]
+    ).map((row) => ({
+      id: String(row.id),
+      sessionId: String(row.session_id),
+      ruleId: String(row.rule_id),
+      detectorVersion: String(row.detector_version),
+      category: String(row.category),
+      severity: String(row.severity),
+      title: String(row.title),
+      explanation: String(row.explanation),
+      recommendation: String(row.recommendation),
+      evidenceEventIds: fromJson<string[]>(row.evidence_event_ids_json),
+      counterevidenceEventIds: fromJson<string[]>(
+        row.counterevidence_event_ids_json,
+      ),
+      state: String(row.state),
+      ...(row.confidence === null
+        ? {}
+        : { confidence: Number(row.confidence) }),
+    }));
+  }
+
   /** Store a human annotation. */
   createAnnotation(input: AnnotationInput): void {
     assertText(input.id, 'annotation.id');
@@ -672,6 +913,62 @@ export class Storage {
         input.note ?? null,
         input.createdAt,
       );
+  }
+
+  /** List annotations, optionally narrowed to one target. */
+  listAnnotations(
+    targetType?: string,
+    targetId?: string,
+  ): readonly StoredAnnotation[] {
+    const conditions: string[] = [];
+    const values: string[] = [];
+    if (targetType) {
+      conditions.push('target_type = ?');
+      values.push(targetType);
+    }
+    if (targetId) {
+      conditions.push('target_id = ?');
+      values.push(targetId);
+    }
+    const suffix = conditions.length
+      ? ` WHERE ${conditions.join(' AND ')}`
+      : '';
+    return (
+      this.#database
+        .prepare(
+          `SELECT id, target_type, target_id, label, note, created_at FROM annotations${suffix} ORDER BY created_at ASC`,
+        )
+        .all(...values) as Row[]
+    ).map((row) => ({
+      id: String(row.id),
+      targetType: String(row.target_type),
+      targetId: String(row.target_id),
+      createdAt: String(row.created_at),
+      ...(row.label ? { label: String(row.label) } : {}),
+      ...(row.note ? { note: String(row.note) } : {}),
+    }));
+  }
+
+  /** Replace the mutable user fields of one annotation. */
+  updateAnnotation(
+    id: string,
+    input: Pick<AnnotationInput, 'label' | 'note'>,
+  ): boolean {
+    assertText(id, 'annotation.id');
+    return (
+      this.#database
+        .prepare('UPDATE annotations SET label = ?, note = ? WHERE id = ?')
+        .run(input.label ?? null, input.note ?? null, id).changes > 0
+    );
+  }
+
+  /** Delete a user annotation; immutable source events are unaffected. */
+  deleteAnnotation(id: string): boolean {
+    assertText(id, 'annotation.id');
+    return (
+      this.#database.prepare('DELETE FROM annotations WHERE id = ?').run(id)
+        .changes > 0
+    );
   }
 
   /** Store an export-only redaction profile without touching raw originals. */

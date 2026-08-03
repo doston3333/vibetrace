@@ -4,7 +4,11 @@
   "description": "Versioned canonical trace schemas for VibeTrace.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
     "lint": "eslint src",
