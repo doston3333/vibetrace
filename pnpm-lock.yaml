@@ -75,6 +75,9 @@ importers:
       '@vibetrace/daemon':
         specifier: workspace:*
         version: link:../daemon
+      '@vibetrace/enrichment':
+        specifier: workspace:*
+        version: link:../enrichment
       '@vibetrace/schema':
         specifier: workspace:*
         version: link:../schema
@@ -121,6 +124,16 @@ importers:
       zod:
         specifier: 4.3.6
         version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
+  packages/enrichment:
+    dependencies:
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
     devDependencies:
       '@types/node':
         specifier: 24.13.3

@@ -23,6 +23,7 @@ import {
   type SpoolSegment,
 } from '@vibetrace/daemon';
 import {
+  GitObjectIdSchema,
   SCHEMA_VERSION,
   TraceEventSchema,
   createEventId,
@@ -34,6 +35,17 @@ import {
   type TraceEvent,
 } from '@vibetrace/schema';
 import { z } from 'zod';
+import {
+  captureRepositoryState,
+  classifyCommand,
+  createRunFingerprint,
+  hashFingerprintFiles,
+  parseVerification,
+  type CaptureRepositoryOptions,
+  type FingerprintFileHashes,
+  type RepositorySnapshot,
+} from '@vibetrace/enrichment';
+import { type RunFingerprint } from '@vibetrace/schema';
 
 const execFile = promisify(execFileCallback);
 const ADAPTER_ID = 'codex-hooks';
@@ -218,6 +230,378 @@ export function parseCodexHook(input: unknown): CodexHookInput {
   return hookSchema.parse(input);
 }
 
+/** Observable command details extracted from a hook; this never executes the command. */
+export interface ObservedCommandFact {
+  readonly command: string;
+  readonly category: ReturnType<typeof classifyCommand>;
+  readonly output?: string;
+  readonly exitCode?: number;
+  readonly durationMs?: number;
+}
+
+/** Extract bounded command facts from validated PreToolUse/PostToolUse envelopes. */
+export function extractObservedCommand(
+  hook: CodexHookInput,
+): ObservedCommandFact | undefined {
+  if (
+    hook.hook_event_name !== 'PreToolUse' &&
+    hook.hook_event_name !== 'PostToolUse'
+  )
+    return undefined;
+  const input = hook.tool_input;
+  if (!input || typeof input !== 'object' || Array.isArray(input))
+    return undefined;
+  const object = input as JsonObject;
+  const candidate = object.cmd ?? object.command;
+  const command =
+    typeof candidate === 'string'
+      ? candidate
+      : Array.isArray(candidate) &&
+          candidate.every((part) => typeof part === 'string')
+        ? candidate.join(' ')
+        : undefined;
+  if (!command) return undefined;
+  if (hook.hook_event_name === 'PreToolUse')
+    return { command, category: classifyCommand(command) };
+  const response = hook.tool_response;
+  const data =
+    response && typeof response === 'object' && !Array.isArray(response)
+      ? (response as JsonObject)
+      : {};
+  const output =
+    typeof response === 'string'
+      ? response
+      : ['output', 'stdout', 'stderr']
+          .flatMap((key) => (typeof data[key] === 'string' ? [data[key]] : []))
+          .join('\n');
+  const exit = data.exit_code ?? data.exitCode ?? data.status;
+  const duration = data.duration_ms ?? data.durationMs;
+  return {
+    command,
+    category: classifyCommand(command),
+    ...(output ? { output: output.slice(0, MAX_HOOK_BYTES) } : {}),
+    ...(typeof exit === 'number' &&
+    Number.isFinite(exit) &&
+    Number.isInteger(exit)
+      ? { exitCode: exit }
+      : {}),
+    ...(typeof duration === 'number' &&
+    Number.isFinite(duration) &&
+    duration >= 0
+      ? { durationMs: duration }
+      : {}),
+  };
+}
+
+/** Derive command child segments while retaining the original hook segment unchanged. */
+export function deriveCodexCommandSegments(
+  hook: CodexHookInput,
+  parent: SpoolSegment,
+): readonly SpoolSegment[] {
+  const fact = extractObservedCommand(hook);
+  if (!fact) return [];
+  const make = (
+    type: EventType,
+    payload: JsonObject,
+    index: number,
+    status?: TraceEvent['status'],
+    artifacts?: SpoolSegment['artifacts'],
+  ): SpoolSegment => {
+    const sourceEventId = `${parent.raw.sourceEventId}:command:${index}`;
+    const sequence = parent.event.sequence + index;
+    const event = TraceEventSchema.parse({
+      ...parent.event,
+      sourceEventId,
+      id: createEventId({
+        adapter: ADAPTER_ID,
+        sourceVersion: parent.raw.sourceVersion,
+        sourceSessionId: parent.raw.sourceSessionId,
+        sourceEventId,
+        sourceSequence: sequence,
+        type,
+      }),
+      parentEventId: parent.event.id,
+      sequence,
+      type,
+      source: 'tool',
+      ...(status ? { status } : {}),
+      payload,
+      rawPayload: parent.event.rawPayload,
+    });
+    return SpoolSegmentSchema.parse({
+      ...parent,
+      raw: { ...parent.raw, sourceEventId },
+      event,
+      ...(artifacts ? { artifacts } : {}),
+    });
+  };
+  if (hook.hook_event_name === 'PreToolUse')
+    return [
+      make(
+        'command.started',
+        { command: fact.command, category: fact.category },
+        1,
+        'running',
+      ),
+    ];
+  if (fact.exitCode === undefined)
+    return [
+      make(
+        'capture.gap',
+        {
+          dataClass: 'commands',
+          state: 'unknown',
+          reason: 'Command exit status was not exposed.',
+          affectedEventTypes: ['command.completed'],
+        },
+        1,
+      ),
+    ];
+  const completed = make(
+    'command.completed',
+    {
+      command: fact.command,
+      category: fact.category,
+      exitCode: fact.exitCode,
+      ...(fact.durationMs === undefined ? {} : { durationMs: fact.durationMs }),
+    },
+    1,
+    fact.exitCode === 0 ? 'completed' : 'failed',
+  );
+  const verification = parseVerification(
+    fact.command,
+    fact.exitCode,
+    fact.output ?? '',
+    fact.durationMs,
+  );
+  if (!verification) return [completed];
+  const verificationSourceId = `${parent.raw.sourceEventId}:command:2`;
+  const verificationEventId = createEventId({
+    adapter: ADAPTER_ID,
+    sourceVersion: parent.raw.sourceVersion,
+    sourceSessionId: parent.raw.sourceSessionId,
+    sourceEventId: verificationSourceId,
+    sourceSequence: parent.event.sequence + 2,
+    type: `${verification.kind}.completed` as EventType,
+  });
+  const artifactId = fact.output
+    ? createEventId({
+        adapter: ADAPTER_ID,
+        sourceVersion: parent.raw.sourceVersion,
+        sourceSessionId: parent.raw.sourceSessionId,
+        sourceEventId: `${verificationSourceId}:output`,
+        sourceSequence: parent.event.sequence + 2,
+        type: 'command.completed',
+      })
+    : undefined;
+  return [
+    completed,
+    make(
+      `${verification.kind}.completed` as EventType,
+      {
+        command: fact.command,
+        category: verification.kind,
+        kind: verification.kind,
+        success: verification.success,
+        exitCode: fact.exitCode,
+        summary: verification.summary,
+        ...(artifactId ? { rawOutputArtifactId: artifactId } : {}),
+        ...(verification.framework
+          ? { framework: verification.framework }
+          : {}),
+        ...(verification.durationMs === undefined
+          ? {}
+          : { durationMs: verification.durationMs }),
+      },
+      2,
+      verification.success ? 'completed' : 'failed',
+      artifactId && fact.output
+        ? [
+            {
+              id: artifactId,
+              kind: 'verification-output',
+              eventId: verificationEventId,
+              content: fact.output,
+              contentHash: hashText(fact.output),
+              mediaType: 'text/plain',
+              metadata: { summary: verification.summary },
+            },
+          ]
+        : undefined,
+    ),
+  ];
+}
+
+/** Repository children reserve offsets 100+ so command children at 1–2 never collide. */
+export function deriveCodexRepositorySegments(
+  parent: SpoolSegment,
+  snapshot: RepositorySnapshot,
+  fingerprint?: RunFingerprint,
+): readonly SpoolSegment[] {
+  const make = (
+    type: EventType,
+    payload: JsonObject,
+    offset: number,
+    source: TraceEvent['source'],
+    parentEventId: string,
+    session: SpoolSegment['session'],
+    artifacts?: SpoolSegment['artifacts'],
+  ): SpoolSegment => {
+    const sourceEventId = `${parent.raw.sourceEventId}:repository:${offset}`;
+    const sequence = parent.event.sequence + offset;
+    const event = TraceEventSchema.parse({
+      ...parent.event,
+      id: createEventId({
+        adapter: ADAPTER_ID,
+        sourceVersion: parent.raw.sourceVersion,
+        sourceSessionId: parent.raw.sourceSessionId,
+        sourceEventId,
+        sourceSequence: sequence,
+        type,
+      }),
+      sourceEventId,
+      parentEventId,
+      sequence,
+      source,
+      type,
+      payload,
+    });
+    return SpoolSegmentSchema.parse({
+      ...parent,
+      session,
+      raw: { ...parent.raw, sourceEventId },
+      event,
+      ...(artifacts ? { artifacts } : {}),
+    });
+  };
+  if (snapshot.kind === 'gap')
+    return [
+      make(
+        'capture.gap',
+        {
+          dataClass: 'repositoryState',
+          state: 'unknown',
+          reason: snapshot.reason,
+          affectedEventTypes: ['git.snapshot', 'file.changed'],
+        },
+        100,
+        'vcs',
+        parent.event.id,
+        snapshot.phase === 'baseline' && fingerprint
+          ? {
+              ...parent.session,
+              runFingerprint: fingerprint,
+            }
+          : parent.session,
+      ),
+    ];
+  const sessionBase = Object.fromEntries(
+    Object.entries(parent.session).filter(
+      ([key]) => !['baseCommit', 'finalCommit', 'runFingerprint'].includes(key),
+    ),
+  ) as Omit<
+    SpoolSegment['session'],
+    'baseCommit' | 'finalCommit' | 'runFingerprint'
+  >;
+  const session = {
+    ...sessionBase,
+    ...(snapshot.phase === 'baseline'
+      ? {
+          baseCommit: snapshot.baseCommit,
+          ...(fingerprint ? { runFingerprint: fingerprint } : {}),
+        }
+      : {}),
+    ...(snapshot.phase === 'final' ? { finalCommit: snapshot.headCommit } : {}),
+  };
+  const snapshotSourceId = `${parent.raw.sourceEventId}:repository:100`;
+  const snapshotEventId = createEventId({
+    adapter: ADAPTER_ID,
+    sourceVersion: parent.raw.sourceVersion,
+    sourceSessionId: parent.raw.sourceSessionId,
+    sourceEventId: snapshotSourceId,
+    sourceSequence: parent.event.sequence + 100,
+    type: 'git.snapshot',
+  });
+  const artifactId = snapshot.cumulativeDiff
+    ? createEventId({
+        adapter: ADAPTER_ID,
+        sourceVersion: parent.raw.sourceVersion,
+        sourceSessionId: parent.raw.sourceSessionId,
+        sourceEventId: `${snapshotSourceId}:diff`,
+        sourceSequence: parent.event.sequence + 100,
+        type: 'git.snapshot',
+      })
+    : undefined;
+  const git = make(
+    'git.snapshot',
+    {
+      phase: snapshot.phase,
+      rootHash: snapshot.rootHash,
+      baseCommit: snapshot.baseCommit,
+      headCommit: snapshot.headCommit,
+      dirtyPatchHash: snapshot.dirtyPatchHash,
+      changedFiles: snapshot.changedFiles.map((file) => ({
+        status: file.status,
+        path: file.path,
+        ...(file.previousPath ? { previousPath: file.previousPath } : {}),
+      })),
+      truncated: snapshot.truncated,
+      ...(artifactId ? { diffArtifactId: artifactId } : {}),
+    },
+    100,
+    'vcs',
+    parent.event.id,
+    session,
+    artifactId
+      ? [
+          {
+            id: artifactId,
+            kind: 'git-diff',
+            eventId: snapshotEventId,
+            content: snapshot.cumulativeDiff,
+            contentHash: hashText(snapshot.cumulativeDiff),
+            mediaType: 'text/plain',
+            metadata: { truncated: snapshot.truncated },
+          },
+        ]
+      : undefined,
+  );
+  const files = [...snapshot.changedFiles]
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((file, index) =>
+      make(
+        'file.changed',
+        {
+          path: file.path,
+          status: file.status,
+          ...(file.previousPath ? { previousPath: file.previousPath } : {}),
+          observation: 'cumulative',
+          repositorySnapshotEventId: git.event.id,
+        },
+        101 + index,
+        'vcs',
+        git.event.id,
+        session,
+      ),
+    );
+  const boundedGap = snapshot.truncated
+    ? make(
+        'capture.gap',
+        {
+          dataClass: 'fileDiffs',
+          state: 'partial',
+          reason: 'repository-capture-bounded',
+          affectedEventTypes: ['git.snapshot', 'file.changed'],
+        },
+        901,
+        'vcs',
+        git.event.id,
+        session,
+      )
+    : undefined;
+  return boundedGap ? [git, ...files, boundedGap] : [git, ...files];
+}
+
 function canonicalJson(value: JsonValue): string {
   if (Array.isArray(value))
     return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
@@ -358,8 +742,8 @@ function sourceIdentity(input: CodexHookInput, receivedAt: string): string {
 
 function sequenceFor(timestamp: string, identity: string): number {
   return (
-    Date.parse(timestamp) * 1000 +
-    (Number.parseInt(hashText(identity).slice(0, 6), 16) % 1000)
+    Date.parse(timestamp) * 2048 +
+    (Number.parseInt(hashText(identity).slice(0, 6), 16) % 1024)
   );
 }
 
@@ -601,6 +985,90 @@ async function durableAtomicWrite(
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;
+  }
+}
+
+/** Opaque, privacy-safe baseline metadata retained between Codex hooks. */
+export interface CodexBaselinePointer {
+  readonly version: 1;
+  readonly baseCommit: string;
+  readonly rootHash: string;
+}
+
+function baselinePointerPath(
+  stateDir: string,
+  sourceSessionId: string,
+): string {
+  const name = createHash('sha256').update(sourceSessionId).digest('hex');
+  return join(stateDir, 'capture', 'codex', `${name}.json`);
+}
+
+function validBaseline(value: unknown): value is CodexBaselinePointer {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 3 &&
+    record.version === 1 &&
+    GitObjectIdSchema.safeParse(record.baseCommit).success &&
+    /^[a-f0-9]{64}$/i.test(String(record.rootHash))
+  );
+}
+
+/** Write an opaque session baseline; the raw session ID and cwd are never persisted. */
+export async function writeCodexBaselinePointer(
+  stateDir: string,
+  sourceSessionId: string,
+  pointer: CodexBaselinePointer,
+): Promise<boolean> {
+  try {
+    if (!sourceSessionId || !validBaseline(pointer)) return false;
+    const parent = dirname(baselinePointerPath(stateDir, sourceSessionId));
+    await safeDirectory(join(stateDir, 'capture'), true);
+    await safeDirectory(parent, true);
+    const path = baselinePointerPath(stateDir, sourceSessionId);
+    try {
+      const existing = await lstat(path);
+      if (!existing.isFile() || existing.isSymbolicLink()) return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+    }
+    await durableAtomicWrite(path, JSON.stringify(pointer));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Read an opaque baseline pointer; unsafe, malformed, or absent data is unavailable. */
+export async function readCodexBaselinePointer(
+  stateDir: string,
+  sourceSessionId: string,
+): Promise<CodexBaselinePointer | undefined> {
+  try {
+    const path = baselinePointerPath(stateDir, sourceSessionId);
+    if (!(await regularFile(path))) return undefined;
+    const metadata = await lstat(path);
+    if (metadata.size > 4096) return undefined;
+    const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+    return validBaseline(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Remove only the exact regular pointer file for this source session. */
+export async function removeCodexBaselinePointer(
+  stateDir: string,
+  sourceSessionId: string,
+): Promise<boolean> {
+  try {
+    const path = baselinePointerPath(stateDir, sourceSessionId);
+    if (!(await regularFile(path))) return false;
+    await rm(path);
+    await syncDirectory(dirname(path));
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1171,6 +1639,162 @@ export interface CollectCodexHookOptions {
   readonly clock?: () => Date;
   readonly sourceVersion?: string;
   readonly enrichTranscript?: boolean;
+  /** Enable bounded repository/fingerprint enrichment when available. */
+  readonly enrichRepository?: boolean;
+  /** Test seam for bounded, argument-only repository inspection. */
+  readonly captureRepository?: typeof captureRepositoryState;
+  /** Test seam for bounded project fingerprint hashing. */
+  readonly hashFingerprint?: typeof hashFingerprintFiles;
+}
+
+const EMPTY_FINGERPRINT_FILES: FingerprintFileHashes = {
+  instructions: [],
+  lockfiles: [],
+  omissions: ['fingerprint-unavailable'],
+};
+
+const APPROVAL_POLICIES = new Set([
+  'default',
+  'acceptEdits',
+  'plan',
+  'dontAsk',
+  'bypassPermissions',
+  'untrusted',
+  'on-failure',
+  'on-request',
+  'never',
+]);
+const SANDBOX_POLICIES = new Set([
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+]);
+const NETWORK_POLICIES = new Set(['restricted', 'enabled', 'disabled']);
+
+function safePolicy(
+  value: JsonValue | undefined,
+  allowed: ReadonlySet<string>,
+): string | undefined {
+  return typeof value === 'string' && allowed.has(value) ? value : undefined;
+}
+
+async function writeRepositoryEnrichment(
+  parsed: CodexHookInput,
+  parent: SpoolSegment,
+  stateDir: string,
+  paths: ReturnType<typeof spoolPaths>,
+  sourceVersion: string,
+  options: CollectCodexHookOptions,
+): Promise<void> {
+  const phase =
+    parsed.hook_event_name === 'SessionStart'
+      ? 'baseline'
+      : parsed.hook_event_name === 'SessionEnd'
+        ? 'final'
+        : parsed.hook_event_name === 'PostToolUse' ||
+            parsed.hook_event_name === 'Stop'
+          ? 'event'
+          : undefined;
+  if (phase === undefined || options.enrichRepository === false) return;
+
+  const pointer =
+    phase === 'baseline'
+      ? undefined
+      : await readCodexBaselinePointer(stateDir, parsed.session_id);
+  const capture = options.captureRepository ?? captureRepositoryState;
+  let snapshot: RepositorySnapshot;
+  try {
+    snapshot = await capture(parsed.cwd, {
+      phase,
+      ...(pointer ? { baseCommit: pointer.baseCommit } : {}),
+    } satisfies CaptureRepositoryOptions);
+  } catch {
+    snapshot = {
+      kind: 'gap',
+      phase,
+      reason: 'git-unavailable-or-timeout',
+      message: 'Repository enrichment failed safely.',
+    };
+  }
+
+  if (
+    pointer &&
+    snapshot.kind === 'snapshot' &&
+    pointer.rootHash !== snapshot.rootHash
+  )
+    snapshot = {
+      kind: 'gap',
+      phase,
+      reason: 'invalid-output',
+      message: 'Repository baseline does not match the current worktree.',
+    };
+
+  if (snapshot.kind === 'snapshot' && snapshot.changedFiles.length > 800) {
+    snapshot = {
+      ...snapshot,
+      changedFiles: snapshot.changedFiles.slice(0, 800),
+      truncated: true,
+    };
+  }
+
+  let fingerprint: RunFingerprint | undefined;
+  if (phase === 'baseline') {
+    let fileHashes = EMPTY_FINGERPRINT_FILES;
+    try {
+      fileHashes = await (options.hashFingerprint ?? hashFingerprintFiles)(
+        parsed.cwd,
+      );
+    } catch {
+      // A fingerprint omission is safer than failing the source hook.
+    }
+    const raw = parsed as JsonObject;
+    const approvalValues = [raw.approval_policy, raw.permission_mode];
+    const approvalPolicy = approvalValues
+      .map((value) => safePolicy(value, APPROVAL_POLICIES))
+      .find((value) => value !== undefined);
+    const sandboxPolicy = safePolicy(raw.sandbox_policy, SANDBOX_POLICIES);
+    const networkPolicy = safePolicy(raw.network_policy, NETWORK_POLICIES);
+    const unrecognizedPolicy = [
+      ...approvalValues.map((value) => [value, APPROVAL_POLICIES] as const),
+      [raw.sandbox_policy, SANDBOX_POLICIES] as const,
+      [raw.network_policy, NETWORK_POLICIES] as const,
+    ].some(
+      ([value, allowed]) =>
+        value !== undefined && safePolicy(value, allowed) === undefined,
+    );
+    const policyNames = [approvalPolicy, sandboxPolicy, networkPolicy]
+      .filter((value): value is string => value !== undefined)
+      .sort();
+    const safeFileHashes = unrecognizedPolicy
+      ? {
+          ...fileHashes,
+          omissions: [...fileHashes.omissions, 'unrecognized-policy'],
+        }
+      : fileHashes;
+    fingerprint = createRunFingerprint({
+      clientSurface: 'cli',
+      fileHashes: safeFileHashes,
+      model: parsed.model,
+      codexVersion: sourceVersion,
+      ...(approvalPolicy ? { approvalPolicy } : {}),
+      ...(sandboxPolicy ? { sandboxPolicy } : {}),
+      ...(networkPolicy ? { networkPolicy } : {}),
+      policyNames,
+      ...(snapshot.kind === 'snapshot' ? { git: snapshot } : {}),
+    });
+  }
+
+  const derived = deriveCodexRepositorySegments(parent, snapshot, fingerprint);
+  for (const segment of derived) await writeSegment(paths, segment);
+
+  if (phase === 'baseline' && snapshot.kind === 'snapshot')
+    await writeCodexBaselinePointer(stateDir, parsed.session_id, {
+      version: 1,
+      baseCommit: snapshot.baseCommit,
+      rootHash: snapshot.rootHash,
+    });
+  if (phase === 'final')
+    await removeCodexBaselinePointer(stateDir, parsed.session_id);
 }
 
 /**
@@ -1182,21 +1806,57 @@ export async function collectCodexHook(
   options: CollectCodexHookOptions = {},
 ): Promise<boolean> {
   if (Buffer.byteLength(text, 'utf8') > MAX_HOOK_BYTES) return false;
+  let parsed: CodexHookInput;
+  let segment: SpoolSegment;
+  let state: string;
+  let sourceVersion: string;
+  let paths: ReturnType<typeof spoolPaths>;
   try {
-    const state = resolveStateDir(options.stateDir);
+    state = resolveStateDir(options.stateDir);
     const manifest = await readCodexInstallManifest(state).catch(
       () => undefined,
     );
-    const sourceVersion = normalizedSourceVersion(
+    sourceVersion = normalizedSourceVersion(
       options.sourceVersion ?? manifest?.codexVersion,
     );
-    const parsed = parseCodexHook(JSON.parse(text));
-    const segment = normalizeCodexHook(parsed, {
+    parsed = parseCodexHook(JSON.parse(text));
+    segment = normalizeCodexHook(parsed, {
       clock: options.clock,
       sourceVersion,
     });
-    const paths = spoolPaths(state);
+    paths = spoolPaths(state);
     await writeSegment(paths, segment);
+  } catch {
+    return false;
+  }
+
+  // Original capture is sealed first. Every following operation is
+  // observational and cannot change Codex hook success semantics.
+  try {
+    if (
+      parsed.hook_event_name === 'PreToolUse' ||
+      parsed.hook_event_name === 'PostToolUse'
+    )
+      for (const derived of deriveCodexCommandSegments(parsed, segment))
+        await writeSegment(paths, derived);
+  } catch {
+    // Deliberately silent: command enrichment is best-effort only.
+  }
+
+  try {
+    await writeRepositoryEnrichment(
+      parsed,
+      segment,
+      state,
+      paths,
+      sourceVersion,
+      options,
+    );
+  } catch {
+    // Repository enrichment is bounded, best-effort evidence.
+  }
+
+  try {
     if (
       parsed.hook_event_name === 'Stop' &&
       segment.event.type === 'message.agent'
@@ -1223,6 +1883,11 @@ export async function collectCodexHook(
           },
         ),
       );
+  } catch {
+    // Turn completion enrichment cannot block Codex.
+  }
+
+  try {
     if (
       options.enrichTranscript !== false &&
       (parsed.hook_event_name === 'Stop' ||
@@ -1238,10 +1903,10 @@ export async function collectCodexHook(
       });
       for (const item of enrichment) await writeSegment(paths, item);
     }
-    return true;
   } catch {
-    return false;
+    // Transcript enrichment is explicitly non-canonical and best effort.
   }
+  return true;
 }
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail';

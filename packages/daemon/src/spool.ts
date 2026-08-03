@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   chmod,
   lstat,
@@ -11,8 +11,14 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
-import { RawSourceEventSchema, TraceEventSchema } from '@vibetrace/schema';
+import {
+  GitObjectIdSchema,
+  RawSourceEventSchema,
+  RunFingerprintSchema,
+  TraceEventSchema,
+} from '@vibetrace/schema';
 import { createSessionId, createTurnId } from '@vibetrace/schema';
 import {
   StorageImportConflictError,
@@ -46,6 +52,20 @@ const sessionSchema = z
     title: z.string().min(1).max(2048).optional(),
     model: z.string().min(1).max(512).optional(),
     sourceVersion: z.string().min(1).max(128).optional(),
+    baseCommit: GitObjectIdSchema.optional(),
+    finalCommit: GitObjectIdSchema.optional(),
+    runFingerprint: RunFingerprintSchema.optional(),
+  })
+  .strict();
+const pendingArtifactSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    kind: z.string().min(1).max(128),
+    eventId: z.string().min(1),
+    content: z.string(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    mediaType: z.string().min(1).max(256).optional(),
+    metadata: z.record(z.string(), z.json()),
   })
   .strict();
 
@@ -58,6 +78,7 @@ export const SpoolSegmentSchema = z
     raw: RawSourceEventSchema,
     event: TraceEventSchema,
     normalizerId: z.string().min(1).max(128),
+    artifacts: z.array(pendingArtifactSchema).max(32).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -135,12 +156,40 @@ export const SpoolSegmentSchema = z
         message: 'Canonical ordering is required.',
         path: ['event'],
       });
+    let artifactBytes = 0;
+    for (const [index, artifact] of (value.artifacts ?? []).entries()) {
+      if (artifact.eventId !== value.event.id)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Artifact event must match segment event.',
+          path: ['artifacts', index, 'eventId'],
+        });
+      const content = Buffer.from(artifact.content);
+      artifactBytes += content.byteLength;
+      if (
+        createHash('sha256').update(content).digest('hex') !==
+        artifact.contentHash
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Artifact content hash is invalid.',
+          path: ['artifacts', index, 'contentHash'],
+        });
+    }
+    if (artifactBytes > MAX_SEGMENT_BYTES)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Artifact content exceeds the segment limit.',
+        path: ['artifacts'],
+      });
   });
 
 export type SpoolSegment = z.infer<typeof SpoolSegmentSchema>;
 
 /** Injectable points used to fault-test persistence boundaries without sleeps. */
 export interface SpoolFaults {
+  readonly afterEventBeforeArtifact?: (path: string) => void | Promise<void>;
+  readonly afterArtifactBeforeArchive?: (path: string) => void | Promise<void>;
   readonly afterCommitBeforeArchive?: (path: string) => void | Promise<void>;
   readonly beforeRename?: (temporary: string) => void | Promise<void>;
 }
@@ -248,6 +297,9 @@ function imported(segment: SpoolSegment): ImportedEventInput {
       title: segment.session.title,
       model: segment.session.model,
       sourceVersion: segment.session.sourceVersion,
+      baseCommit: segment.session.baseCommit,
+      finalCommit: segment.session.finalCommit,
+      runFingerprint: segment.session.runFingerprint,
     },
     raw: segment.raw,
     event: segment.event,
@@ -330,6 +382,30 @@ export async function importSegments(
     }
     try {
       storage.importEvent(imported(input));
+      await options.afterEventBeforeArtifact?.(path);
+      for (const artifact of input.artifacts ?? []) {
+        const content = Buffer.from(artifact.content);
+        if (
+          createHash('sha256').update(content).digest('hex') !==
+          artifact.contentHash
+        )
+          throw new StorageImportConflictError();
+        const blob = await storage.blobs.put(Readable.from(content));
+        storage.recordBlob(blob);
+        storage.importArtifact({
+          id: artifact.id,
+          sessionId: input.event.sessionId,
+          eventId: input.event.id,
+          kind: artifact.kind,
+          contentHash: artifact.contentHash,
+          blobHash: blob.address,
+          metadata: {
+            ...artifact.metadata,
+            ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
+          },
+        });
+      }
+      await options.afterArtifactBeforeArchive?.(path);
       await options.afterCommitBeforeArchive?.(path);
       const archived = join(paths.archive, entry);
       await rename(path, archived);

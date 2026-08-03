@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -168,6 +169,154 @@ describe('sealed spool', () => {
         session: { ...segment().session, source: 'other' },
       }).success,
     ).toBe(false);
+  });
+  it('rejects pending artifact hash and event mismatches before persistence', () => {
+    const input = segment();
+    const content = 'secret';
+    const contentHash = createHash('sha256').update(content).digest('hex');
+    expect(
+      SpoolSegmentSchema.safeParse({
+        ...input,
+        artifacts: [
+          {
+            id: 'artifact-1',
+            kind: 'command-output',
+            eventId: 'other-event',
+            content,
+            contentHash,
+            metadata: {},
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      SpoolSegmentSchema.safeParse({
+        ...input,
+        artifacts: [
+          {
+            id: 'artifact-1',
+            kind: 'command-output',
+            eventId: input.event.id,
+            content,
+            contentHash: '0'.repeat(64),
+            metadata: {},
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      SpoolSegmentSchema.safeParse({
+        ...input,
+        artifacts: Array.from({ length: 33 }, (_, index) => ({
+          id: `artifact-${index}`,
+          kind: 'command-output',
+          eventId: input.event.id,
+          content,
+          contentHash,
+          metadata: {},
+        })),
+      }).success,
+    ).toBe(false);
+  });
+  it('persists a pending artifact once across interruption retries', async () => {
+    const { path, storage } = await state();
+    const input = segment();
+    const content = 'SENTINEL_PENDING_ARTIFACT';
+    await writeSegment(spoolPaths(path), {
+      ...input,
+      artifacts: [
+        {
+          id: 'artifact-output-1',
+          kind: 'command-output',
+          eventId: input.event.id,
+          content,
+          contentHash: createHash('sha256').update(content).digest('hex'),
+          metadata: { summary: 'captured separately' },
+        },
+      ],
+    });
+    await expect(
+      importSpool(storage, path, {
+        afterEventBeforeArtifact: () => {
+          throw new Error('interrupt');
+        },
+      }),
+    ).rejects.toThrow('interrupt');
+    await expect(importSpool(storage, path)).resolves.toMatchObject({
+      imported: 1,
+    });
+    const artifacts = storage.listArtifacts(input.event.sessionId);
+    expect(artifacts).toHaveLength(1);
+    const stream = await storage.blobs.open(artifacts[0]?.blobHash as string);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString()).toBe(content);
+    expect(input.event.payload).not.toMatchObject({ content });
+    await writeSegment(spoolPaths(path), {
+      ...input,
+      artifacts: [
+        {
+          id: 'artifact-output-1',
+          kind: 'command-output',
+          eventId: input.event.id,
+          content,
+          contentHash: createHash('sha256').update(content).digest('hex'),
+          metadata: { summary: 'captured separately' },
+        },
+      ],
+    });
+    await expect(
+      importSpool(storage, path, {
+        afterArtifactBeforeArchive: () => {
+          throw new Error('interrupt after artifact');
+        },
+      }),
+    ).rejects.toThrow('interrupt after artifact');
+    await expect(importSpool(storage, path)).resolves.toMatchObject({
+      imported: 1,
+    });
+    expect(storage.listArtifacts(input.event.sessionId)).toHaveLength(1);
+    storage.close();
+  });
+  it('quarantines artifact ID collisions without changing the original blob', async () => {
+    const { path, storage } = await state();
+    const input = segment();
+    const original = 'ORIGINAL_ARTIFACT_BYTES';
+    const artifact = (content: string) => ({
+      id: 'collision-artifact',
+      kind: 'command-output',
+      eventId: input.event.id,
+      content,
+      contentHash: createHash('sha256').update(content).digest('hex'),
+      metadata: { summary: 'output' },
+    });
+    const spool = spoolPaths(path);
+    await writeSegment(spool, { ...input, artifacts: [artifact(original)] });
+    await importSpool(storage, path);
+    const originalArtifact = storage.listArtifacts(input.event.sessionId)[0];
+    await writeSegment(spool, {
+      ...input,
+      artifacts: [artifact('DIFFERENT_ARTIFACT_BYTES')],
+    });
+    await expect(importSpool(storage, path)).resolves.toMatchObject({
+      quarantined: 1,
+    });
+    expect(storage.listArtifacts(input.event.sessionId)).toEqual([
+      originalArtifact,
+    ]);
+    const stream = await storage.blobs.open(
+      originalArtifact?.blobHash as string,
+    );
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString()).toBe(original);
+    const reason = (await readdir(spool.quarantine)).find((name) =>
+      name.endsWith('.reason'),
+    );
+    expect(
+      await readFile(join(spool.quarantine, reason as string), 'utf8'),
+    ).toBe('IMPORT_CONFLICT\n');
+    storage.close();
   });
   it('only exposes renamed segments and imports a retry exactly once', async () => {
     const { path, storage } = await state();

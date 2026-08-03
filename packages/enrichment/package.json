@@ -1,7 +1,7 @@
 {
-  "name": "@vibetrace/adapter-codex",
+  "name": "@vibetrace/enrichment",
   "version": "0.1.0",
-  "description": "Safe Codex hooks collector and configuration adapter for VibeTrace.",
+  "description": "Deterministic, local repository and command enrichment for VibeTrace.",
   "type": "module",
   "exports": {
     ".": {
@@ -17,13 +17,9 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@vibetrace/daemon": "workspace:*",
-    "@vibetrace/enrichment": "workspace:*",
-    "@vibetrace/schema": "workspace:*",
-    "zod": "4.3.6"
+    "@vibetrace/schema": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "24.13.3",
-    "@vibetrace/storage": "workspace:*"
+    "@types/node": "24.13.3"
   }
 }

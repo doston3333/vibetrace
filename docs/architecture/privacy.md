@@ -8,6 +8,10 @@ The MVP storage design uses SQLCipher for the local SQLite database and encrypte
 
 Keys, browser tickets, and local API tokens must be redacted from logs and diagnostics. Backups and exports require their own explicit encryption and redaction policy; no export is implied by local persistence.
 
+Bounded verification output and repository diffs are buffered from sealed spool segments and written through the encrypted blob-store interface before the segment is checkpointed. Artifact metadata import is idempotent and rejects an identifier collision with different content. Because the filesystem blob store and SQLite cannot share one transaction, a crash between encrypted blob publication and metadata commit can leave an unreachable encrypted blob; retry remains safe and deduplicated.
+
+Repository fingerprints retain content hashes, recognized version or policy enum values, and explicit bounded-capture omissions only. Unknown policy strings are omitted and recorded as such instead of being copied into metadata. Plugin manifests are not available through the Codex hook contract and are recorded as omitted instead of silently appearing complete. File contents, absolute repository paths, source session identifiers, and environment-variable values are excluded. The small cross-hook baseline pointer contains only a canonical full commit ID and repository-root hash, uses an opaque session-derived filename, and is stored with user-only permissions.
+
 ## Local API and browser access
 
 The Fastify API binds only to loopback or a local Unix socket. It requires a random local authentication token. A browser obtains access through an authenticated, short-lived, one-time ticket; the ticket can be redeemed once and is not stored in URLs, logs, or browser persistence.

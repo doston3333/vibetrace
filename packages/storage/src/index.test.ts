@@ -29,11 +29,15 @@ import {
   BlobStore,
   MemoryKeyProvider,
   Storage,
+  StorageImportConflictError,
   type KeyProvider,
 } from './index.js';
 import { readPassphraseEnvelope, writePassphraseEnvelope } from './keys.js';
 
 const directories: string[] = [];
+const BASE_COMMIT = 'a'.repeat(40);
+const FINAL_COMMIT = 'b'.repeat(40);
+const OTHER_COMMIT = 'c'.repeat(40);
 afterEach(async () => {
   await Promise.all(
     directories
@@ -291,6 +295,148 @@ describe('encrypted Storage', () => {
         .get(),
     ).toMatchObject({ count: 1 });
     db.close();
+  });
+
+  it('idempotently imports artifacts and rejects every immutable collision', async () => {
+    const { storage, sessionId } = await setup();
+    const rawId = storage.appendRaw(sessionId, raw(1));
+    const eventId = storage.appendNormalized(
+      event(sessionId, rawId, 1),
+      'normalizer-v1',
+    );
+    const input = {
+      id: 'imported-artifact',
+      sessionId,
+      eventId,
+      kind: 'command-output',
+      contentHash: 'a'.repeat(64),
+      blobHash: 'b'.repeat(64),
+      metadata: { alpha: 1, beta: true },
+    };
+    storage.importArtifact(input);
+    storage.importArtifact({ ...input, metadata: { beta: true, alpha: 1 } });
+    for (const changed of [
+      { contentHash: 'c'.repeat(64) },
+      { blobHash: 'c'.repeat(64) },
+      { metadata: { alpha: 2 } },
+      { sessionId: 'other' },
+      { eventId: 'other' },
+      { kind: 'other' },
+    ])
+      expect(() => storage.importArtifact({ ...input, ...changed })).toThrow(
+        StorageImportConflictError,
+      );
+    expect(storage.listArtifacts(sessionId)).toHaveLength(1);
+    storage.close();
+  });
+
+  it('round-trips session metadata, fills it once, and rejects conflicts', async () => {
+    const { storage, sessionId, path, provider } = await setup();
+    const fingerprint = {
+      source: 'codex' as const,
+      clientSurface: 'cli' as const,
+      instructionHashes: [],
+      lockfileHashes: [],
+      captureOmissions: ['plugin-manifests-unavailable' as const],
+      os: 'test',
+      architecture: 'test',
+      runtimeVersions: { node: '24' },
+    };
+    const input = {
+      project: { id: 'project', displayName: 'Project' },
+      session: {
+        id: sessionId,
+        projectId: 'project',
+        source: 'test-adapter',
+        sourceSessionId: 'source-session',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        status: 'active',
+        captureMode: 'full',
+        baseCommit: BASE_COMMIT,
+        finalCommit: FINAL_COMMIT,
+        runFingerprint: fingerprint,
+      },
+      raw: raw(9),
+      event: event(sessionId, 'ignored', 9),
+      normalizerId: 'normalizer-v1',
+    };
+    storage.importEvent(input);
+    storage.importEvent(input);
+    expect(() =>
+      storage.importEvent({
+        ...input,
+        session: { ...input.session, baseCommit: '--stat' },
+      }),
+    ).toThrow('canonical Git object ID');
+    expect(storage.getSession(sessionId)).toMatchObject({
+      baseCommit: BASE_COMMIT,
+      finalCommit: FINAL_COMMIT,
+      runFingerprint: fingerprint,
+    });
+    for (const session of [
+      { ...input.session, baseCommit: OTHER_COMMIT },
+      { ...input.session, finalCommit: OTHER_COMMIT },
+      { ...input.session, runFingerprint: { ...fingerprint, os: 'other' } },
+    ])
+      expect(() => storage.importEvent({ ...input, session })).toThrow(
+        StorageImportConflictError,
+      );
+    storage.close();
+    const reopened = await Storage.unlock({
+      stateDir: path,
+      keyProvider: provider,
+    });
+    expect(reopened.listSessions()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: sessionId, baseCommit: BASE_COMMIT }),
+      ]),
+    );
+    reopened.close();
+  });
+
+  it('orders tied event sequences deterministically by event ID', async () => {
+    const { storage, sessionId } = await setup();
+    const firstRawId = storage.appendRaw(sessionId, raw(101));
+    const secondRawId = storage.appendRaw(sessionId, raw(102));
+    const tied = [
+      {
+        ...event(sessionId, firstRawId, 42),
+        id: createEventId({
+          adapter: 'test-adapter',
+          sourceSessionId: 'source-session',
+          sourceEventId: 'tie-z',
+          sourceSequence: 42,
+          type: 'tool.completed',
+        }),
+        provenance: {
+          ...event(sessionId, firstRawId, 42).provenance,
+          rawEventId: firstRawId,
+        },
+      },
+      {
+        ...event(sessionId, secondRawId, 42),
+        id: createEventId({
+          adapter: 'test-adapter',
+          sourceSessionId: 'source-session',
+          sourceEventId: 'tie-a',
+          sourceSequence: 42,
+          type: 'tool.completed',
+        }),
+        provenance: {
+          ...event(sessionId, secondRawId, 42).provenance,
+          rawEventId: secondRawId,
+        },
+      },
+    ];
+    for (const item of tied) storage.appendNormalized(item, 'normalizer-v1');
+    const expected = tied.map((item) => item.id).sort();
+    expect(storage.listEvents({ sessionId }).map((item) => item.id)).toEqual(
+      expected,
+    );
+    expect(
+      storage.searchEvents(sessionId, 'needle').map((item) => item.id),
+    ).toEqual(expected);
+    storage.close();
   });
 
   it('rejects findings with missing evidence and accepts existing evidence', async () => {

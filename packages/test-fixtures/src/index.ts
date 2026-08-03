@@ -68,17 +68,21 @@ function scenarioEvent(
     { payload: { path: 'src/example.ts' }, source: 'tool', type: 'file.read' },
     { payload: { toolName: 'exec' }, source: 'tool', type: 'tool.started' },
     {
-      payload: { command: 'pnpm test' },
+      payload: { command: 'pnpm test', category: 'test' },
       source: 'tool',
       type: 'command.started',
     },
     {
-      payload: { command: 'pnpm test', output: 'tests running' },
+      payload: {
+        command: 'pnpm test',
+        category: 'test',
+        output: 'tests running',
+      },
       source: 'tool',
       type: 'command.output',
     },
     {
-      payload: { command: 'pnpm test', exitCode: 0 },
+      payload: { command: 'pnpm test', category: 'test', exitCode: 0 },
       source: 'tool',
       type: 'command.completed',
     },
@@ -88,7 +92,14 @@ function scenarioEvent(
       type: 'file.changed',
     },
     {
-      payload: { command: 'pnpm test', success: true },
+      payload: {
+        command: 'pnpm test',
+        category: 'test',
+        kind: 'test',
+        success: true,
+        exitCode: 0,
+        summary: 'passed',
+      },
       source: 'tool',
       type: 'test.completed',
     },
@@ -103,7 +114,14 @@ function scenarioEvent(
       type: 'instruction.loaded',
     },
     {
-      payload: { repository: 'synthetic' },
+      payload: {
+        phase: 'baseline',
+        rootHash: 'a'.repeat(64),
+        baseCommit: 'a'.repeat(40),
+        headCommit: 'b'.repeat(40),
+        dirtyPatchHash: 'b'.repeat(64),
+        changedFiles: [],
+      },
       source: 'vcs',
       type: 'git.snapshot',
     },
@@ -122,14 +140,14 @@ function scenarioEvent(
   if (sequence === 2) {
     if (scenario === 'failed-command') {
       return {
-        payload: { command: 'pnpm test', exitCode: 1 },
+        payload: { command: 'pnpm test', category: 'test', exitCode: 1 },
         source: 'tool',
         type: 'command.completed',
       };
     }
     if (scenario === 'retry-loop') {
       return {
-        payload: { command: 'pnpm lint', exitCode: 1 },
+        payload: { command: 'pnpm lint', category: 'lint', exitCode: 1 },
         source: 'tool',
         type: 'command.completed',
       };
@@ -168,7 +186,7 @@ function scenarioEvent(
   }
   if (scenario === 'retry-loop' && sequence % 8 === 0) {
     return {
-      payload: { command: 'pnpm lint', exitCode: 1 },
+      payload: { command: 'pnpm lint', category: 'lint', exitCode: 1 },
       source: 'tool',
       type: 'command.completed',
     };
@@ -215,7 +233,7 @@ export function createSyntheticTrace(
         sourceVersion: ADAPTER_VERSION,
         type: scenarioData.type,
       }),
-      payload: { ...scenarioData.payload, sample: nextRandom() },
+      payload: scenarioData.payload,
       provenance: {
         adapter: ADAPTER,
         adapterVersion: ADAPTER_VERSION,
@@ -223,6 +241,7 @@ export function createSyntheticTrace(
         sourceVersion: ADAPTER_VERSION,
       },
       rawPayload: {
+        sample: nextRandom(),
         sourceEventId,
         untrustedPreview:
           index === 1 ? '<synthetic-trace-content>' : `raw-${index}`,

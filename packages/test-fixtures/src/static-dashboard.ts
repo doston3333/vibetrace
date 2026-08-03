@@ -18,7 +18,14 @@ function createStaticEvent(sequence: number): TraceEvent {
   } =
     cycle === 0
       ? {
-          payload: { command: 'pnpm test', success: true },
+          payload: {
+            command: 'pnpm test',
+            category: 'test',
+            kind: 'test',
+            success: true,
+            exitCode: 0,
+            summary: 'passed',
+          },
           source: 'tool' as const,
           type: 'test.completed' as const,
         }
@@ -39,13 +46,17 @@ function createStaticEvent(sequence: number): TraceEvent {
             }
           : cycle === 3
             ? {
-                payload: { command: 'pnpm test' },
+                payload: { command: 'pnpm test', category: 'test' },
                 source: 'tool' as const,
                 type: 'command.started' as const,
               }
             : cycle === 4
               ? {
-                  payload: { command: 'pnpm test', exitCode: 0 },
+                  payload: {
+                    command: 'pnpm test',
+                    category: 'test',
+                    exitCode: 0,
+                  },
                   source: 'tool' as const,
                   type: 'command.completed' as const,
                 }

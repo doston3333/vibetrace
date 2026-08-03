@@ -4,10 +4,13 @@ import { join } from 'node:path';
 
 import Database from 'better-sqlite3-multiple-ciphers';
 import {
+  GitObjectIdSchema,
   RawSourceEventSchema,
+  RunFingerprintSchema,
   TraceEventSchema,
   type JsonObject,
   type RawSourceEvent,
+  type RunFingerprint,
   type TraceEvent,
 } from '@vibetrace/schema';
 
@@ -62,6 +65,9 @@ export interface SessionInput {
   readonly title?: string;
   readonly model?: string;
   readonly sourceVersion?: string;
+  readonly baseCommit?: string;
+  readonly finalCommit?: string;
+  readonly runFingerprint?: RunFingerprint;
 }
 
 /** An append-only turn record. */
@@ -158,6 +164,9 @@ export interface StoredSession {
   readonly title?: string;
   readonly model?: string;
   readonly sourceVersion?: string;
+  readonly baseCommit?: string;
+  readonly finalCommit?: string;
+  readonly runFingerprint?: RunFingerprint;
 }
 
 /** A persisted metadata artifact. */
@@ -195,6 +204,11 @@ function assertText(value: unknown, field: string): asserts value is string {
 function assertIso(value: string, field: string): void {
   if (Number.isNaN(Date.parse(value)) || !value.endsWith('Z'))
     throw new Error(`${field} must be an ISO 8601 UTC timestamp.`);
+}
+
+function assertGitObjectId(value: string | undefined, field: string): void {
+  if (value !== undefined && !GitObjectIdSchema.safeParse(value).success)
+    throw new Error(`${field} must be a canonical Git object ID.`);
 }
 
 function assertPositiveInteger(
@@ -387,9 +401,11 @@ export class Storage {
     assertText(input.status, 'session.status');
     assertText(input.captureMode, 'session.captureMode');
     assertIso(input.startedAt, 'session.startedAt');
+    assertGitObjectId(input.baseCommit, 'session.baseCommit');
+    assertGitObjectId(input.finalCommit, 'session.finalCommit');
     this.#database
       .prepare(
-        'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, status, capture_mode, model, source_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, status, capture_mode, model, source_version, base_commit, final_commit, run_fingerprint_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         input.id,
@@ -402,11 +418,18 @@ export class Storage {
         input.captureMode,
         input.model ?? null,
         input.sourceVersion ?? null,
+        input.baseCommit ?? null,
+        input.finalCommit ?? null,
+        input.runFingerprint
+          ? json(RunFingerprintSchema.parse(input.runFingerprint))
+          : null,
       );
   }
 
   /** Import one raw/canonical pair with its project and session in one transaction. */
   importEvent(input: ImportedEventInput): string {
+    assertGitObjectId(input.session.baseCommit, 'session.baseCommit');
+    assertGitObjectId(input.session.finalCommit, 'session.finalCommit');
     const transaction = this.#database.transaction(() => {
       this.#database
         .prepare(
@@ -427,7 +450,7 @@ export class Storage {
         throw new Error('Project identity collision.');
       this.#database
         .prepare(
-          'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, status, capture_mode, model, source_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, source_session_id) DO NOTHING',
+          'INSERT INTO sessions (id, project_id, source, source_session_id, title, started_at, status, capture_mode, model, source_version, base_commit, final_commit, run_fingerprint_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, source_session_id) DO NOTHING',
         )
         .run(
           input.session.id,
@@ -440,13 +463,25 @@ export class Storage {
           input.session.captureMode,
           input.session.model ?? null,
           input.session.sourceVersion ?? null,
+          input.session.baseCommit ?? null,
+          input.session.finalCommit ?? null,
+          input.session.runFingerprint
+            ? json(RunFingerprintSchema.parse(input.session.runFingerprint))
+            : null,
         );
       const session = this.#database
         .prepare(
-          'SELECT id, project_id, deleted_at FROM sessions WHERE source = ? AND source_session_id = ?',
+          'SELECT id, project_id, deleted_at, base_commit, final_commit, run_fingerprint_json FROM sessions WHERE source = ? AND source_session_id = ?',
         )
         .get(input.session.source, input.session.sourceSessionId) as
-        | { id: string; project_id: string; deleted_at: string | null }
+        | {
+            id: string;
+            project_id: string;
+            deleted_at: string | null;
+            base_commit: string | null;
+            final_commit: string | null;
+            run_fingerprint_json: string | null;
+          }
         | undefined;
       if (
         !session ||
@@ -456,6 +491,32 @@ export class Storage {
         throw new Error('Session identity collision.');
       if (session.deleted_at !== null)
         throw new Error('Cannot append to a deleted session.');
+      const stable = (
+        stored: string | null,
+        incoming: string | undefined,
+      ): void => {
+        if (incoming === undefined) return;
+        if (stored !== null && stored !== incoming)
+          throw new StorageImportConflictError();
+      };
+      const fingerprint = input.session.runFingerprint
+        ? json(RunFingerprintSchema.parse(input.session.runFingerprint))
+        : undefined;
+      stable(session.base_commit, input.session.baseCommit);
+      stable(session.run_fingerprint_json, fingerprint);
+      stable(session.final_commit, input.session.finalCommit);
+      if (session.base_commit === null && input.session.baseCommit)
+        this.#database
+          .prepare('UPDATE sessions SET base_commit = ? WHERE id = ?')
+          .run(input.session.baseCommit, session.id);
+      if (session.run_fingerprint_json === null && fingerprint)
+        this.#database
+          .prepare('UPDATE sessions SET run_fingerprint_json = ? WHERE id = ?')
+          .run(fingerprint, session.id);
+      if (session.final_commit === null && input.session.finalCommit)
+        this.#database
+          .prepare('UPDATE sessions SET final_commit = ? WHERE id = ?')
+          .run(input.session.finalCommit, session.id);
       if (input.event.type === 'session.completed')
         this.#database
           .prepare('UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?')
@@ -525,7 +586,7 @@ export class Storage {
       throw new Error('session limit must be between 1 and 10000.');
     const rows = this.#database
       .prepare(
-        `SELECT s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.status, s.capture_mode, s.title, s.model, s.source_version FROM sessions s JOIN projects p ON p.id = s.project_id ${includeDeleted ? '' : 'WHERE s.deleted_at IS NULL'} ORDER BY s.started_at DESC LIMIT ?`,
+        `SELECT s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.status, s.capture_mode, s.title, s.model, s.source_version, s.base_commit, s.final_commit, s.run_fingerprint_json FROM sessions s JOIN projects p ON p.id = s.project_id ${includeDeleted ? '' : 'WHERE s.deleted_at IS NULL'} ORDER BY s.started_at DESC LIMIT ?`,
       )
       .all(limit) as Row[];
     return rows.map((row) => ({
@@ -542,6 +603,15 @@ export class Storage {
       ...(row.source_version
         ? { sourceVersion: String(row.source_version) }
         : {}),
+      ...(row.base_commit ? { baseCommit: String(row.base_commit) } : {}),
+      ...(row.final_commit ? { finalCommit: String(row.final_commit) } : {}),
+      ...(row.run_fingerprint_json
+        ? {
+            runFingerprint: RunFingerprintSchema.parse(
+              fromJson(row.run_fingerprint_json),
+            ),
+          }
+        : {}),
     }));
   }
 
@@ -550,7 +620,7 @@ export class Storage {
     assertText(id, 'session.id');
     const row = this.#database
       .prepare(
-        `SELECT s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.status, s.capture_mode, s.title, s.model, s.source_version FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ? ${includeDeleted ? '' : 'AND s.deleted_at IS NULL'}`,
+        `SELECT s.id, s.project_id, p.display_name, s.source, s.source_session_id, s.started_at, s.status, s.capture_mode, s.title, s.model, s.source_version, s.base_commit, s.final_commit, s.run_fingerprint_json FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ? ${includeDeleted ? '' : 'AND s.deleted_at IS NULL'}`,
       )
       .get(id) as Row | undefined;
     if (!row) return undefined;
@@ -567,6 +637,15 @@ export class Storage {
       ...(row.model ? { model: String(row.model) } : {}),
       ...(row.source_version
         ? { sourceVersion: String(row.source_version) }
+        : {}),
+      ...(row.base_commit ? { baseCommit: String(row.base_commit) } : {}),
+      ...(row.final_commit ? { finalCommit: String(row.final_commit) } : {}),
+      ...(row.run_fingerprint_json
+        ? {
+            runFingerprint: RunFingerprintSchema.parse(
+              fromJson(row.run_fingerprint_json),
+            ),
+          }
         : {}),
     };
   }
@@ -749,7 +828,7 @@ export class Storage {
     values.push(limit);
     const rows = this.#database
       .prepare(
-        `SELECT id, raw_event_id, session_id, sequence, timestamp, type, tool_name, event_json FROM normalized_events WHERE ${conditions.join(' AND ')} ORDER BY sequence ASC LIMIT ?`,
+        `SELECT id, raw_event_id, session_id, sequence, timestamp, type, tool_name, event_json FROM normalized_events WHERE ${conditions.join(' AND ')} ORDER BY sequence ASC, id ASC LIMIT ?`,
       )
       .all(...values) as Row[];
     return rows.map((row) => ({
@@ -783,7 +862,7 @@ export class Storage {
       .join(' AND ');
     const rows = this.#database
       .prepare(
-        'SELECT n.id, n.raw_event_id, n.session_id, n.sequence, n.timestamp, n.type, n.tool_name, n.event_json FROM normalized_event_search s JOIN normalized_events n ON n.id = s.event_id WHERE s.session_id = ? AND normalized_event_search MATCH ? ORDER BY n.sequence ASC LIMIT ?',
+        'SELECT n.id, n.raw_event_id, n.session_id, n.sequence, n.timestamp, n.type, n.tool_name, n.event_json FROM normalized_event_search s JOIN normalized_events n ON n.id = s.event_id WHERE s.session_id = ? AND normalized_event_search MATCH ? ORDER BY n.sequence ASC, n.id ASC LIMIT ?',
       )
       .all(sessionId, terms, limit) as Row[];
     return rows.map((row) => ({
@@ -818,6 +897,45 @@ export class Storage {
         input.blobHash ?? null,
         json(input.metadata),
       );
+  }
+
+  /** Idempotently import an artifact attached to an existing visible event. */
+  importArtifact(input: ArtifactInput): void {
+    assertText(input.id, 'artifact.id');
+    assertText(input.sessionId, 'artifact.sessionId');
+    assertText(input.kind, 'artifact.kind');
+    if (!input.eventId) throw new StorageImportConflictError();
+    if (input.contentHash && !/^[a-f0-9]{64}$/.test(input.contentHash))
+      throw new StorageImportConflictError();
+    const event = this.#database
+      .prepare('SELECT session_id FROM normalized_events WHERE id = ?')
+      .get(input.eventId) as { session_id: string } | undefined;
+    if (
+      !event ||
+      event.session_id !== input.sessionId ||
+      !this.getSession(input.sessionId)
+    )
+      throw new StorageImportConflictError();
+    const existing = this.#database
+      .prepare(
+        'SELECT session_id, event_id, kind, path_encrypted, path_hash, content_hash, blob_hash, metadata_json FROM artifacts WHERE id = ?',
+      )
+      .get(input.id) as Row | undefined;
+    if (existing) {
+      const equal =
+        String(existing.session_id) === input.sessionId &&
+        String(existing.event_id) === input.eventId &&
+        String(existing.kind) === input.kind &&
+        (existing.path_encrypted ?? null) === (input.pathEncrypted ?? null) &&
+        (existing.path_hash ?? null) === (input.pathHash ?? null) &&
+        (existing.content_hash ?? null) === (input.contentHash ?? null) &&
+        (existing.blob_hash ?? null) === (input.blobHash ?? null) &&
+        canonicalJson(fromJson(existing.metadata_json)) ===
+          canonicalJson(input.metadata);
+      if (!equal) throw new StorageImportConflictError();
+      return;
+    }
+    this.createArtifact(input);
   }
 
   /** List metadata artifacts attached to a visible session. */

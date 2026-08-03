@@ -84,6 +84,8 @@ export const EventTypeSchema = z.enum([
   'git.snapshot',
   'test.completed',
   'build.completed',
+  'lint.completed',
+  'typecheck.completed',
   'context.compaction.started',
   'context.compaction.completed',
   'user.steered',
@@ -96,6 +98,112 @@ export type EventSource = z.infer<typeof EventSourceSchema>;
 
 /** A canonical event discriminator. */
 export type EventType = z.infer<typeof EventTypeSchema>;
+
+/** Deterministic classification of an observed command; it never implies execution. */
+export const CommandCategorySchema = z.enum([
+  'search',
+  'read',
+  'edit',
+  'test',
+  'lint',
+  'build',
+  'typecheck',
+  'package-install',
+  'git',
+  'network',
+  'unknown',
+]);
+export type CommandCategory = z.infer<typeof CommandCategorySchema>;
+export const VerificationKindSchema = z.enum([
+  'test',
+  'lint',
+  'build',
+  'typecheck',
+]);
+export type VerificationKind = z.infer<typeof VerificationKindSchema>;
+
+/** Strict, serializable reproducibility metadata that never carries raw files or environment values. */
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+export const GitObjectIdSchema = z
+  .string()
+  .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
+export const RepositoryPhaseSchema = z.enum(['baseline', 'event', 'final']);
+export const RepositoryFileChangeSchema = z
+  .object({
+    status: z.string().min(1),
+    path: z.string().min(1),
+    previousPath: z.string().min(1).optional(),
+  })
+  .strict();
+export const GitSnapshotPayloadSchema = z
+  .object({
+    phase: RepositoryPhaseSchema,
+    rootHash: sha256Schema,
+    baseCommit: GitObjectIdSchema,
+    headCommit: GitObjectIdSchema,
+    dirtyPatchHash: sha256Schema,
+    changedFiles: z.array(RepositoryFileChangeSchema),
+    diffArtifactId: z.string().min(1).optional(),
+    truncated: z.boolean().optional(),
+  })
+  .strict();
+export type RepositoryPhase = z.infer<typeof RepositoryPhaseSchema>;
+export type RepositoryFileChange = z.infer<typeof RepositoryFileChangeSchema>;
+export type GitSnapshotPayload = z.infer<typeof GitSnapshotPayloadSchema>;
+export const FingerprintOmissionSchema = z.enum([
+  'unsafe-file',
+  'bounded-file-omitted',
+  'unreadable-file',
+  'unsafe-root',
+  'unreadable-root',
+  'unsafe-skill-directory',
+  'bounded-directory-entries',
+  'unreadable-skill-directory',
+  'fingerprint-unavailable',
+  'plugin-manifests-unavailable',
+  'unrecognized-policy',
+]);
+export const RunFingerprintSchema = z
+  .object({
+    source: z.literal('codex'),
+    clientSurface: z.enum(['cli', 'ide', 'app', 'app-server', 'exec', 'sdk']),
+    codexVersion: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    modelProvider: z.string().min(1).optional(),
+    reasoningEffort: z.string().min(1).optional(),
+    approvalPolicy: z.string().min(1).optional(),
+    sandboxPolicy: z.string().min(1).optional(),
+    networkPolicy: z.string().min(1).optional(),
+    policyNames: z.array(z.string().min(1)).optional(),
+    instructionHashes: z.array(
+      z
+        .object({
+          kind: z.enum(['agents', 'skill', 'plugin']),
+          sha256: sha256Schema,
+        })
+        .strict(),
+    ),
+    lockfileHashes: z.array(
+      z.object({ name: z.string().min(1), sha256: sha256Schema }).strict(),
+    ),
+    captureOmissions: z.array(FingerprintOmissionSchema),
+    configDigest: sha256Schema.optional(),
+    mcpServerHashes: z.array(sha256Schema).optional(),
+    os: z.string().min(1),
+    architecture: z.string().min(1),
+    runtimeVersions: z.record(z.string().min(1), z.string().min(1)),
+    gitState: z
+      .object({
+        baseCommit: GitObjectIdSchema.optional(),
+        headCommit: GitObjectIdSchema.optional(),
+        rootHash: sha256Schema.optional(),
+        dirtyPatchHash: sha256Schema.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type RunFingerprint = z.infer<typeof RunFingerprintSchema>;
 
 /** Immutable source data retained before normalization. */
 export const RawSourceEventSchema = z
@@ -163,18 +271,39 @@ const permissionPayloadSchema = z
   .object({ requestId: z.string().min(1) })
   .passthrough();
 const commandPayloadSchema = z
-  .object({ command: z.string().min(1) })
+  .object({ command: z.string().min(1), category: CommandCategorySchema })
   .passthrough();
 const commandOutputPayloadSchema = commandPayloadSchema
   .extend({ output: z.string() })
   .passthrough();
 const commandCompletedPayloadSchema = commandPayloadSchema
-  .extend({ exitCode: z.number().int() })
+  .extend({
+    exitCode: z.number().int(),
+    durationMs: z.number().nonnegative().optional(),
+  })
   .passthrough();
 const filePayloadSchema = z.object({ path: z.string().min(1) }).passthrough();
 const verificationPayloadSchema = z
-  .object({ command: z.string().min(1), success: z.boolean() })
-  .passthrough();
+  .object({
+    command: z.string().min(1),
+    category: z.enum(['test', 'lint', 'build', 'typecheck']),
+    kind: VerificationKindSchema,
+    success: z.boolean(),
+    exitCode: z.number().int(),
+    summary: z.string(),
+    framework: z.string().min(1).optional(),
+    durationMs: z.number().nonnegative().optional(),
+    rawOutputArtifactId: z.string().min(1).optional(),
+  })
+  .passthrough()
+  .superRefine(({ category, kind }, context) => {
+    if (category !== kind)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Verification category must match kind.',
+        path: ['category'],
+      });
+  });
 const compactionPayloadSchema = z
   .object({ reason: z.string().min(1) })
   .passthrough();
@@ -278,9 +407,11 @@ export const TraceEventSchema = z.discriminatedUnion('type', [
   eventVariant('command.completed', commandCompletedPayloadSchema),
   eventVariant('file.read', filePayloadSchema),
   eventVariant('file.changed', filePayloadSchema),
-  eventVariant('git.snapshot', genericPayloadSchema),
+  eventVariant('git.snapshot', GitSnapshotPayloadSchema),
   eventVariant('test.completed', verificationPayloadSchema),
   eventVariant('build.completed', verificationPayloadSchema),
+  eventVariant('lint.completed', verificationPayloadSchema),
+  eventVariant('typecheck.completed', verificationPayloadSchema),
   eventVariant('context.compaction.started', compactionPayloadSchema),
   eventVariant('context.compaction.completed', compactionPayloadSchema),
   eventVariant('user.steered', textPayloadSchema),

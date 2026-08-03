@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CaptureGapPayloadSchema,
+  GitSnapshotPayloadSchema,
   RawSourceEventSchema,
+  RunFingerprintSchema,
   SCHEMA_VERSION,
   TraceEventSchema,
   createEventId,
@@ -73,6 +75,18 @@ describe('TraceEventSchema', () => {
       },
       type: 'capture.gap',
     });
+    const verification = safeParseTraceEvent({
+      ...validEvent,
+      payload: {
+        command: 'pnpm test',
+        category: 'lint',
+        kind: 'test',
+        success: true,
+        exitCode: 0,
+        summary: 'passed',
+      },
+      type: 'test.completed',
+    });
 
     expect(message).toEqual({
       problems: [
@@ -87,12 +101,42 @@ describe('TraceEventSchema', () => {
       problems: [expect.objectContaining({ path: '/payload/extra' })],
       success: false,
     });
+    expect(verification).toEqual({
+      problems: [
+        expect.objectContaining({
+          code: 'custom',
+          path: '/payload/category',
+        }),
+      ],
+      success: false,
+    });
     expect(
       CaptureGapPayloadSchema.safeParse({
         dataClass: 'plans',
         state: 'absent',
         reason: 'The source did not expose plans.',
         extra: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      GitSnapshotPayloadSchema.safeParse({
+        phase: 'event',
+        rootHash: 'a'.repeat(64),
+        baseCommit: 'a'.repeat(40),
+        headCommit: 'b'.repeat(40),
+        dirtyPatchHash: 'b'.repeat(64),
+        changedFiles: [],
+        unexpectedNormalizedField: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      GitSnapshotPayloadSchema.safeParse({
+        phase: 'event',
+        rootHash: 'a'.repeat(64),
+        baseCommit: '--stat',
+        headCommit: 'b'.repeat(40),
+        dirtyPatchHash: 'b'.repeat(64),
+        changedFiles: [],
       }).success,
     ).toBe(false);
   });
@@ -107,6 +151,30 @@ describe('TraceEventSchema', () => {
     expect(JSON.stringify(variants)).toContain('capture.gap');
     expect(JSON.stringify(variants)).toContain('content');
     expect(JSON.stringify(variants)).toContain('rawPayload');
+  });
+
+  it('requires explicit bounded-capture omissions in run fingerprints', () => {
+    const fingerprint = {
+      source: 'codex',
+      clientSurface: 'cli',
+      instructionHashes: [],
+      lockfileHashes: [],
+      captureOmissions: ['plugin-manifests-unavailable'],
+      os: 'test',
+      architecture: 'test',
+      runtimeVersions: { node: '24' },
+    };
+    expect(RunFingerprintSchema.parse(fingerprint)).toEqual(fingerprint);
+    expect(
+      RunFingerprintSchema.safeParse({ ...fingerprint, captureOmissions: [] })
+        .success,
+    ).toBe(true);
+    expect(
+      RunFingerprintSchema.safeParse({
+        ...fingerprint,
+        captureOmissions: ['private-path'],
+      }).success,
+    ).toBe(false);
   });
 });
 
