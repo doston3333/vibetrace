@@ -1,0 +1,21 @@
+{
+  "name": "@vibetrace/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "vibetrace": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js"
+  },
+  "dependencies": {
+    "commander": "15.0.0"
+  }
+}
