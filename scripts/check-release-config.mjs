@@ -83,15 +83,15 @@ const gitleaksIgnore = await readFile(
 for (const [os, node] of [
   ['ubuntu-latest', '22.12.0'],
   ['ubuntu-latest', '24'],
-  ['macos-14-large', '24'],
-  ['macos-14', '24'],
+  ['macos-15-intel', '24'],
+  ['macos-15', '24'],
   ['windows-latest', '24'],
 ])
   requireMatrixPair(ci, os, node, 'ci.yml');
 for (const [os, node] of [
   ['ubuntu-latest', '24'],
-  ['macos-14-large', '24'],
-  ['macos-14', '24'],
+  ['macos-15-intel', '24'],
+  ['macos-15', '24'],
   ['windows-latest', '24'],
 ])
   requireMatrixPair(native, os, node, 'native-smoke.yml');

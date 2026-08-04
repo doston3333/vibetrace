@@ -1,6 +1,7 @@
 # Release and publishing controls require repository-owner review.
 /.github/workflows/ @doston3333
 /.github/CODEOWNERS @doston3333
+/.gitattributes @doston3333
 /.gitleaksignore @doston3333
 /package.json @doston3333
 /pnpm-lock.yaml @doston3333

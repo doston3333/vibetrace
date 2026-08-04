@@ -4,6 +4,8 @@
 
 - Hardened release publishing with SHA-pinned actions, history-aware secret
   scanning, an exact-tag CLI candidate gate, and OIDC npm trusted publishing.
+- Enforced LF checkout behavior across operating systems and moved macOS CI to
+  the standard hosted Intel and arm64 runners.
 - Added transparent ten-dimension session scorecards with evidence links and
   unknown-signal handling.
 - Expanded deterministic diagnostics to the complete fifteen-signal P0 corpus

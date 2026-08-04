@@ -10,7 +10,7 @@ remain platform-native npm dependencies.
 
 | Platform                      | Architecture | CI runtime                             |
 | ----------------------------- | ------------ | -------------------------------------- |
-| macOS 14+                     | x64, arm64   | Node 24 (`macos-14-large`, `macos-14`) |
+| macOS 14+                     | x64, arm64   | Node 24 (`macos-15-intel`, `macos-15`) |
 | Ubuntu-compatible glibc Linux | x64          | Node 22.12.0, Node 24                  |
 | Windows 11                    | x64          | Node 24                                |
 
