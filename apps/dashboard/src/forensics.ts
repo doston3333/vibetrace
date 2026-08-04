@@ -136,7 +136,20 @@ export function eventDetail(event: TraceEvent): string {
     const text = plain(candidate);
     if (text) return text;
   }
-  return plain(value);
+  switch (event.type) {
+    case 'session.started':
+      return 'Codex started this captured session.';
+    case 'session.completed':
+      return 'Codex ended this captured session.';
+    case 'turn.completed':
+      return 'Codex finished this turn.';
+    case 'tool.started':
+      return `${event.toolName ?? 'Tool'} invocation began.`;
+    case 'tool.completed':
+      return `${event.toolName ?? 'Tool'} returned control to Codex.`;
+    default:
+      return 'No human-readable summary is available. Open Raw for the preserved source payload.';
+  }
 }
 
 export function eventTone(event: TraceEvent): TimelineItem['tone'] {
@@ -161,17 +174,25 @@ export function eventTone(event: TraceEvent): TimelineItem['tone'] {
 export function buildTimelineModel(
   events: readonly StoredEvent[],
 ): readonly TimelineItem[] {
-  return events.map((stored) => ({
-    id: stored.id,
-    sequence: stored.sequence,
-    timestamp: stored.timestamp,
-    type: stored.type,
-    lane: laneFor(stored.type),
-    title: eventTitle(stored.event),
-    detail: eventDetail(stored.event),
-    tone: eventTone(stored.event),
-    stored,
-  }));
+  return events
+    .filter(
+      (stored) =>
+        !(
+          stored.event.type === 'message.agent' &&
+          Object.hasOwn(stored.event.payload, 'duplicateOfEventId')
+        ),
+    )
+    .map((stored) => ({
+      id: stored.id,
+      sequence: stored.sequence,
+      timestamp: stored.timestamp,
+      type: stored.type,
+      lane: laneFor(stored.type),
+      title: eventTitle(stored.event),
+      detail: eventDetail(stored.event),
+      tone: eventTone(stored.event),
+      stored,
+    }));
 }
 
 export function matchesEvent(

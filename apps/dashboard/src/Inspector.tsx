@@ -217,7 +217,14 @@ export function Inspector({
                 <h3>Evidence-linked findings</h3>
                 {linkedFindings.map((finding) => (
                   <p key={finding.id}>
-                    <strong>{finding.title}</strong> · {finding.severity}
+                    <strong>{finding.title}</strong> ·{' '}
+                    {finding.findingKind === 'capture_limitation'
+                      ? 'capture limitation'
+                      : 'problem'}{' '}
+                    · {finding.severity}
+                    {finding.confidence !== undefined
+                      ? ` · ${Math.round(finding.confidence * 100)}% confidence`
+                      : ''}
                   </p>
                 ))}
               </section>

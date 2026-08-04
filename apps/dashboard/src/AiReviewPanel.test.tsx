@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 const prompt = {
-  analyzerVersion: '0.2.0',
+  analyzerVersion: '0.3.0',
   promptDigest: 'a'.repeat(64),
   prompt: {
     system: 'You are a read-only analyst.',
@@ -38,7 +38,7 @@ describe('AiReviewPanel', () => {
   it('runs an evidence-linked review through the existing Codex login', async () => {
     vi.spyOn(api, 'aiPrompt').mockResolvedValue(prompt);
     const run = vi.spyOn(api, 'runAiAnalysis').mockResolvedValue({
-      analyzerVersion: '0.2.0',
+      analyzerVersion: '0.3.0',
       promptDigest: 'a'.repeat(64),
       provider: 'codex',
       hypotheses: [],
@@ -51,7 +51,7 @@ describe('AiReviewPanel', () => {
     );
 
     expect((await screen.findByRole('status')).textContent).toContain(
-      'Saved 0 evidence-linked hypotheses from codex.',
+      'Saved 0 evidence-linked issues from codex.',
     );
     expect(run).toHaveBeenCalledWith('session-1', { provider: 'codex' });
     expect(screen.queryByLabelText('Provider hypotheses JSON')).toBeNull();
@@ -60,7 +60,7 @@ describe('AiReviewPanel', () => {
   it('sends a consented direct API request and clears the ephemeral key', async () => {
     vi.spyOn(api, 'aiPrompt').mockResolvedValue(prompt);
     const run = vi.spyOn(api, 'runAiAnalysis').mockResolvedValue({
-      analyzerVersion: '0.2.0',
+      analyzerVersion: '0.3.0',
       promptDigest: 'a'.repeat(64),
       provider: 'direct-api',
       model: 'deep-model',
@@ -84,7 +84,7 @@ describe('AiReviewPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Analyze session' }));
 
     expect((await screen.findByRole('status')).textContent).toContain(
-      'Saved 0 evidence-linked hypotheses from direct-api · deep-model.',
+      'Saved 0 evidence-linked issues from direct-api · deep-model.',
     );
     expect(run).toHaveBeenCalledWith('session-1', {
       provider: 'direct-api',

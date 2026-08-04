@@ -25,6 +25,7 @@ import type {
 } from './api.js';
 import {
   buildTimelineModel,
+  eventDetail,
   matchesEvent,
   safeDisplayText,
 } from './forensics.js';
@@ -208,6 +209,23 @@ describe('forensic dashboard', () => {
     expect(safeDisplayText('\u001b[31m-removed\n+added\u001b[0m')).toBe(
       '-removed\n+added',
     );
+    expect(eventDetail(events[0]!.event)).not.toMatch(/^\s*\{/u);
+    const duplicate = {
+      ...events[0]!,
+      id: 'duplicate-agent-message',
+      type: 'message.agent',
+      event: {
+        ...events[0]!.event,
+        id: 'duplicate-agent-message',
+        type: 'message.agent',
+        source: 'agent',
+        payload: {
+          content: 'Repeated final answer.',
+          duplicateOfEventId: events[0]!.id,
+        },
+      },
+    } as StoredEvent;
+    expect(buildTimelineModel([...events, duplicate])).toHaveLength(20_000);
   });
 
   it('renders a virtualized five-lane workbench and keeps untrusted markup inert', async () => {
@@ -258,7 +276,8 @@ describe('forensic dashboard', () => {
     expect(review).toHaveBeenCalledWith('finding-1', {
       decision: 'confirmed',
     });
-    await user.click(screen.getByRole('button', { name: 'View evidence' }));
+    expect(screen.queryByRole('button', { name: 'Reopen review' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: /Supports/ }));
     expect(
       screen.getByRole('heading', { name: 'Evidence timeline' }),
     ).toBeTruthy();
@@ -300,6 +319,7 @@ describe('forensic dashboard', () => {
   it('labels AI hypotheses separately from deterministic findings', () => {
     render(
       <FindingsPanel
+        events={events}
         findings={[
           {
             ...findings[0]!,
@@ -312,7 +332,35 @@ describe('forensic dashboard', () => {
         onReview={async () => undefined}
       />,
     );
-    expect(screen.getByText(/AI hypothesis · review required/)).toBeTruthy();
-    expect(document.querySelector('[data-kind="ai-hypothesis"]')).toBeTruthy();
+    expect(
+      screen.getByText(/AI problem hypothesis · review required/),
+    ).toBeTruthy();
+    expect(document.querySelector('[data-kind="ai-problem"]')).toBeTruthy();
+  });
+
+  it('presents capture limitations separately and only reopens closed reviews', () => {
+    render(
+      <FindingsPanel
+        events={events}
+        findings={[
+          {
+            ...findings[0]!,
+            id: 'finding-capture',
+            ruleId: 'ai-analyzer',
+            findingKind: 'capture_limitation',
+            title: 'Shell exit status was not exposed',
+            impact: 'Command success cannot be established.',
+            state: 'rejected',
+          },
+        ]}
+        onSelect={() => undefined}
+        onReview={async () => undefined}
+      />,
+    );
+    expect(
+      document.querySelector('[data-kind="capture-limitation"]'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reopen review' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'confirmed' })).toBeNull();
   });
 });

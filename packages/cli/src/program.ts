@@ -1434,7 +1434,9 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       const result = await install({ dryRun: options.dryRun });
       output(result.preview);
       if (!options.dryRun)
-        output('Open /hooks in Codex to review and trust the handlers.');
+        output(
+          'Open /hooks in an interactive Codex CLI session to review and trust the handlers. Standard desktop app sessions are not captured.',
+        );
     });
 
   const uninstallCommand = program

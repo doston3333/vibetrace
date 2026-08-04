@@ -1,6 +1,6 @@
 import { TraceEventSchema, type TraceEvent } from '@vibetrace/schema';
 
-export const SCORECARD_VERSION = '0.1.0' as const;
+export const SCORECARD_VERSION = '0.2.0' as const;
 
 export const SCORECARD_DIMENSION_IDS = [
   'outcome-correctness',
@@ -87,8 +87,22 @@ function eventSuccess(event: TraceEvent): boolean | undefined {
     return typeof success === 'boolean' ? success : undefined;
   }
   if (event.type === 'tool.completed') {
-    if (event.status === 'completed') return true;
     if (event.status === 'failed' || event.status === 'declined') return false;
+    const value = payload(event);
+    const response =
+      value.tool_response !== null &&
+      typeof value.tool_response === 'object' &&
+      !Array.isArray(value.tool_response)
+        ? (value.tool_response as Record<string, unknown>)
+        : value;
+    const exitCode = response.exitCode ?? response.exit_code;
+    if (typeof exitCode === 'number') return exitCode === 0;
+    if (response.success === false || response.ok === false) return false;
+    if (response.success === true || response.ok === true) return true;
+    const shellLike = /^(?:bash|shell|terminal|exec|command)$/iu.test(
+      event.toolName ?? text(value.toolName),
+    );
+    if (event.status === 'completed' && !shellLike) return true;
   }
   return undefined;
 }
@@ -175,9 +189,11 @@ export function buildSessionScorecard(
     );
   });
 
-  const corrections = events.filter((event) => {
-    if (event.type !== 'user.steered' && event.type !== 'message.user')
-      return false;
+  const userMessages = events.filter(
+    (event) => event.type === 'user.steered' || event.type === 'message.user',
+  );
+  const followUps = userMessages.slice(1);
+  const corrections = followUps.filter((event) => {
     return /\b(?:actually|wrong|still|instead|not quite|doesn'?t|should)\b/iu.test(
       text(payload(event).content),
     );
@@ -194,6 +210,23 @@ export function buildSessionScorecard(
       event.type === 'permission.resolved' || event.status === 'declined',
   );
   const gaps = events.filter((event) => event.type === 'capture.gap');
+  const gapPenalty = gaps.reduce((total, event) => {
+    const state = text(payload(event).state);
+    return (
+      total +
+      (state === 'absent'
+        ? 25
+        : state === 'partial'
+          ? 15
+          : state === 'unknown'
+            ? 10
+            : 10)
+    );
+  }, 0);
+  const terminalEvidence = events.filter(
+    (event) =>
+      event.type === 'turn.completed' || event.type === 'session.completed',
+  );
   const searchCommands = events.filter((event) => {
     if (event.type !== 'command.completed' && event.type !== 'command.started')
       return false;
@@ -268,8 +301,16 @@ export function buildSessionScorecard(
       'tool-reliability',
       'Tool reliability',
       attempts.length === 0 ? null : (successes.length / attempts.length) * 100,
-      attempts.length === 0 ? 'unknown' : 'high',
-      'Successful observable command, verification, and tool completions divided by observed completions.',
+      attempts.length === 0
+        ? 'unknown'
+        : events.some(
+              (event) =>
+                event.type === 'tool.completed' &&
+                eventSuccess(event) === undefined,
+            )
+          ? 'low'
+          : 'high',
+      'Successful completions divided by completions with an explicit observable outcome; shell tools without an exit or success signal remain unknown.',
       ids([...failures, ...successes]),
     ),
     dimension(
@@ -344,18 +385,32 @@ export function buildSessionScorecard(
     dimension(
       'human-effort',
       'Human effort',
-      clamp(100 - corrections.length * 20),
-      corrections.length === 0 ? 'medium' : 'high',
-      'Starts at 100 and subtracts 20 per observed correction-like steering event; this is not a developer-performance score.',
-      ids(corrections),
+      followUps.length === 0
+        ? null
+        : clamp(
+            100 -
+              corrections.length * 20 -
+              (followUps.length - corrections.length) * 5,
+          ),
+      followUps.length === 0
+        ? 'unknown'
+        : corrections.length === 0
+          ? 'medium'
+          : 'high',
+      'Requires at least one observed follow-up after the initial task; correction-like steering subtracts 20 and other follow-ups subtract 5.',
+      ids(followUps),
     ),
     dimension(
       'capture-confidence',
       'Capture confidence',
-      events.length === 0 ? null : 100 - (gaps.length / events.length) * 100,
-      gaps.length === 0 ? 'high' : 'medium',
-      '100 minus the proportion of explicit capture-gap events; unknown source data is never treated as captured.',
-      ids(gaps),
+      clamp(100 - gapPenalty - (terminalEvidence.length === 0 ? 15 : 0)),
+      gaps.length === 0 && terminalEvidence.length > 0
+        ? 'high'
+        : 100 - gapPenalty - (terminalEvidence.length === 0 ? 15 : 0) >= 75
+          ? 'medium'
+          : 'low',
+      'Starts at 100 and subtracts weighted explicit capture gaps plus 15 when no turn or session completion was observed.',
+      ids([...gaps, ...terminalEvidence]),
     ),
   ];
 

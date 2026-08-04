@@ -145,6 +145,7 @@ export const findings = sqliteTable('findings', {
   analyzerProvider: text('analyzer_provider'),
   analyzerModel: text('analyzer_model'),
   promptDigest: text('prompt_digest'),
+  findingKind: text('finding_kind').notNull().default('problem'),
   category: text('category').notNull(),
   severity: text('severity').notNull(),
   confidence: real('confidence'),
@@ -153,6 +154,7 @@ export const findings = sqliteTable('findings', {
   evidenceEventIdsJson: text('evidence_event_ids_json').notNull(),
   counterevidenceEventIdsJson: text('counterevidence_event_ids_json').notNull(),
   recommendation: text('recommendation').notNull(),
+  impact: text('impact'),
   state: text('state').notNull(),
 });
 

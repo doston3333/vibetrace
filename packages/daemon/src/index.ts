@@ -2232,7 +2232,7 @@ export async function startDaemon(
         }
         const findings = verifiedHypotheses.map((hypothesis) => ({
           id: createUuidV5([
-            'vibetrace/ai-finding/0.2',
+            'vibetrace/ai-finding/0.3',
             id,
             promptDigest,
             invocation.provider,
@@ -2245,15 +2245,14 @@ export async function startDaemon(
           analyzerProvider: invocation.provider,
           ...(invocation.model ? { analyzerModel: invocation.model } : {}),
           promptDigest,
+          findingKind: hypothesis.kind,
           category: hypothesis.category,
-          severity: hypothesis.confidence >= 0.8 ? 'high' : 'medium',
+          severity: hypothesis.severity,
           confidence: hypothesis.confidence,
           title: hypothesis.title,
           explanation: hypothesis.explanation,
-          recommendation:
-            hypothesis.recommendation ??
-            hypothesis.recommendedExperiment ??
-            'Review the linked evidence before acting on this hypothesis.',
+          impact: hypothesis.impact,
+          recommendation: hypothesis.recommendation,
           evidenceEventIds: hypothesis.evidenceEventIds,
           counterevidenceEventIds: hypothesis.counterEvidenceEventIds,
           state: 'open',

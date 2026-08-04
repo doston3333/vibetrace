@@ -157,7 +157,14 @@ export async function invokeDirectApiProvider(
             { role: 'system', content: parsed.data.prompt.system },
             { role: 'user', content: parsed.data.prompt.user },
           ],
-          response_format: { type: 'json_object' },
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'vibetrace_ai_findings',
+              strict: true,
+              schema: AI_HYPOTHESIS_OUTPUT_JSON_SCHEMA,
+            },
+          },
         }),
         redirect: 'error',
         signal: controller.signal,

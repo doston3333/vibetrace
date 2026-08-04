@@ -143,6 +143,8 @@ async function sourceStorage(): Promise<{
     analyzerProvider: 'openai',
     analyzerModel: 'gpt-5.2',
     promptDigest: 'a'.repeat(64),
+    findingKind: 'capture_limitation',
+    impact: 'The conclusion is limited by missing command output.',
   });
   storage.reviewFinding('finding-1', {
     decision: 'confirmed',
@@ -252,6 +254,8 @@ describe('encrypted portable bundles', () => {
       analyzerProvider: 'openai',
       analyzerModel: 'gpt-5.2',
       promptDigest: 'a'.repeat(64),
+      findingKind: 'capture_limitation',
+      impact: 'The conclusion is limited by missing command output.',
     });
     expect(target.listAnnotations()).toMatchObject([
       { id: 'annotation-1', targetId: 'finding-1' },

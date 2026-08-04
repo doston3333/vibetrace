@@ -885,9 +885,12 @@ describe('daemon API', () => {
     const providerCalls: string[] = [];
     const providerHypothesis = {
       id: 'hypothesis-1',
+      kind: 'problem' as const,
       category: 'verification' as const,
+      severity: 'low' as const,
       title: 'The retry loop lacked a new signal',
       explanation: 'The same failure evidence was repeated.',
+      impact: 'The session spent time repeating an unlikely-to-succeed action.',
       recommendation: 'Change the command or inspect the first error.',
       confidence: 0.82,
       evidenceEventIds: [failedCommandSegment(1).event.id],
@@ -970,7 +973,7 @@ describe('daemon API', () => {
     });
     expect(aiPrompt.statusCode).toBe(200);
     expect(aiPrompt.json()).toMatchObject({
-      analyzerVersion: '0.2.0',
+      analyzerVersion: '0.3.0',
       promptDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       prompt: {
         tools: [],
@@ -1008,7 +1011,7 @@ describe('daemon API', () => {
     expect(ai.statusCode).toBe(200);
     expect(ai.json()).toMatchObject({
       analysis: {
-        analyzerVersion: '0.2.0',
+        analyzerVersion: '0.3.0',
         provider: 'direct-api',
         model: 'deep-model',
         promptDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -1022,6 +1025,11 @@ describe('daemon API', () => {
           analyzerProvider: 'direct-api',
           analyzerModel: 'deep-model',
           promptDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          findingKind: 'problem',
+          severity: 'low',
+          impact:
+            'The session spent time repeating an unlikely-to-succeed action.',
+          confidence: 0.82,
         }),
       ]),
     );

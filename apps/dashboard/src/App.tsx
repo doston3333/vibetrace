@@ -53,7 +53,7 @@ export function AppShell() {
           <span>VIBE</span>
           <strong>TRACE</strong>
         </Link>
-        <p>Local evidence recorder · deterministic analysis</p>
+        <p>Local evidence recorder · AI session forensics</p>
         <Link className="masthead-link" to="/evals">
           Evaluation lab
         </Link>
@@ -149,6 +149,7 @@ export function ForensicWorkbench({
         {(
           [
             ['timeline', 'Timeline'],
+            ['ai-review', 'AI review'],
             ['diffs', 'Diff history'],
             ['coverage', 'Coverage'],
             ...(scorecard ? ([['scorecard', 'Scorecard']] as const) : []),
@@ -157,7 +158,6 @@ export function ForensicWorkbench({
             ['causal', 'Causal graph'],
             ['findings', `Findings ${findings.length}`],
             ['annotations', `Annotations ${annotations.length}`],
-            ['ai-review', 'AI review'],
           ] as const
         ).map(([value, label]) => (
           <button
@@ -266,6 +266,7 @@ export function ForensicWorkbench({
       ) : null}
       {view === 'findings' ? (
         <FindingsPanel
+          events={events}
           findings={findings}
           onSelect={selectEvidence}
           onReview={onReviewFinding}

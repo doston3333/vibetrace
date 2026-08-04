@@ -405,7 +405,7 @@ try {
     throw new Error('Packed daemon AI prompt endpoint failed.');
   const aiPrompt = await aiPromptResponse.json();
   if (
-    aiPrompt.analyzerVersion !== '0.2.0' ||
+    aiPrompt.analyzerVersion !== '0.3.0' ||
     !/^[a-f0-9]{64}$/.test(String(aiPrompt.promptDigest)) ||
     aiPrompt.prompt?.networkAllowed !== false ||
     !Array.isArray(aiPrompt.prompt?.tools)

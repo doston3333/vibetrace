@@ -50,11 +50,13 @@ export interface Finding {
   readonly analyzerProvider?: 'direct-api' | 'codex';
   readonly analyzerModel?: string;
   readonly promptDigest?: string;
+  readonly findingKind?: 'problem' | 'capture_limitation';
   readonly category: string;
   readonly severity: string;
   readonly confidence?: number;
   readonly title: string;
   readonly explanation: string;
+  readonly impact?: string;
   readonly recommendation: string;
   readonly evidenceEventIds: readonly string[];
   readonly counterevidenceEventIds: readonly string[];

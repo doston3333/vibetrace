@@ -65,7 +65,7 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
       setApiKey('');
       setValidationError(undefined);
       setStatus(
-        `Saved ${result.hypotheses.length} evidence-linked ${result.hypotheses.length === 1 ? 'hypothesis' : 'hypotheses'} from ${result.provider}${result.model ? ` · ${result.model}` : ''}.`,
+        `Saved ${result.hypotheses.length} evidence-linked ${result.hypotheses.length === 1 ? 'issue' : 'issues'} from ${result.provider}${result.model ? ` · ${result.model}` : ''}.`,
       );
       await queryClient.invalidateQueries({
         queryKey: ['findings', sessionId],
@@ -118,9 +118,11 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
         <p className="eyebrow">Model-assisted forensic synthesis</p>
         <h2 id="ai-review-title">AI evidence review</h2>
         <p>
-          Reconstruct the complete observable session and produce structured
-          hypotheses tied to exact event IDs. Analysis is opt-in: both choices
-          send the bounded evidence prompt to the selected AI service.
+          Reconstruct the complete observable session and return up to five
+          material problems or capture limitations, each tied to exact event
+          IDs. Praise and neutral observations are excluded. Analysis is opt-in:
+          both choices send the bounded evidence prompt to the selected AI
+          service.
         </p>
       </header>
 

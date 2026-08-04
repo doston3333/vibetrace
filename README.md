@@ -90,13 +90,18 @@ pnpm build
 
 ## Local use
 
-Preview and install the Codex integration, then approve the exact handler definitions in Codex with `/hooks`:
+Preview and install the Codex integration, then open an interactive **Codex
+CLI** session and approve the exact handler definitions with `/hooks`:
 
 ```bash
 vibetrace init codex --dry-run
 vibetrace init codex
 vibetrace doctor
 ```
+
+Standard lifecycle-hook capture currently supports the Codex CLI. The Codex
+desktop app does not emit this hook stream and is not captured by
+`vibetrace init codex`.
 
 Captured hooks write directly to the local spool even when the daemon is stopped. Start and open the local dashboard separately:
 
@@ -111,9 +116,11 @@ the existing local sign-in, or **Use direct API** to call an OpenAI-compatible
 HTTPS chat-completions endpoint with a per-run key. Both choices are explicit
 network egress: preview the bounded evidence prompt before running. Direct API
 keys remain in browser/process memory for that request and are never stored.
-Every returned hypothesis is rejected unless its evidence IDs belong to the
-session, and persisted findings record only provider, model, analyzer version,
-and prompt digest as non-secret provenance.
+The analyzer returns at most five material problems or capture limitations;
+praise and neutral observations are excluded. Every item is rejected unless
+its evidence IDs belong to the session, and severity remains independent from
+model confidence. Persisted findings record only provider, model, analyzer
+version, and prompt digest as non-secret provenance.
 
 List and inspect sessions, or preview and create an encrypted scrubbed bundle:
 

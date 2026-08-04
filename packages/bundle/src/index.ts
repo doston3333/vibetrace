@@ -183,12 +183,18 @@ const findingSchema = z
       .string()
       .regex(/^[a-f0-9]{64}$/)
       .optional(),
+    // Bundles created before analyzer 0.3.0 omitted this field.
+    findingKind: z
+      .enum(['problem', 'capture_limitation'])
+      .optional()
+      .default('problem'),
     category: z.string().min(1),
     severity: z.string().min(1),
     confidence: z.number().finite().optional(),
     title: z.string().min(1),
     explanation: z.string().min(1),
     recommendation: z.string().min(1),
+    impact: z.string().min(1).max(16_384).optional(),
     evidenceEventIds: z.array(z.string().uuid()).min(1),
     counterevidenceEventIds: z.array(z.string().uuid()).optional(),
     state: z.string().min(1).optional(),

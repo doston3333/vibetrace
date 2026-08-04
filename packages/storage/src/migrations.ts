@@ -149,6 +149,62 @@ ALTER TABLE findings ADD COLUMN analyzer_model TEXT;
 ALTER TABLE findings ADD COLUMN prompt_digest TEXT;
 `,
   },
+  {
+    id: 8,
+    sql: `
+ALTER TABLE findings ADD COLUMN finding_kind TEXT NOT NULL DEFAULT 'problem';
+ALTER TABLE findings ADD COLUMN impact TEXT;
+`,
+  },
+  {
+    id: 9,
+    sql: `
+UPDATE sessions
+SET source_version = (
+  SELECT raw_events.source_version
+  FROM raw_events
+  WHERE raw_events.session_id = sessions.id
+    AND raw_events.source_event_id LIKE 'transcript:%'
+    AND raw_events.source_version IS NOT NULL
+    AND raw_events.source_version <> 'unknown'
+  ORDER BY raw_events.received_at DESC, raw_events.id DESC
+  LIMIT 1
+)
+WHERE sessions.source = 'codex-hooks'
+  AND EXISTS (
+  SELECT 1 FROM raw_events
+  WHERE raw_events.session_id = sessions.id
+    AND raw_events.source_event_id LIKE 'transcript:%'
+    AND raw_events.source_version IS NOT NULL
+    AND raw_events.source_version <> 'unknown'
+);
+
+UPDATE sessions
+SET status = 'idle'
+WHERE status = 'active'
+  AND EXISTS (
+    SELECT 1 FROM normalized_events
+    WHERE normalized_events.session_id = sessions.id
+      AND normalized_events.type = 'turn.completed'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM normalized_events
+    WHERE normalized_events.session_id = sessions.id
+      AND normalized_events.type = 'session.completed'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM normalized_events AS user_events
+    WHERE user_events.session_id = sessions.id
+      AND user_events.type = 'message.user'
+      AND user_events.timestamp > (
+        SELECT MAX(turn_events.timestamp)
+        FROM normalized_events AS turn_events
+        WHERE turn_events.session_id = sessions.id
+          AND turn_events.type = 'turn.completed'
+      )
+  );
+`,
+  },
 ];
 
 /** Apply only migrations not already recorded in the encrypted database. */

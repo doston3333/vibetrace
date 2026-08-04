@@ -1699,52 +1699,66 @@ textarea::placeholder {
 }
 
 .causal-graph {
-  gap: var(--space-xl);
-  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  background: var(--rule-strong);
+  gap: 1px;
+  grid-template-columns: 1fr;
 }
 
 .causal-chain {
-  background: var(--paper-deep);
+  background: var(--paper-bright);
   border-left: 0.25rem solid var(--oxide);
-  display: grid;
-  gap: var(--space-sm);
   padding: var(--space-lg);
 }
 
-.causal-chain button,
-.causal-finding {
-  background: var(--paper-bright);
-  border: 1px solid var(--rule);
-  display: grid;
-  gap: 0.25rem;
-  padding: var(--space-md);
-  text-align: left;
-}
-
-.causal-chain button {
+.causal-chain summary {
   cursor: pointer;
+  display: grid;
+  gap: var(--space-xs);
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.causal-chain button span,
-.causal-finding span {
-  color: var(--ink-soft);
-  font-size: 0.68rem;
+.causal-chain summary > span {
+  color: var(--oxide);
+  font-size: 0.66rem;
+  font-weight: 700;
+  grid-column: 1 / -1;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.causal-finding {
-  border-color: var(--oxide);
+.causal-chain summary > em {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-style: normal;
 }
 
-.causal-finding p {
-  margin-bottom: 0;
+.causal-chain > p {
+  color: var(--ink-soft);
+  margin: var(--space-md) 0;
 }
 
-.causal-arrow {
-  color: var(--oxide);
-  font-size: 1.25rem;
-  text-align: center;
+.causal-evidence {
+  display: grid;
+  gap: var(--space-sm);
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+
+.causal-evidence button {
+  background: var(--paper-deep);
+  border: 1px solid var(--rule);
+  cursor: pointer;
+  display: grid;
+  gap: var(--space-xs);
+  min-height: 3.5rem;
+  padding: var(--space-md);
+  text-align: left;
+}
+
+.causal-evidence button span,
+.causal-evidence button small {
+  color: var(--ink-soft);
+  font-family: var(--font-data);
+  font-size: 0.68rem;
 }
 
 .coverage-ledger article {
@@ -1812,13 +1826,42 @@ textarea::placeholder {
   padding-block: var(--space-xl);
 }
 
-.finding-list article[data-kind='ai-hypothesis'] {
+.finding-list article[data-kind='ai-problem'] {
   border-left: 0.25rem solid var(--amber);
   padding-left: var(--space-lg);
 }
 
-.finding-list article[data-kind='ai-hypothesis'] .finding-meta {
+.finding-list article[data-kind='ai-problem'] .finding-meta {
   color: var(--amber);
+}
+
+.finding-list article[data-kind='capture-limitation'] {
+  border-left: 0.25rem solid var(--blue-ink);
+  padding-left: var(--space-lg);
+}
+
+.finding-list article[data-kind='capture-limitation'] .finding-meta {
+  color: var(--blue-ink);
+}
+
+.finding-list article > details {
+  min-width: 0;
+}
+
+.finding-list article > details > summary {
+  cursor: pointer;
+  display: grid;
+  gap: var(--space-xs);
+  list-style-position: outside;
+}
+
+.finding-list article > details > summary > span:last-child:not(.finding-meta) {
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.finding-body {
+  padding-top: var(--space-md);
 }
 
 .finding-number {

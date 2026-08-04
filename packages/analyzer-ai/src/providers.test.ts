@@ -28,7 +28,7 @@ function codeOf(error: unknown): string | undefined {
 }
 
 describe('direct API provider', () => {
-  it('posts a JSON-object request and returns only local provenance plus hypotheses', async () => {
+  it('posts a strict JSON-schema request and returns only local provenance plus hypotheses', async () => {
     const fetch = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         void input;
@@ -56,7 +56,17 @@ describe('direct API provider', () => {
     });
     expect(JSON.parse(init?.body as string)).toMatchObject({
       model: 'gpt-test',
-      response_format: { type: 'json_object' },
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'vibetrace_ai_findings',
+          strict: true,
+          schema: {
+            required: ['hypotheses'],
+            properties: { hypotheses: { maxItems: 5 } },
+          },
+        },
+      },
       messages: [
         { role: 'system', content: prompt.system },
         { role: 'user', content: prompt.user },
@@ -272,19 +282,22 @@ describe('Codex provider', () => {
           items: {
             required: [
               'id',
+              'kind',
               'category',
+              'severity',
               'title',
               'explanation',
+              'impact',
               'recommendation',
               'confidence',
               'evidenceEventIds',
               'counterEvidenceEventIds',
-              'recommendedExperiment',
             ],
             properties: {
-              recommendation: { type: ['string', 'null'] },
-              counterEvidenceEventIds: { type: ['array', 'null'] },
-              recommendedExperiment: { type: ['string', 'null'] },
+              kind: { enum: ['problem', 'capture_limitation'] },
+              severity: { enum: ['high', 'medium', 'low'] },
+              recommendation: { type: 'string' },
+              counterEvidenceEventIds: { type: 'array' },
             },
           },
         },

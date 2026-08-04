@@ -34,6 +34,7 @@ import {
   type KeyProvider,
 } from './index.js';
 import { readPassphraseEnvelope, writePassphraseEnvelope } from './keys.js';
+import { migrations, runMigrations } from './migrations.js';
 
 const directories: string[] = [];
 const BASE_COMMIT = 'a'.repeat(40);
@@ -604,6 +605,58 @@ describe('encrypted Storage', () => {
     reopened.close();
   });
 
+  it('derives active, idle, and completed session state from lifecycle chronology', async () => {
+    const { storage, sessionId } = await setup();
+    const importLifecycle = (
+      type: 'message.user' | 'turn.completed' | 'session.completed',
+      sequence: number,
+      timestamp: string,
+    ) => {
+      const source = raw(sequence);
+      storage.importEvent({
+        project: { id: 'project', displayName: 'Project' },
+        session: {
+          id: sessionId,
+          projectId: 'project',
+          source: 'test-adapter',
+          sourceSessionId: 'source-session',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          status: 'active',
+          captureMode: 'full',
+        },
+        raw: { ...source, receivedAt: timestamp },
+        event: {
+          ...event(sessionId, 'assigned-during-import', sequence),
+          id: createEventId({
+            adapter: 'test-adapter',
+            sourceSessionId: 'source-session',
+            sourceSequence: sequence,
+            type,
+          }),
+          sequence,
+          timestamp,
+          source: type === 'message.user' ? 'user' : 'harness',
+          type,
+          payload: type === 'message.user' ? { content: 'Continue.' } : {},
+        } as TraceEvent,
+        normalizerId: 'normalizer-v1',
+      });
+    };
+
+    importLifecycle('turn.completed', 2, '2026-01-01T00:00:02.000Z');
+    expect(storage.getSession(sessionId)?.status).toBe('idle');
+    importLifecycle('message.user', 1, '2026-01-01T00:00:01.000Z');
+    expect(storage.getSession(sessionId)?.status).toBe('idle');
+    importLifecycle('message.user', 3, '2026-01-01T00:00:03.000Z');
+    expect(storage.getSession(sessionId)?.status).toBe('active');
+    importLifecycle('session.completed', 4, '2026-01-01T00:00:04.000Z');
+    expect(storage.getSession(sessionId)).toMatchObject({
+      status: 'completed',
+      endedAt: '2026-01-01T00:00:04.000Z',
+    });
+    storage.close();
+  });
+
   it('orders tied event sequences deterministically by event ID', async () => {
     const { storage, sessionId } = await setup();
     const firstRawId = storage.appendRaw(sessionId, raw(101));
@@ -696,7 +749,7 @@ describe('encrypted Storage', () => {
     storage.close();
   });
 
-  it('round-trips and replaces non-secret analyzer finding provenance', async () => {
+  it('migrates and round-trips AI finding semantics while defaulting deterministic findings', async () => {
     const { storage, sessionId } = await setup();
     const rawId = storage.appendRaw(sessionId, raw(1));
     const eventId = storage.appendNormalized(
@@ -717,6 +770,8 @@ describe('encrypted Storage', () => {
       analyzerProvider: 'openai',
       analyzerModel: 'gpt-5.2',
       promptDigest: 'a'.repeat(64),
+      findingKind: 'capture_limitation' as const,
+      impact: 'Missing output limits confidence in the diagnosis.',
     };
     storage.createFinding(finding);
     expect(storage.listFindings(sessionId)).toMatchObject([
@@ -725,6 +780,8 @@ describe('encrypted Storage', () => {
         analyzerProvider: 'openai',
         analyzerModel: 'gpt-5.2',
         promptDigest: 'a'.repeat(64),
+        findingKind: 'capture_limitation',
+        impact: 'Missing output limits confidence in the diagnosis.',
       },
     ]);
     storage.replaceFindings(
@@ -736,6 +793,8 @@ describe('encrypted Storage', () => {
           analyzerProvider: 'anthropic',
           analyzerModel: 'claude-test',
           promptDigest: 'b'.repeat(64),
+          findingKind: 'problem',
+          impact: 'The retry loop could continue wasting time.',
         },
       ],
     );
@@ -745,6 +804,8 @@ describe('encrypted Storage', () => {
         analyzerProvider: 'anthropic',
         analyzerModel: 'claude-test',
         promptDigest: 'b'.repeat(64),
+        findingKind: 'problem',
+        impact: 'The retry loop could continue wasting time.',
       },
     ]);
     expect(() =>
@@ -768,7 +829,119 @@ describe('encrypted Storage', () => {
         analyzerModel: 'm'.repeat(201),
       }),
     ).toThrow('analyzerModel');
+    storage.createFinding({
+      ...finding,
+      id: 'deterministic-default',
+      ruleId: 'deterministic-rule',
+      analyzerProvider: undefined,
+      analyzerModel: undefined,
+      promptDigest: undefined,
+      findingKind: undefined,
+      impact: undefined,
+    });
+    expect(
+      storage
+        .listFindings(sessionId)
+        .find((item) => item.id === 'deterministic-default'),
+    ).toMatchObject({ findingKind: 'problem' });
     storage.close();
+  });
+
+  it('applies finding semantics and lifecycle reconciliation migrations', async () => {
+    const path = join(await stateDirectory(), 'migration-7.db');
+    const db = new Database(path);
+    for (const migration of migrations.filter(
+      (migration) => migration.id <= 7,
+    )) {
+      db.exec(migration.sql);
+      db.prepare(
+        'INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)',
+      ).run(migration.id, '2026-01-01T00:00:00.000Z');
+    }
+    db.prepare(
+      'INSERT INTO projects (id, display_name, created_at) VALUES (?, ?, ?)',
+    ).run('migration-project', 'Migration project', '2026-01-01T00:00:00.000Z');
+    db.prepare(
+      `INSERT INTO sessions (id, project_id, source, source_session_id, started_at, status, capture_mode, source_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'migration-session',
+      'migration-project',
+      'codex-hooks',
+      'source-session',
+      '2026-01-01T00:00:00.000Z',
+      'active',
+      'standard',
+      '0.144.3',
+    );
+    const insertRaw = db.prepare(
+      `INSERT INTO raw_events (id, session_id, adapter, adapter_version, source_version, source_session_id, source_event_id, received_at, payload_json, identity_hash, payload_hash)
+       VALUES (?, 'migration-session', 'codex-hooks', '0.1.0', ?, 'source-session', ?, ?, '{}', ?, ?)`,
+    );
+    insertRaw.run(
+      'raw-user',
+      '0.144.3',
+      'hook:user',
+      '2026-01-01T00:00:01.000Z',
+      'identity-user',
+      'payload-user',
+    );
+    insertRaw.run(
+      'raw-transcript',
+      '0.146.0',
+      'transcript:2:current',
+      '2026-01-01T00:00:02.000Z',
+      'identity-transcript',
+      'payload-transcript',
+    );
+    const insertEvent = db.prepare(
+      `INSERT INTO normalized_events (id, raw_event_id, session_id, sequence, timestamp, source, type, payload_json, raw_payload_json, provenance_json, normalizer_id, schema_version, event_json)
+       VALUES (?, ?, 'migration-session', ?, ?, 'harness', ?, '{}', '{}', '{}', ?, '0.1.0', '{}')`,
+    );
+    insertEvent.run(
+      'event-user',
+      'raw-user',
+      1,
+      '2026-01-01T00:00:01.000Z',
+      'message.user',
+      'codex-hooks',
+    );
+    insertEvent.run(
+      'event-turn',
+      'raw-transcript',
+      2,
+      '2026-01-01T00:00:02.000Z',
+      'turn.completed',
+      'codex-hooks',
+    );
+    runMigrations(db, '2026-01-02T00:00:00.000Z');
+    expect(
+      db.prepare('SELECT id FROM schema_migrations WHERE id = 8').get(),
+    ).toEqual({ id: 8 });
+    expect(
+      db.prepare('SELECT id FROM schema_migrations WHERE id = 9').get(),
+    ).toEqual({ id: 9 });
+    const columns = db.prepare('PRAGMA table_info(findings)').all() as Array<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'finding_kind',
+          notnull: 1,
+          dflt_value: "'problem'",
+        }),
+        expect.objectContaining({ name: 'impact', notnull: 0 }),
+      ]),
+    );
+    expect(
+      db
+        .prepare('SELECT status, source_version FROM sessions WHERE id = ?')
+        .get('migration-session'),
+    ).toEqual({ status: 'idle', source_version: '0.146.0' });
+    db.close();
   });
 
   it('replaces analyzer findings while preserving durable human reviews', async () => {
