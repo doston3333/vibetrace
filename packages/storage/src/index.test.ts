@@ -129,6 +129,14 @@ class UnavailableProvider implements KeyProvider {
     throw new Error('unavailable');
   }
 }
+class FailingIfUsedProvider implements KeyProvider {
+  async getRootSecret(): Promise<Uint8Array | undefined> {
+    throw new Error('keychain must not be consulted');
+  }
+  async setRootSecret(): Promise<void> {
+    throw new Error('keychain must not be consulted');
+  }
+}
 async function directDatabase(
   path: string,
   provider: MemoryKeyProvider,
@@ -805,7 +813,7 @@ describe('encrypted Storage', () => {
     storage.close();
   }, 20_000);
 
-  it('uses a passphrase envelope only when the OS provider is unavailable', async () => {
+  it('initializes and unlocks an explicit passphrase envelope', async () => {
     const path = await stateDirectory();
     const unavailable = new UnavailableProvider();
     const storage = await Storage.initialize({
@@ -834,6 +842,33 @@ describe('encrypted Storage', () => {
         passphrase: 'wrong passphrase',
       }),
     ).rejects.toThrow('could not be unlocked');
+  });
+
+  it('requires an explicit passphrase when the OS provider is unavailable', async () => {
+    const path = await stateDirectory();
+    await expect(
+      Storage.initialize({
+        stateDir: path,
+        keyProvider: new UnavailableProvider(),
+      }),
+    ).rejects.toThrow('passphrase is required');
+  });
+
+  it('bypasses the OS provider when an explicit passphrase is supplied', async () => {
+    const path = await stateDirectory();
+    const provider = new FailingIfUsedProvider();
+    const storage = await Storage.initialize({
+      stateDir: path,
+      keyProvider: provider,
+      passphrase: 'explicit headless passphrase',
+    });
+    storage.close();
+    const unlocked = await Storage.unlock({
+      stateDir: path,
+      keyProvider: provider,
+      passphrase: 'explicit headless passphrase',
+    });
+    unlocked.close();
   });
 
   it('does not create an envelope while opening an existing locked database', async () => {

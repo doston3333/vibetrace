@@ -6,6 +6,7 @@ import {
 } from 'node:crypto';
 import {
   access,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -132,8 +133,8 @@ async function recoverEnvelopeState(stateDir: string): Promise<void> {
 
 async function hasEnvelope(stateDir: string): Promise<boolean> {
   try {
-    await access(envelopePath(stateDir));
-    return true;
+    const status = await lstat(envelopePath(stateDir));
+    return status.isFile() && !status.isSymbolicLink();
   } catch {
     return false;
   }
@@ -232,6 +233,8 @@ export async function readPassphraseEnvelope(
   let envelope: Envelope;
   try {
     await recoverEnvelopeState(stateDir);
+    const status = await lstat(envelopePath(stateDir));
+    if (!status.isFile() || status.isSymbolicLink()) throw new Error('unsafe');
     envelope = JSON.parse(
       await readFile(envelopePath(stateDir), 'utf8'),
     ) as Envelope;
@@ -274,6 +277,18 @@ export async function resolveRootSecret(options: {
   readonly passphrase?: string;
   readonly create: boolean;
 }): Promise<Buffer> {
+  // An explicit passphrase is an operator request to use the local envelope.
+  // Do not probe a potentially unavailable or interactive OS keychain first:
+  // headless starts must remain bounded and deterministic across platforms.
+  if (options.passphrase !== undefined) {
+    if (await hasEnvelope(options.stateDir))
+      return readPassphraseEnvelope(options.stateDir, options.passphrase);
+    if (!options.create)
+      throw new Error('Storage passphrase envelope is unavailable or invalid.');
+    const root = randomBytes(ROOT_SECRET_BYTES);
+    await writePassphraseEnvelope(options.stateDir, options.passphrase, root);
+    return root;
+  }
   const provider = options.keyProvider ?? new OsKeyringProvider();
   try {
     const existing = await provider.getRootSecret();
@@ -283,21 +298,10 @@ export async function resolveRootSecret(options: {
     await provider.setRootSecret(root);
     return root;
   } catch (error) {
-    if (options.passphrase === undefined) {
-      throw error instanceof Error && error.message.includes('initialized')
-        ? error
-        : new Error(
-            'Operating-system keyring is unavailable; a passphrase is required.',
-          );
-    }
-    try {
-      return await readPassphraseEnvelope(options.stateDir, options.passphrase);
-    } catch (envelopeError) {
-      if (!options.create || (await hasEnvelope(options.stateDir)))
-        throw envelopeError;
-      const root = randomBytes(ROOT_SECRET_BYTES);
-      await writePassphraseEnvelope(options.stateDir, options.passphrase, root);
-      return root;
-    }
+    throw error instanceof Error && error.message.includes('initialized')
+      ? error
+      : new Error(
+          'Operating-system keyring is unavailable; a passphrase is required.',
+        );
   }
 }
