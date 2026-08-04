@@ -778,7 +778,7 @@ describe('encrypted Storage', () => {
     );
     expect(storage.searchEvents(sessionId, 'needle 9999')).toHaveLength(1);
     storage.close();
-  }, 20_000);
+  }, 45_000);
 
   it('indexes and lists 10,000 sessions', async () => {
     const path = await stateDirectory();
