@@ -31,6 +31,7 @@ import {
 } from './index.js';
 import {
   ensureSpool,
+  inspectSpool,
   spoolLimits,
   spoolPaths,
   SpoolSegmentSchema,
@@ -367,6 +368,32 @@ describe('sealed spool', () => {
     expect(
       storage.listEvents({ sessionId: segment().event.sessionId }),
     ).toHaveLength(1);
+    storage.close();
+  });
+
+  it('prunes committed archive segments under the configured retention bound', async () => {
+    const { path, storage } = await state();
+    const spool = spoolPaths(path);
+    await writeSegment(spool, segment(1));
+    await writeSegment(spool, segment(2));
+    await expect(
+      importSpool(storage, path, { retention: { maxArchiveBytes: 1 } }),
+    ).resolves.toMatchObject({ imported: 2 });
+    expect(
+      (await readdir(spool.archive)).filter((name) => name.endsWith('.jsonl')),
+    ).toHaveLength(0);
+    expect((await inspectSpool(spool)).archiveBytes).toBe(0);
+    storage.close();
+  });
+
+  it('back-pressures capture before staging beyond the incoming spool bound', async () => {
+    const { path, storage } = await state();
+    const spool = spoolPaths(path);
+    await expect(
+      writeSegment(spool, segment(), {
+        retention: { maxIncomingBytes: 1 },
+      }),
+    ).rejects.toMatchObject({ code: 'SPOOL_CAPACITY_EXCEEDED' });
     storage.close();
   });
 
@@ -788,8 +815,13 @@ describe('daemon API', () => {
         url: '/api/v1/health',
         headers: { authorization: `Bearer ${daemon.token}` },
       })
-    ).json() as { importer: { status: string } };
+    ).json() as {
+      importer: { status: string };
+      spool: { state: string; incomingBytes: number };
+    };
     expect(health.importer.status).toBe('idle');
+    expect(health.spool.state).toBe('ok');
+    expect(health.spool.incomingBytes).toBe(0);
     await daemon.close();
     storage.close();
   });

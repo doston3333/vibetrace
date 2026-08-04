@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { captureProfilePolicy } from '@vibetrace/schema';
 
 import { OTEL_ADAPTER_ID, captureOtelJson } from './index.js';
 
@@ -61,5 +62,42 @@ describe('OpenTelemetry enrichment adapter', () => {
         body: undefined,
       }),
     ).toEqual([]);
+  });
+
+  it('redacts secrets when prompt content is explicitly enabled', () => {
+    const [item] = captureOtelJson({
+      context: {
+        sourceSessionId: 'otel-session',
+        allowPromptContent: true,
+        captureProfile: captureProfilePolicy('full'),
+      },
+      body: {
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    attributes: {
+                      'vibetrace.event_type': 'message.user',
+                      'vibetrace.payload': {
+                        content: 'Authorization: Bearer otel-secret-value',
+                      },
+                    },
+                    body: {
+                      stringValue: 'token=sk-otel-secret-value-1234567890',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const serialized = JSON.stringify({ raw: item?.raw, event: item?.event });
+    expect(serialized).not.toContain('otel-secret-value');
+    expect(serialized).not.toContain('sk-otel-secret-value');
+    expect(item?.event.redactions?.length).toBeGreaterThan(0);
   });
 });

@@ -11,10 +11,12 @@ import {
   type JsonValue,
 } from '@vibetrace/schema';
 import {
+  applyCaptureProfileToMappedEvent,
   validateMappedEvent,
   type AdapterMappedEvent,
   type SourceAdapter,
 } from '@vibetrace/adapter-sdk';
+import type { CaptureProfilePolicy } from '@vibetrace/schema';
 import { z } from 'zod';
 
 export const OTEL_ADAPTER_ID = 'opentelemetry';
@@ -38,6 +40,8 @@ export interface OtelContext {
   readonly sourceVersion?: string;
   readonly allowPromptContent?: boolean;
   readonly sequence?: number;
+  /** Effective local capture policy; defaults to standard with secret redaction. */
+  readonly captureProfile?: CaptureProfilePolicy;
 }
 
 export interface OtelInput {
@@ -123,17 +127,20 @@ function gap(
       captureMode: 'partial',
     },
   });
-  return validateMappedEvent({
-    raw: {
-      adapter: OTEL_ADAPTER_ID,
-      adapterVersion: OTEL_ADAPTER_VERSION,
-      sourceSessionId: context.sourceSessionId,
-      sourceEventId,
-      receivedAt: timestamp,
-      payload,
-    },
-    event,
-  });
+  return applyCaptureProfileToMappedEvent(
+    validateMappedEvent({
+      raw: {
+        adapter: OTEL_ADAPTER_ID,
+        adapterVersion: OTEL_ADAPTER_VERSION,
+        sourceSessionId: context.sourceSessionId,
+        sourceEventId,
+        receivedAt: timestamp,
+        payload,
+      },
+      event,
+    }),
+    context.captureProfile,
+  );
 }
 
 /** Convert only explicit telemetry fields; prompt/body content remains disabled by default. */
@@ -237,22 +244,25 @@ export function captureOtelJson(
           },
         });
         output.push(
-          validateMappedEvent({
-            raw: {
-              adapter: OTEL_ADAPTER_ID,
-              adapterVersion: OTEL_ADAPTER_VERSION,
-              sourceSessionId: input.context.sourceSessionId,
-              sourceEventId,
-              receivedAt: timestamp,
-              payload: {
-                attributes,
-                ...(input.context.allowPromptContent
-                  ? { body: object(item.body) }
-                  : {}),
+          applyCaptureProfileToMappedEvent(
+            validateMappedEvent({
+              raw: {
+                adapter: OTEL_ADAPTER_ID,
+                adapterVersion: OTEL_ADAPTER_VERSION,
+                sourceSessionId: input.context.sourceSessionId,
+                sourceEventId,
+                receivedAt: timestamp,
+                payload: {
+                  attributes,
+                  ...(input.context.allowPromptContent
+                    ? { body: object(item.body) }
+                    : {}),
+                },
               },
-            },
-            event,
-          }),
+              event,
+            }),
+            input.context.captureProfile,
+          ),
         );
       }
     }

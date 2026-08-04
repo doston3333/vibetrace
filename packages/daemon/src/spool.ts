@@ -31,7 +31,38 @@ import { z } from 'zod';
 /** Large tool output remains bounded without excluding the 100 MiB capture scenario. */
 const MAX_SEGMENT_BYTES = 128 * 1024 * 1024;
 const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
+const MAX_INCOMING_BYTES = 512 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
+const MAX_TOTAL_SPOOL_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_HEALTH_ENTRIES = 100_000;
 const TEMP_GRACE_MS = 60_000;
+
+/** Retention bounds for plaintext spool staging and post-commit archives. */
+export interface SpoolRetentionPolicy {
+  readonly maxIncomingBytes: number;
+  readonly maxArchiveBytes: number;
+  readonly maxTotalBytes: number;
+}
+
+export const DEFAULT_SPOOL_RETENTION_POLICY: SpoolRetentionPolicy = {
+  maxIncomingBytes: MAX_INCOMING_BYTES,
+  maxArchiveBytes: MAX_ARCHIVE_BYTES,
+  maxTotalBytes: MAX_TOTAL_SPOOL_BYTES,
+};
+
+export type SpoolPressureState = 'ok' | 'warning' | 'blocked';
+
+export interface SpoolHealth {
+  readonly state: SpoolPressureState;
+  readonly incomingBytes: number;
+  readonly archiveBytes: number;
+  readonly quarantineBytes: number;
+  readonly totalBytes: number;
+  readonly incomingFiles: number;
+  readonly archiveFiles: number;
+  readonly quarantineFiles: number;
+  readonly reasons: readonly string[];
+}
 
 const projectSchema = z
   .object({
@@ -194,6 +225,8 @@ export interface SpoolFaults {
   readonly afterArtifactBeforeArchive?: (path: string) => void | Promise<void>;
   readonly afterCommitBeforeArchive?: (path: string) => void | Promise<void>;
   readonly beforeRename?: (temporary: string) => void | Promise<void>;
+  /** Test/embedding seam for a bounded retention policy. */
+  readonly retention?: Partial<SpoolRetentionPolicy>;
 }
 
 /** Read-only time control for stale temporary segment recovery. */
@@ -211,6 +244,126 @@ export interface SpoolPaths {
   readonly incoming: string;
   readonly archive: string;
   readonly quarantine: string;
+}
+
+function retentionPolicy(
+  override: Partial<SpoolRetentionPolicy> | undefined,
+): SpoolRetentionPolicy {
+  const values = {
+    ...DEFAULT_SPOOL_RETENTION_POLICY,
+    ...(override ?? {}),
+  };
+  for (const [name, value] of Object.entries(values))
+    if (!Number.isInteger(value) || value < 1)
+      throw new Error(`Invalid spool retention limit: ${name}.`);
+  if (values.maxIncomingBytes > values.maxTotalBytes)
+    throw new Error('Incoming spool limit cannot exceed total spool limit.');
+  if (values.maxArchiveBytes > values.maxTotalBytes)
+    throw new Error('Archive spool limit cannot exceed total spool limit.');
+  return values;
+}
+
+async function directoryUsage(path: string): Promise<{
+  readonly bytes: number;
+  readonly files: number;
+  readonly truncated: boolean;
+}> {
+  let bytes = 0;
+  let files = 0;
+  let truncated = false;
+  for (const entry of await readdir(path)) {
+    if (files >= MAX_HEALTH_ENTRIES) {
+      truncated = true;
+      break;
+    }
+    const metadata = await lstat(join(path, entry)).catch(() => undefined);
+    if (!metadata?.isFile() || metadata.isSymbolicLink()) continue;
+    bytes += metadata.size;
+    files += 1;
+  }
+  return { bytes, files, truncated };
+}
+
+/** Report bounded spool usage for health checks and operator tooling. */
+export async function inspectSpool(
+  paths: SpoolPaths,
+  override?: Partial<SpoolRetentionPolicy>,
+): Promise<SpoolHealth> {
+  await ensureSpool(paths);
+  const policy = retentionPolicy(override);
+  const [incoming, archive, quarantine] = await Promise.all([
+    directoryUsage(paths.incoming),
+    directoryUsage(paths.archive),
+    directoryUsage(paths.quarantine),
+  ]);
+  const totalBytes = incoming.bytes + archive.bytes + quarantine.bytes;
+  const reasons: string[] = [];
+  if (incoming.bytes >= policy.maxIncomingBytes)
+    reasons.push('incoming-capacity');
+  if (archive.bytes > policy.maxArchiveBytes) reasons.push('archive-retention');
+  if (totalBytes >= policy.maxTotalBytes) reasons.push('total-capacity');
+  if (incoming.truncated || archive.truncated || quarantine.truncated)
+    reasons.push('entry-count-bound');
+  const warningBytes = Math.floor(policy.maxTotalBytes * 0.8);
+  const state: SpoolPressureState =
+    reasons.includes('total-capacity') || reasons.includes('incoming-capacity')
+      ? 'blocked'
+      : reasons.length > 0 || totalBytes >= warningBytes
+        ? 'warning'
+        : 'ok';
+  return {
+    state,
+    incomingBytes: incoming.bytes,
+    archiveBytes: archive.bytes,
+    quarantineBytes: quarantine.bytes,
+    totalBytes,
+    incomingFiles: incoming.files,
+    archiveFiles: archive.files,
+    quarantineFiles: quarantine.files,
+    reasons,
+  };
+}
+
+async function assertIncomingCapacity(
+  paths: SpoolPaths,
+  additionalBytes: number,
+  override?: Partial<SpoolRetentionPolicy>,
+): Promise<void> {
+  const policy = retentionPolicy(override);
+  const usage = await directoryUsage(paths.incoming);
+  if (usage.bytes + additionalBytes <= policy.maxIncomingBytes) return;
+  const error = new Error(
+    'Spool incoming capacity is exhausted; the daemon must import pending events before capture resumes.',
+  );
+  Object.assign(error, { code: 'SPOOL_CAPACITY_EXCEEDED' });
+  throw error;
+}
+
+async function pruneArchive(
+  paths: SpoolPaths,
+  override?: Partial<SpoolRetentionPolicy>,
+): Promise<void> {
+  const policy = retentionPolicy(override);
+  const candidates: { path: string; size: number; mtimeMs: number }[] = [];
+  for (const entry of await readdir(paths.archive)) {
+    if (!entry.endsWith('.jsonl')) continue;
+    const path = join(paths.archive, entry);
+    const metadata = await lstat(path).catch(() => undefined);
+    if (!metadata?.isFile() || metadata.isSymbolicLink()) continue;
+    candidates.push({ path, size: metadata.size, mtimeMs: metadata.mtimeMs });
+  }
+  let total = candidates.reduce((sum, candidate) => sum + candidate.size, 0);
+  if (total <= policy.maxArchiveBytes) return;
+  candidates.sort(
+    (left, right) =>
+      left.mtimeMs - right.mtimeMs || left.path.localeCompare(right.path),
+  );
+  for (const candidate of candidates) {
+    if (total <= policy.maxArchiveBytes) break;
+    await rm(candidate.path, { force: true });
+    total -= candidate.size;
+  }
+  await syncDirectory(paths.archive);
 }
 
 /** Build state-scoped spool locations. */
@@ -268,13 +421,15 @@ async function syncDirectory(path: string): Promise<void> {
 export async function writeSegment(
   paths: SpoolPaths,
   input: SpoolSegment,
-  faults: Pick<SpoolFaults, 'beforeRename'> = {},
+  faults: Pick<SpoolFaults, 'beforeRename' | 'retention'> = {},
 ): Promise<string> {
   const segment = SpoolSegmentSchema.parse(input);
   const contents = `${JSON.stringify(segment)}\n`;
-  if (Buffer.byteLength(contents, 'utf8') > MAX_SEGMENT_BYTES)
+  const contentBytes = Buffer.byteLength(contents, 'utf8');
+  if (contentBytes > MAX_SEGMENT_BYTES)
     throw new Error('Spool segment exceeds the 128 MiB size limit.');
   await ensureSpool(paths);
+  await assertIncomingCapacity(paths, contentBytes, faults.retention);
   const name = `${randomUUID()}.jsonl`;
   const target = join(paths.incoming, name);
   const temporary = join(paths.incoming, `.${name}.${randomUUID()}.tmp`);
@@ -452,6 +607,7 @@ export async function importSegments(
       throw error;
     }
   }
+  await pruneArchive(paths, options.retention);
   return {
     imported: importedCount,
     quarantined,
@@ -462,5 +618,8 @@ export async function importSegments(
 export const spoolLimits = {
   maxSegmentBytes: MAX_SEGMENT_BYTES,
   maxImportBytes: MAX_IMPORT_BYTES,
+  maxIncomingBytes: MAX_INCOMING_BYTES,
+  maxArchiveBytes: MAX_ARCHIVE_BYTES,
+  maxTotalBytes: MAX_TOTAL_SPOOL_BYTES,
   temporaryGraceMs: TEMP_GRACE_MS,
 } as const;

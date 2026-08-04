@@ -6,21 +6,21 @@ verification are both present. Native smoke evidence is intentionally kept as
 an external release artifact; a local Linux pass cannot stand in for macOS or
 Windows.
 
-| Area                                  | Implementation evidence                                                                                                                                                    | Verification                                      |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Canonical schema and raw preservation | `packages/schema`, generated JSON Schema, deterministic IDs, migration registry                                                                                            | schema, fixture, and integration gates            |
-| Encrypted storage and blobs           | `packages/storage`, SQLCipher-compatible database, keyed authenticated blobs, FTS5                                                                                         | storage/security/performance gates                |
-| Crash-safe capture                    | `packages/daemon/src/spool.ts`, atomic sealed segments, quarantine and checkpoints                                                                                         | daemon integration/security gates                 |
-| Authenticated local API               | loopback Fastify API, bearer daemon token, ticket-bound single-use browser handoff and strict origin checks                                                                | daemon and pack smoke gates                       |
-| Codex hooks                           | `packages/adapter-codex`, manifest-owned install/uninstall and transcript gaps                                                                                             | Codex adapter corpus and native smoke             |
-| App-server contract                   | `packages/adapter-codex-app-server/src/schemas.ts`, packaged versioned envelope artifacts, bounded JSONL, handshake deadlines, explicit approval resolutions               | versioned adapter fixtures                        |
-| Repository/verification enrichment    | `packages/enrichment`, shell-free subprocess calls, fingerprints and diffs                                                                                                 | enrichment and adapter fixtures                   |
-| Forensic dashboard                    | `apps/dashboard`, virtual timeline, inspector, coverage, context/causal views, annotations, scorecard                                                                      | dashboard 20k-event and browser tests             |
-| Deterministic diagnostics             | fifteen versioned rules, positive/negative/edge fixture corpus                                                                                                             | precision/recall report and diagnostics gate      |
-| Optional AI synthesis                 | `packages/analyzer-ai`, fixed taxonomy, tool-free prompt, evidence verifier                                                                                                | analyzer and daemon security tests                |
-| Evaluation and comparison             | versioned manifests, session-to-case wizard, explicit Codex execution policies/effective argv, detached worktrees, captured eval sessions, matrix summaries and divergence | eval-runner, comparison, CLI, and dashboard tests |
-| Redaction and portable bundles        | previewed derived views, secret detectors, encrypted age stream, bounded safe import                                                                                       | bundle security and pack smoke gates              |
-| Release artifact                      | bundled dashboard/daemon npm CLI, explicit macOS x64/arm64 and three-OS CI matrix                                                                                          | `pnpm pack:smoke` plus native smoke artifacts     |
+| Area                                  | Implementation evidence                                                                                                                                                       | Verification                                                   |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Canonical schema and raw preservation | `packages/schema`, generated JSON Schema, deterministic IDs, migration registry                                                                                               | schema, fixture, and integration gates                         |
+| Encrypted storage and blobs           | `packages/storage`, SQLCipher-compatible database, keyed authenticated blobs, FTS5                                                                                            | storage/security/performance gates                             |
+| Crash-safe capture                    | `packages/daemon/src/spool.ts`, atomic sealed segments, quarantine, checkpoints, bounded incoming backpressure, post-commit archive retention, and health pressure reporting  | daemon integration/security gates                              |
+| Authenticated local API               | loopback Fastify API, bearer daemon token, ticket-bound single-use browser handoff and strict origin checks                                                                   | daemon and pack smoke gates                                    |
+| Codex hooks                           | `packages/adapter-codex`, manifest-owned install/uninstall and transcript gaps                                                                                                | Codex adapter corpus and native smoke                          |
+| App-server contract                   | `packages/adapter-codex-app-server/src/schemas.ts`, packaged versioned envelope artifacts, bounded JSONL, handshake deadlines, explicit approval resolutions                  | versioned adapter fixtures                                     |
+| Repository/verification enrichment    | `packages/enrichment`, shell-free subprocess calls, fingerprints and diffs                                                                                                    | enrichment and adapter fixtures                                |
+| Forensic dashboard                    | `apps/dashboard`, virtual timeline, inspector, coverage, context/causal views, annotations, scorecard                                                                         | dashboard 20k-event and browser tests                          |
+| Deterministic diagnostics             | fifteen versioned rules, positive/negative/edge fixture corpus                                                                                                                | precision/recall report and diagnostics gate                   |
+| Optional AI synthesis                 | `packages/analyzer-ai`, fixed taxonomy, tool-free prompt, evidence verifier                                                                                                   | analyzer and daemon security tests                             |
+| Evaluation and comparison             | versioned manifests, session-to-case wizard, fail-closed Codex execution policies/effective argv, detached worktrees, captured eval sessions, matrix summaries and divergence | eval-runner, comparison, CLI, dashboard, and packed eval smoke |
+| Redaction and portable bundles        | previewed derived views, secret detectors, encrypted age stream, bounded safe import                                                                                          | bundle security and pack smoke gates                           |
+| Release artifact                      | bundled dashboard/daemon npm CLI, explicit macOS x64/arm64 and three-OS CI matrix                                                                                             | `pnpm pack:smoke` plus native smoke artifacts                  |
 
 ## Release checklist
 
@@ -59,9 +59,9 @@ pnpm test:performance   # 7 files, 92 tests
 pnpm pack:smoke
 ```
 
-The packed-install smoke test exercised the bundled CLI, isolated temporary
+The packed-install smoke test exercises the bundled CLI, isolated temporary
 homes, daemon authentication and lifecycle, dashboard serving, encrypted
-export/import, eval manifest validation, isolated run boundaries, and
-ownership-safe Codex hook uninstall. The remaining checklist items require
+export/import, a real clean-worktree eval run with effective policy assertions,
+and ownership-safe Codex hook uninstall. The remaining checklist items require
 fresh artifacts from the configured Ubuntu, macOS, and Windows CI runners and
 native Codex installations before publishing a release.

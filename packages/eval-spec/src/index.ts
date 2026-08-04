@@ -188,14 +188,24 @@ export const EvalExecutionConfigurationSchema = z
       });
     }
     if (
-      value.networkPolicy !== undefined &&
+      value.networkPolicy === 'enabled' &&
       value.sandboxPolicy !== 'workspace-write'
     )
       context.addIssue({
         code: 'custom',
         path: ['networkPolicy'],
         message:
-          'networkPolicy requires sandboxPolicy "workspace-write" so it can be applied explicitly.',
+          'networkPolicy "enabled" requires sandboxPolicy "workspace-write" so it can be applied explicitly.',
+      });
+    if (
+      value.networkPolicy === 'disabled' &&
+      value.sandboxPolicy === 'danger-full-access'
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['networkPolicy'],
+        message:
+          'networkPolicy "disabled" cannot be guaranteed with sandboxPolicy "danger-full-access".',
       });
   });
 export type EvalExecutionConfiguration = z.infer<

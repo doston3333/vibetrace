@@ -587,12 +587,21 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       'Run Codex in a detached worktree and evaluate success checks.',
     )
     .option('--cwd <path>', 'Active checkout to isolate.', process.cwd())
+    .option(
+      '--codex <path>',
+      'Codex executable path or command used for the run (advanced).',
+    )
     .option('--no-persist', 'Do not persist the run result in the daemon.')
     .option('--json', 'Print the complete run result.')
     .action(
       async (
         file: string,
-        options: { cwd: string; persist: boolean; json?: boolean },
+        options: {
+          cwd: string;
+          codex?: string;
+          persist: boolean;
+          json?: boolean;
+        },
       ) => {
         const manifest = await readManifestFile(file);
         const runOptions: Parameters<typeof runEvaluation>[0] = {
@@ -606,6 +615,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
                   ),
               }
             : {}),
+          ...(options.codex ? { codex: { executable: options.codex } } : {}),
         };
         const result = await (dependencies.runEvaluation ?? runEvaluation)(
           runOptions,
@@ -622,7 +632,12 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
             {
               method: 'POST',
               body: JSON.stringify({
-                configuration: manifest.configuration,
+                configuration: {
+                  ...manifest.configuration,
+                  ...(result.execution
+                    ? { effectiveExecution: result.execution }
+                    : {}),
+                },
                 worktreeFingerprintHash: result.worktreeFingerprintHash,
                 status: runStatus,
               }),

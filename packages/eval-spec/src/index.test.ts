@@ -119,6 +119,30 @@ describe('eval manifest schema', () => {
         },
       }).success,
     ).toBe(false);
+    expect(
+      EvalManifestSchema.safeParse({
+        ...base,
+        configuration: {
+          ...base.configuration,
+          execution: {
+            sandboxPolicy: 'read-only',
+            networkPolicy: 'disabled',
+          },
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      EvalManifestSchema.safeParse({
+        ...base,
+        configuration: {
+          ...base.configuration,
+          execution: {
+            sandboxPolicy: 'danger-full-access',
+            networkPolicy: 'disabled',
+          },
+        },
+      }).success,
+    ).toBe(false);
     expect(parseEvalManifest(base).configuration.execution).toBeUndefined();
   });
 

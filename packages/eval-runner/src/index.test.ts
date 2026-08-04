@@ -224,6 +224,37 @@ describe('isolated evaluation runner', () => {
       networkPolicy: 'disabled',
       extraArgs: [],
     });
+    const unconfiguredManifest = parseEvalManifest({
+      ...manifest,
+      configuration: {
+        skills: [],
+        instructionHashes: [],
+        inferredFields: [],
+      },
+    });
+    const defaulted = resolveCodexExecution(unconfiguredManifest);
+    expect(defaulted.configuration).toEqual({
+      approvalPolicy: 'never',
+      sandboxPolicy: 'workspace-write',
+      networkPolicy: 'disabled',
+      extraArgs: [],
+    });
+    expect(defaulted.argv).toContain('--sandbox');
+    expect(defaulted.argv).toContain('workspace-write');
+    expect(defaulted.argv).toContain(
+      'sandbox_workspace_write.network_access=false',
+    );
+    const unsafe = parseEvalManifest({
+      ...manifest,
+      configuration: {
+        skills: [],
+        instructionHashes: [],
+        inferredFields: [],
+        sandboxPolicy: 'danger-full-access',
+        networkPolicy: 'disabled',
+      },
+    });
+    expect(() => resolveCodexExecution(unsafe)).toThrow('cannot be guaranteed');
   });
 
   it('runs the resolved shell-free argv and records its effective configuration', async () => {
@@ -264,12 +295,13 @@ describe('isolated evaluation runner', () => {
     expect(record.execution?.argv).toEqual(record.commandResults?.[0]?.argv);
     expect(record.execution?.configuration).toEqual({
       model: 'gpt-5.6-codex',
+      approvalPolicy: 'never',
       sandboxPolicy: 'workspace-write',
       networkPolicy: 'enabled',
       extraArgs: ['--color=never'],
     });
     expect(JSON.parse(record.output ?? '')).toEqual({
-      argv: record.execution?.argv.slice(1),
+      argv: record.execution?.argv.slice(2),
     });
   });
 

@@ -39,6 +39,11 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 export const MAX_CAPTURE_EVENTS = 20_000;
 
+/** Fail-closed policies used when a legacy manifest omits execution settings. */
+export const DEFAULT_EVAL_APPROVAL_POLICY = 'never' as const;
+export const DEFAULT_EVAL_SANDBOX_POLICY = 'workspace-write' as const;
+export const DEFAULT_EVAL_NETWORK_POLICY = 'disabled' as const;
+
 export interface CommandResult {
   readonly argv: readonly string[];
   readonly exitCode: number;
@@ -161,6 +166,14 @@ function resolveExecutionValue(
 
 function validateExecutionPolicy(
   field: 'approvalPolicy' | 'sandboxPolicy' | 'networkPolicy',
+  value: string,
+): string;
+function validateExecutionPolicy(
+  field: 'approvalPolicy' | 'sandboxPolicy' | 'networkPolicy',
+  value: string | undefined,
+): string | undefined;
+function validateExecutionPolicy(
+  field: 'approvalPolicy' | 'sandboxPolicy' | 'networkPolicy',
   value: string | undefined,
 ): string | undefined {
   if (value === undefined) return undefined;
@@ -175,6 +188,20 @@ function validateExecutionPolicy(
       `Unsupported execution ${field}: ${value}. Configure a supported explicit policy instead.`,
     );
   return result.data;
+}
+
+function validateNetworkCompatibility(
+  sandboxPolicy: string,
+  networkPolicy: string,
+): void {
+  if (networkPolicy === 'enabled' && sandboxPolicy !== 'workspace-write')
+    throw new Error(
+      'networkPolicy "enabled" requires sandboxPolicy "workspace-write" so it can be applied explicitly.',
+    );
+  if (networkPolicy === 'disabled' && sandboxPolicy === 'danger-full-access')
+    throw new Error(
+      'networkPolicy "disabled" cannot be guaranteed with sandboxPolicy "danger-full-access".',
+    );
 }
 
 /** Resolve manifest configuration into the exact, shell-free Codex argv. */
@@ -207,7 +234,7 @@ export function resolveCodexExecution(
       'approvalPolicy',
       execution?.approvalPolicy,
       manifest.configuration.approvalPolicy,
-    ),
+    ) ?? DEFAULT_EVAL_APPROVAL_POLICY,
   );
   const sandboxPolicy = validateExecutionPolicy(
     'sandboxPolicy',
@@ -215,7 +242,7 @@ export function resolveCodexExecution(
       'sandboxPolicy',
       execution?.sandboxPolicy,
       manifest.configuration.sandboxPolicy,
-    ),
+    ) ?? DEFAULT_EVAL_SANDBOX_POLICY,
   );
   const networkPolicy = validateExecutionPolicy(
     'networkPolicy',
@@ -223,12 +250,9 @@ export function resolveCodexExecution(
       'networkPolicy',
       execution?.networkPolicy,
       manifest.configuration.networkPolicy,
-    ),
+    ) ?? DEFAULT_EVAL_NETWORK_POLICY,
   );
-  if (networkPolicy !== undefined && sandboxPolicy !== 'workspace-write')
-    throw new Error(
-      'networkPolicy requires sandboxPolicy "workspace-write" so it can be applied explicitly.',
-    );
+  validateNetworkCompatibility(sandboxPolicy, networkPolicy);
 
   const extraArgs = [
     ...(execution?.extraArgs ?? []),
@@ -244,12 +268,18 @@ export function resolveCodexExecution(
   )
     throw new Error('Codex executable is not a safe bounded value.');
 
-  const argv = [executable, 'exec', '--json'];
+  // A JavaScript fixture/wrapper is launched through the current Node runtime
+  // so the same smoke path works on Windows where `.mjs` is not executable by
+  // `execFile(..., { shell: false })` on its own.
+  const nodeScript = /\.(?:c?m?js)$/iu.test(executable);
+  const argv = nodeScript
+    ? [process.execPath, executable, 'exec', '--json']
+    : [executable, 'exec', '--json'];
   if (model !== undefined) argv.push('--model', model);
   if (approvalPolicy !== undefined)
     argv.push('--config', `approval_policy=${JSON.stringify(approvalPolicy)}`);
   if (sandboxPolicy !== undefined) argv.push('--sandbox', sandboxPolicy);
-  if (networkPolicy !== undefined)
+  if (networkPolicy !== undefined && sandboxPolicy === 'workspace-write')
     argv.push(
       '--config',
       `sandbox_workspace_write.network_access=${networkPolicy === 'enabled'}`,

@@ -70,6 +70,7 @@ import { z } from 'zod';
 
 import {
   hardenSpool,
+  inspectSpool,
   importSegments,
   spoolPaths,
   type SpoolImportOptions,
@@ -80,8 +81,11 @@ export {
   SpoolSegmentSchema,
   ensureSpool,
   hardenSpool,
+  inspectSpool,
   spoolPaths,
   writeSegment,
+  type SpoolHealth,
+  type SpoolRetentionPolicy,
   type SpoolPaths,
   type SpoolSegment,
 } from './spool.js';
@@ -711,6 +715,27 @@ async function ensureCapturePolicy(stateDir: string): Promise<void> {
   }
 }
 
+/** Read the effective source-boundary policy for adapters hosted by the daemon. */
+export async function readCaptureProfilePolicy(
+  stateDir: string,
+): Promise<CaptureProfilePolicy> {
+  try {
+    const path = capturePolicyPath(stateDir);
+    const metadata = await lstat(path);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size > 16 * 1024
+    )
+      throw new Error('Invalid capture policy.');
+    return CaptureProfilePolicySchema.parse(
+      JSON.parse(await readFile(path, 'utf8')),
+    );
+  } catch {
+    return CaptureProfilePolicySchema.parse(captureProfilePolicy('standard'));
+  }
+}
+
 async function loadOrCreateToken(stateDir: string): Promise<string> {
   const path = join(stateDir, 'auth-token');
   try {
@@ -988,6 +1013,7 @@ export async function startDaemon(
       instanceId,
       apiVersion: API_VERSION,
       importer,
+      spool: await inspectSpool(spoolPaths(stateDir)),
     }));
     app.post('/api/v1/auth/tickets', async (request, reply) => {
       const supplied = bearer(request.headers.authorization);
@@ -1091,11 +1117,15 @@ export async function startDaemon(
             .code(400)
             .send({ code: 'SOURCE_SESSION_HEADER_REQUIRED' });
         try {
+          const capturePolicy = await readCaptureProfilePolicy(stateDir);
           const mapped = captureOtelJson({
             body: request.body,
             context: {
               sourceSessionId,
-              allowPromptContent: options.otel?.allowPromptContent === true,
+              allowPromptContent:
+                options.otel?.allowPromptContent === true &&
+                capturePolicy.capturePrompts,
+              captureProfile: capturePolicy,
             },
           });
           for (const item of mapped)

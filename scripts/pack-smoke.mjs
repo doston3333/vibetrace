@@ -1,5 +1,13 @@
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +20,9 @@ const installPrefix = join(temporary, 'global install');
 const sourceHome = join(temporary, 'source-home');
 const targetHome = join(temporary, 'target-home');
 const codexHome = join(temporary, 'codex-home');
+const evalCheckout = join(temporary, 'eval checkout');
+const evalManifest = join(temporary, 'eval-manifest.json');
+const evalCodex = join(temporary, 'codex-eval-mock.mjs');
 const bundlePath = join(temporary, 'smoke.vibetrace.age');
 const storagePassphrase = 'pack smoke storage passphrase';
 const bundlePassphrase = 'pack smoke bundle passphrase';
@@ -64,6 +75,8 @@ const npm = (args, options = {}) =>
   process.platform === 'win32'
     ? run(process.execPath, [windowsNpmCli, ...args], options)
     : run('npm', args, options);
+
+const git = (args, cwd) => run('git', ['-C', cwd, ...args], { cwd });
 
 let installedCli;
 const cli = (args, options = {}) =>
@@ -200,6 +213,89 @@ try {
     VIBETRACE_HOME: sourceHome,
     CODEX_HOME: codexHome,
   };
+
+  // Exercise the installed tarball's real eval runner in a clean Git checkout.
+  // The mock is a bounded Node script so this assertion is deterministic and
+  // does not require Codex credentials or a network connection.
+  await mkdir(evalCheckout, { mode: 0o700 });
+  await git(['init', '-q'], evalCheckout);
+  await git(
+    ['config', 'user.email', 'pack-smoke@example.invalid'],
+    evalCheckout,
+  );
+  await git(['config', 'user.name', 'VibeTrace Pack Smoke'], evalCheckout);
+  await writeFile(join(evalCheckout, 'README.md'), 'baseline\n');
+  await git(['add', 'README.md'], evalCheckout);
+  await git(['commit', '-qm', 'baseline'], evalCheckout);
+  const baseCommit = (
+    await git(['rev-parse', 'HEAD'], evalCheckout)
+  ).stdout.trim();
+  await writeFile(
+    evalCodex,
+    "import { writeFile } from 'node:fs/promises';\nawait writeFile('eval-result.txt', 'passed\\n', { flag: 'wx' });\nprocess.stdout.write(JSON.stringify({ type: 'turn.completed', source: 'agent', payload: {} }) + '\\n');\n",
+    { mode: 0o700 },
+  );
+  await chmod(evalCodex, 0o700);
+  await writeFile(
+    evalManifest,
+    `${JSON.stringify(
+      {
+        schemaVersion: '1.0.0',
+        id: '00000000-0000-5000-8000-000000000901',
+        name: 'Pack smoke evaluation',
+        sourceEvidence: {
+          eventIds: [],
+          artifactBlobHashes: [],
+          captureGapIds: [],
+        },
+        repository: { baseCommit },
+        task: {
+          prompt: 'Create the evaluation result.',
+          constraints: [],
+          inferredFields: [],
+        },
+        configuration: {
+          skills: [],
+          instructionHashes: [],
+          inferredFields: [],
+        },
+        success: {
+          assertions: [{ type: 'file_exists', path: 'eval-result.txt' }],
+        },
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      null,
+      2,
+    )}\n`,
+    { mode: 0o600 },
+  );
+  const evalRun = await cli(
+    [
+      'eval',
+      'run',
+      evalManifest,
+      '--cwd',
+      evalCheckout,
+      '--codex',
+      evalCodex,
+      '--no-persist',
+      '--json',
+    ],
+    { env: sourceEnv, timeoutMs: 120_000 },
+  );
+  const evalResult = JSON.parse(evalRun.stdout);
+  if (
+    evalResult.success !== true ||
+    evalResult.execution?.configuration?.approvalPolicy !== 'never' ||
+    evalResult.execution?.configuration?.sandboxPolicy !== 'workspace-write' ||
+    evalResult.execution?.configuration?.networkPolicy !== 'disabled'
+  )
+    throw new Error(
+      'Packed CLI eval did not enforce effective execution policy.',
+    );
+  if (evalResult.checks?.[0]?.status !== 'passed')
+    throw new Error('Packed CLI eval assertion did not pass.');
+
   await cli(['init', 'codex', '--dry-run'], { env: sourceEnv });
   await cli(['init', 'codex'], { env: sourceEnv });
   await assertOwnerOnlyWindowsAcl(sourceHome);

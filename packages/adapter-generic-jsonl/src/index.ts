@@ -12,10 +12,12 @@ import {
   type JsonObject,
 } from '@vibetrace/schema';
 import {
+  applyCaptureProfileToMappedEvent,
   validateMappedEvent,
   type AdapterMappedEvent,
   type SourceAdapter,
 } from '@vibetrace/adapter-sdk';
+import type { CaptureProfilePolicy } from '@vibetrace/schema';
 import { z } from 'zod';
 
 export const GENERIC_ADAPTER_ID = 'generic-jsonl-agent';
@@ -49,6 +51,8 @@ export interface GenericJsonlContext {
   readonly sourceSessionId: string;
   readonly sourceVersion?: string;
   readonly sequence?: number;
+  /** Effective local capture policy; defaults to standard with secret redaction. */
+  readonly captureProfile?: CaptureProfilePolicy;
 }
 
 export interface GenericJsonlInput {
@@ -121,20 +125,23 @@ function gap(
       captureMode: 'partial',
     },
   });
-  return validateMappedEvent({
-    raw: {
-      adapter: GENERIC_ADAPTER_ID,
-      adapterVersion: GENERIC_ADAPTER_VERSION,
-      ...(context.sourceVersion
-        ? { sourceVersion: context.sourceVersion }
-        : {}),
-      sourceSessionId: context.sourceSessionId,
-      sourceEventId,
-      receivedAt: event.timestamp,
-      payload: { reason, sourceEventId },
-    },
-    event,
-  });
+  return applyCaptureProfileToMappedEvent(
+    validateMappedEvent({
+      raw: {
+        adapter: GENERIC_ADAPTER_ID,
+        adapterVersion: GENERIC_ADAPTER_VERSION,
+        ...(context.sourceVersion
+          ? { sourceVersion: context.sourceVersion }
+          : {}),
+        sourceSessionId: context.sourceSessionId,
+        sourceEventId,
+        receivedAt: event.timestamp,
+        payload: { reason, sourceEventId },
+      },
+      event,
+    }),
+    context.captureProfile,
+  );
 }
 
 function mapRecord(
@@ -191,20 +198,23 @@ function mapRecord(
       captureMode: 'full',
     },
   });
-  return validateMappedEvent({
-    raw: {
-      adapter: GENERIC_ADAPTER_ID,
-      adapterVersion: GENERIC_ADAPTER_VERSION,
-      ...((item.sourceVersion ?? context.sourceVersion)
-        ? { sourceVersion: item.sourceVersion ?? context.sourceVersion }
-        : {}),
-      sourceSessionId: item.sourceSessionId,
-      sourceEventId,
-      receivedAt,
-      payload: object(value),
-    },
-    event,
-  });
+  return applyCaptureProfileToMappedEvent(
+    validateMappedEvent({
+      raw: {
+        adapter: GENERIC_ADAPTER_ID,
+        adapterVersion: GENERIC_ADAPTER_VERSION,
+        ...((item.sourceVersion ?? context.sourceVersion)
+          ? { sourceVersion: item.sourceVersion ?? context.sourceVersion }
+          : {}),
+        sourceSessionId: item.sourceSessionId,
+        sourceEventId,
+        receivedAt,
+        payload: object(value),
+      },
+      event,
+    }),
+    context.captureProfile,
+  );
 }
 
 /** Capture generic agent JSONL while turning malformed/unsupported data into gaps. */

@@ -43,7 +43,14 @@ argv and effective model/approval/sandbox/network policy recorded on the run.
 Legacy flat fields remain readable, conflicting fields are rejected, and extra
 arguments may not override `exec`, JSON output, working-directory, approval,
 sandbox, or output controls. Unsupported policy values fail closed rather than
-being silently ignored.
+being silently ignored. When a CLI run is persisted, the effective invocation
+is stored alongside the reviewed manifest configuration for later comparison.
+Runnable legacy manifests that omit execution settings receive the fail-closed
+defaults `approvalPolicy=never`, `sandboxPolicy=workspace-write`, and
+`networkPolicy=disabled`; explicit `danger-full-access` runs cannot claim that
+network access is disabled. A detached worktree protects the active checkout,
+but is not an operating-system sandbox: untrusted eval code must only run when
+the host's Codex sandbox or container boundary is trusted.
 
 Human assertions remain `pending_review`; they are not silently converted into
 failures. Captured command output is uploaded to the encrypted blob store and

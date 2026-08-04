@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 
 import { assertAdapterConformance } from '@vibetrace/adapter-sdk';
+import { captureProfilePolicy } from '@vibetrace/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -77,5 +78,38 @@ describe('generic JSONL adapter', () => {
     expect(events).toHaveLength(2);
     expect(events[0]?.event.type).toBe('capture.gap');
     expect(events[1]?.event.type).toBe('message.agent');
+  });
+
+  it('applies the profile before raw and canonical payloads leave the adapter', async () => {
+    const [item] = await (async () => {
+      const output = [];
+      for await (const candidate of captureGenericJsonl({
+        chunks: Readable.from([
+          line({
+            sourceSessionId: 'agent-session',
+            sourceEventId: 'prompt',
+            type: 'message.user',
+            source: 'user',
+            payload: {
+              content: 'token=sk-test-secret-value-1234567890',
+              authorization: 'Bearer generic-secret-value',
+              environment: { HOME: '/private/user' },
+            },
+          }),
+        ]),
+        context: {
+          ...context,
+          captureProfile: captureProfilePolicy('minimal'),
+        },
+      }))
+        output.push(candidate);
+      return output;
+    })();
+    expect(item).toBeDefined();
+    const serialized = JSON.stringify({ raw: item?.raw, event: item?.event });
+    expect(serialized).not.toContain('sk-test-secret-value');
+    expect(serialized).not.toContain('generic-secret-value');
+    expect(serialized).not.toContain('/private/user');
+    expect(item?.event.redactions?.length).toBeGreaterThan(0);
   });
 });

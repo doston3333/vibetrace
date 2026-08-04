@@ -17,7 +17,11 @@ secret detector. Minimal, standard, and full profiles are enforced at the
 source boundary, including the immutable raw payload; unknown fields remain
 available only after sensitive values are replaced or omitted. The spool
 importer also caps one import pass at 512 MiB so a backlog cannot force an
-unbounded memory read.
+unbounded memory read. Incoming capture applies a 512 MiB backpressure cap;
+after a database commit, archived plaintext segments are pruned to a 1 GiB
+retention bound while encrypted storage remains the evidence authority. The
+authenticated health endpoint reports `ok`, `warning`, or `blocked` spool
+pressure and the reason an operator must act.
 
 The supported hook baseline is Codex 0.144.3. Its generated hook schemas do not include the later documented `SessionEnd` event, so VibeTrace installs the forward-compatible handler but also performs bounded transcript enrichment from `Stop`. Missing, unsafe, oversized, malformed, mismatched, or unsupported rollout data becomes an explicit capture gap. Only exposed assistant `output_text` rows from the recognized rollout-v1 shape are normalized; encrypted reasoning records are not canonicalized.
 
@@ -49,10 +53,12 @@ capture gaps instead of being silently treated as equivalent:
   explicitly declined when no policy callback is supplied and every response
   is persisted as a `permission.resolved` event.
 - `generic-jsonl-agent` validates a source-neutral JSONL envelope while
-  preserving unknown fields in raw payloads.
+  preserving unknown fields in raw payloads. Its SDK boundary applies the same
+  capture profile and secret detector as the Codex collector.
 - `opentelemetry` accepts approved usage or explicitly tagged VibeTrace events;
   prompt bodies remain excluded unless the daemon is explicitly configured to
-  allow them.
+  allow them. The daemon still applies the active profile and secret detector
+  before OTEL records are persisted.
 
 Batch eval execution uses the separate [evaluation architecture](evaluation.md)
 and never runs in the active checkout. Optional AI synthesis is a read-only,

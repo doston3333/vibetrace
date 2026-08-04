@@ -37,9 +37,9 @@ pnpm pack:smoke
 `pnpm pack:smoke` builds and packs the exact npm artifact, installs it into a
 temporary global prefix, and exercises initialization, hook collection,
 daemon authentication and lifecycle, dashboard serving, encrypted export and
-import, eval manifest validation, isolated run boundaries, and ownership-safe
-hook uninstall. It uses isolated VibeTrace and Codex homes and removes them
-afterward.
+import, a clean-worktree eval run with a mock Codex executable and effective
+policy assertions, and ownership-safe hook uninstall. It uses isolated
+VibeTrace and Codex homes and removes them afterward.
 
 `pnpm test:performance` combines scale fixtures with explicit elapsed-time
 budgets for 20,000-event timeline construction, deterministic analysis,
