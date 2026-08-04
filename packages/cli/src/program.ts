@@ -18,6 +18,7 @@ import {
   APP_SERVER_ADAPTER_ID,
   runAppServerSession,
   type AppServerCaptureResult,
+  type AppServerThreadMode,
 } from '@vibetrace/adapter-codex-app-server';
 import { claudeCodeAdapter } from '@vibetrace/adapter-claude-code';
 import { genericJsonlAdapter } from '@vibetrace/adapter-generic-jsonl';
@@ -1123,6 +1124,20 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .option('--project-name <name>', 'Display name for the project.')
     .option('--model <model>', 'Optional Codex model override.')
     .option(
+      '--thread-mode <mode>',
+      'Thread mode: start (default), resume, or fork.',
+      'start',
+    )
+    .option('--thread-id <id>', 'Existing Codex thread for resume or fork.')
+    .option(
+      '--last-turn-id <id>',
+      'Copy history through this turn when forking a thread.',
+    )
+    .option(
+      '--ephemeral',
+      'Keep a newly started or forked app-server thread in memory only.',
+    )
+    .option(
       '--approval-policy <policy>',
       'Approval response policy: decline (default) or allow.',
       'decline',
@@ -1134,9 +1149,15 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         projectId: string;
         projectName?: string;
         model?: string;
+        threadMode: string;
+        threadId?: string;
+        lastTurnId?: string;
+        ephemeral?: boolean;
         approvalPolicy: string;
       }) => {
         const cwd = resolve(options.cwd);
+        if (!['start', 'resume', 'fork'].includes(options.threadMode))
+          throw new Error('Thread mode must be start, resume, or fork.');
         if (
           options.approvalPolicy !== 'allow' &&
           options.approvalPolicy !== 'decline'
@@ -1162,6 +1183,14 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
               pathHash: createHash('sha256').update(cwd).digest('hex'),
             },
             ...(options.model ? { model: options.model } : {}),
+          },
+          thread: {
+            mode: options.threadMode as AppServerThreadMode,
+            ...(options.threadId ? { threadId: options.threadId } : {}),
+            ...(options.lastTurnId ? { lastTurnId: options.lastTurnId } : {}),
+            ...(options.ephemeral !== undefined
+              ? { ephemeral: options.ephemeral }
+              : {}),
           },
         });
         output(

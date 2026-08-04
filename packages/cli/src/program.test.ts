@@ -171,6 +171,69 @@ describe('createProgram', () => {
     );
   });
 
+  it('exposes resumed and forked app-server thread modes through the CLI', async () => {
+    const state = await mkdtemp(
+      join(tmpdir(), 'vibetrace-cli-app-server-thread-'),
+    );
+    directories.push(state);
+    const calls: Array<{
+      thread?: {
+        mode?: string;
+        threadId?: string;
+        lastTurnId?: string;
+        ephemeral?: boolean;
+      };
+    }> = [];
+    const program = createProgram({
+      stateDir: () => state,
+      runAppServerSession: async (options) => {
+        calls.push({ thread: options.thread });
+        return { events: [], raw: [], gaps: [] };
+      },
+      output: () => undefined,
+    });
+
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'codex',
+      'app-server',
+      '--prompt',
+      'Resume the investigation.',
+      '--thread-mode',
+      'resume',
+      '--thread-id',
+      'thread-existing',
+    ]);
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'codex',
+      'app-server',
+      '--prompt',
+      'Branch the investigation.',
+      '--thread-mode',
+      'fork',
+      '--thread-id',
+      'thread-existing',
+      '--last-turn-id',
+      'turn-cutoff',
+      '--ephemeral',
+    ]);
+
+    expect(calls).toEqual([
+      { thread: { mode: 'resume', threadId: 'thread-existing' } },
+      {
+        thread: {
+          mode: 'fork',
+          threadId: 'thread-existing',
+          lastTurnId: 'turn-cutoff',
+          ephemeral: true,
+        },
+      },
+    ]);
+  });
+
   it('validates manifests and persists human review as pending_review status', async () => {
     const state = await mkdtemp(join(tmpdir(), 'vibetrace-cli-eval-'));
     directories.push(state);
