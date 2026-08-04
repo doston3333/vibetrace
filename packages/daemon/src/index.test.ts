@@ -926,13 +926,43 @@ describe('daemon API', () => {
         ]),
       },
     });
+    const aiPrompt = await daemon.app.inject({
+      method: 'GET',
+      url: `/api/v1/sessions/${sessionId}/ai-prompt`,
+      headers,
+    });
+    expect(aiPrompt.statusCode).toBe(200);
+    expect(aiPrompt.json()).toMatchObject({
+      analyzerVersion: '0.1.0',
+      promptDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      prompt: {
+        tools: [],
+        networkAllowed: false,
+      },
+    });
+    const aiPromptBody = aiPrompt.json() as {
+      analyzerVersion: string;
+      promptDigest: string;
+    };
+    const staleAi = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/ai-findings`,
+      headers,
+      payload: {
+        analyzerVersion: aiPromptBody.analyzerVersion,
+        promptDigest: 'c'.repeat(64),
+        hypotheses: [],
+      },
+    });
+    expect(staleAi.statusCode).toBe(409);
+    expect(staleAi.json()).toEqual({ code: 'AI_PROMPT_STALE' });
     const ai = await daemon.app.inject({
       method: 'POST',
       url: `/api/v1/sessions/${sessionId}/ai-findings`,
       headers,
       payload: {
-        analyzerVersion: '1.0.0',
-        promptDigest: 'c'.repeat(64),
+        analyzerVersion: aiPromptBody.analyzerVersion,
+        promptDigest: aiPromptBody.promptDigest,
         hypotheses: [
           {
             id: 'hypothesis-1',

@@ -25,6 +25,7 @@ const gates = {
   ],
   e2e: [
     'apps/dashboard/src/App.test.tsx',
+    'apps/dashboard/src/AiReviewPanel.test.tsx',
     'apps/dashboard/src/EvalsPage.test.tsx',
     'packages/cli/src/program.test.ts',
   ],

@@ -64,6 +64,42 @@ export interface Finding {
   };
 }
 
+export type AiHypothesisCategory =
+  | 'prompt'
+  | 'context'
+  | 'instruction_or_skill'
+  | 'model'
+  | 'harness'
+  | 'tool'
+  | 'environment'
+  | 'verification'
+  | 'human_intervention'
+  | 'unknown';
+
+export interface AiHypothesisDraft {
+  readonly id: string;
+  readonly category: AiHypothesisCategory;
+  readonly title: string;
+  readonly explanation: string;
+  readonly recommendation?: string;
+  readonly confidence: number;
+  readonly evidenceEventIds: readonly string[];
+  readonly counterEvidenceEventIds?: readonly string[];
+  readonly counterevidenceEventIds?: readonly string[];
+  readonly recommendedExperiment?: string;
+}
+
+export interface AiPromptResponse {
+  readonly analyzerVersion: string;
+  readonly promptDigest: string;
+  readonly prompt: {
+    readonly system: string;
+    readonly user: string;
+    readonly tools: readonly [];
+    readonly networkAllowed: false;
+  };
+}
+
 export interface Annotation {
   readonly id: string;
   readonly targetType: string;
@@ -294,6 +330,27 @@ export const api = {
       `/api/v1/sessions/${encodeURIComponent(id)}/findings`,
     );
     return response.findings;
+  },
+  async aiPrompt(id: string): Promise<AiPromptResponse> {
+    return jsonRequest<AiPromptResponse>(
+      `/api/v1/sessions/${encodeURIComponent(id)}/ai-prompt`,
+    );
+  },
+  async submitAiFindings(
+    id: string,
+    input: {
+      readonly analyzerVersion: string;
+      readonly promptDigest: string;
+      readonly hypotheses: readonly AiHypothesisDraft[];
+    },
+  ): Promise<{ readonly hypotheses: readonly Finding[] }> {
+    const response = await jsonRequest<{
+      analysis: { hypotheses: readonly Finding[] };
+    }>(`/api/v1/sessions/${encodeURIComponent(id)}/ai-findings`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return response.analysis;
   },
   async scorecard(id: string): Promise<SessionScorecard> {
     const response = await jsonRequest<{ scorecard: SessionScorecard }>(

@@ -36,7 +36,13 @@ import {
   buildSessionScorecard,
 } from '@vibetrace/diagnostics';
 import { captureOtelJson } from '@vibetrace/adapter-otel';
-import { AiHypothesisSchema, verifyHypotheses } from '@vibetrace/analyzer-ai';
+import {
+  AI_ANALYZER_VERSION,
+  AiHypothesisSchema,
+  buildAiPrompt,
+  digestAiPrompt,
+  verifyHypotheses,
+} from '@vibetrace/analyzer-ai';
 import {
   ComparisonMatrixConfigurationSchema,
   firstDivergence,
@@ -1273,6 +1279,54 @@ export async function startDaemon(
         .safeParse(request.params);
       return parsed.success ? parsed.data.id : undefined;
     };
+    const aiEvidence = (id: string): readonly TraceEvent[] => {
+      const events: StoredNormalizedEvent[] = [];
+      let cursor: { afterSequence: number; afterId: string } | undefined;
+      do {
+        const page = storage.listEvents({
+          sessionId: id,
+          limit: 10_000,
+          ...(cursor ?? {}),
+        });
+        events.push(...page);
+        const last = page.at(-1);
+        cursor =
+          page.length === 10_000 && last
+            ? { afterSequence: last.sequence, afterId: last.id }
+            : undefined;
+        if (events.length > 20_000) throw new Error('AI_EVIDENCE_LIMIT');
+      } while (cursor);
+      return events.map((item) => item.event);
+    };
+    const aiPromptForSession = (id: string) => {
+      const events = aiEvidence(id);
+      const deterministicFindings = storage
+        .listFindings(id)
+        .filter((finding) => finding.ruleId !== 'ai-analyzer')
+        .map(
+          (finding) =>
+            ({
+              id: finding.id,
+              ruleId: finding.ruleId,
+              category: finding.category,
+              severity: finding.severity,
+              title: finding.title,
+              explanation: finding.explanation,
+              recommendation: finding.recommendation,
+              evidenceEventIds: [...finding.evidenceEventIds],
+              counterevidenceEventIds: [
+                ...(finding.counterevidenceEventIds ?? []),
+              ],
+              state: finding.state ?? 'open',
+            }) as unknown as JsonObject,
+        );
+      const prompt = buildAiPrompt({
+        sessionId: id,
+        events,
+        deterministicFindings,
+      });
+      return { events, prompt };
+    };
     app.get('/api/v1/sessions', async (request, reply) => {
       const parsed = sessionListQuerySchema.safeParse(request.query);
       return parsed.success
@@ -2054,6 +2108,27 @@ export async function startDaemon(
         return reply.code(409).send({ code: 'SESSION_HAS_NO_EVENTS' });
       return { analysis: analyzeAndPersist(storage, id) };
     });
+    app.get('/api/v1/sessions/:id/ai-prompt', async (request, reply) => {
+      const id = sessionId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
+      if (!storage.getSession(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      let prepared: ReturnType<typeof aiPromptForSession>;
+      try {
+        prepared = aiPromptForSession(id);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'AI_EVIDENCE_LIMIT')
+          return reply.code(413).send({ code: 'AI_EVIDENCE_LIMIT' });
+        return reply.code(409).send({ code: 'AI_EVIDENCE_UNAVAILABLE' });
+      }
+      if (prepared.events.length === 0)
+        return reply.code(409).send({ code: 'SESSION_HAS_NO_EVENTS' });
+      return {
+        analyzerVersion: AI_ANALYZER_VERSION,
+        promptDigest: digestAiPrompt(prepared.prompt),
+        prompt: prepared.prompt,
+      };
+    });
     app.post('/api/v1/sessions/:id/ai-findings', async (request, reply) => {
       const id = sessionId(request);
       if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
@@ -2062,27 +2137,23 @@ export async function startDaemon(
       const parsed = aiFindingSubmissionSchema.safeParse(request.body);
       if (!parsed.success)
         return reply.code(400).send({ code: 'INVALID_AI_FINDINGS' });
-      const events: StoredNormalizedEvent[] = [];
-      let cursor: { afterSequence: number; afterId: string } | undefined;
-      do {
-        const page = storage.listEvents({
-          sessionId: id,
-          limit: 10_000,
-          ...(cursor ?? {}),
-        });
-        events.push(...page);
-        const last = page.at(-1);
-        cursor =
-          page.length === 10_000 && last
-            ? { afterSequence: last.sequence, afterId: last.id }
-            : undefined;
-        if (events.length > 20_000)
+      let prepared: ReturnType<typeof aiPromptForSession>;
+      try {
+        prepared = aiPromptForSession(id);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'AI_EVIDENCE_LIMIT')
           return reply.code(413).send({ code: 'AI_EVIDENCE_LIMIT' });
-      } while (cursor);
+        return reply.code(409).send({ code: 'AI_EVIDENCE_UNAVAILABLE' });
+      }
+      if (
+        parsed.data.promptDigest !== digestAiPrompt(prepared.prompt) ||
+        parsed.data.analyzerVersion !== AI_ANALYZER_VERSION
+      )
+        return reply.code(409).send({ code: 'AI_PROMPT_STALE' });
       let verifiedHypotheses;
       try {
         verifiedHypotheses = verifyHypotheses(
-          { sessionId: id, events: events.map((item) => item.event) },
+          { sessionId: id, events: prepared.events },
           parsed.data.hypotheses,
         );
       } catch {

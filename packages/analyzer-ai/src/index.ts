@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 const MAX_INPUT_EVENTS = 20_000;
 const MAX_EVENT_BYTES = 16_384;
+export const AI_ANALYZER_VERSION = '0.1.0' as const;
 
 /** Product taxonomy for optional model-assisted hypotheses. */
 export const AiHypothesisCategorySchema = z.enum([
@@ -187,17 +188,22 @@ export function buildAiPrompt(input: AiAnalyzerInput): AiPrompt {
   };
 }
 
+/** Derive the stable digest that binds a provider response to one prompt. */
+export function digestAiPrompt(prompt: AiPrompt): string {
+  return createHash('sha256').update(stableJson(prompt)).digest('hex');
+}
+
 /** Run a caller-supplied provider and enforce structured, evidence-linked output. */
 export async function analyzeWithProvider(
   input: AiAnalyzerInput,
   invoke: (prompt: AiPrompt) => Promise<unknown>,
-  analyzerVersion = '0.1.0',
+  analyzerVersion = AI_ANALYZER_VERSION,
 ): Promise<AiAnalyzerResult> {
   const prompt = buildAiPrompt(input);
   const parsed = verifyHypotheses(input, await invoke(prompt));
   return {
     analyzerVersion,
     hypotheses: parsed,
-    promptDigest: createHash('sha256').update(stableJson(prompt)).digest('hex'),
+    promptDigest: digestAiPrompt(prompt),
   };
 }

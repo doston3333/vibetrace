@@ -38,6 +38,15 @@ Raw source events are immutable. Normalization creates a separately stored, vers
 
 Codex lifecycle hooks are the standard capture mode. App-server capture, generic JSONL, OpenTelemetry, isolated eval execution, comparison matrices, and AI-assisted synthesis are opt-in capabilities. AI synthesis is provider-neutral, bounded, and tool-free; deterministic findings remain the primary analysis layer.
 
+The session's **AI review** view makes that boundary explicit. The daemon builds a
+bounded prompt from the encrypted session and current deterministic findings,
+returns a digest, and performs no provider call. A user may copy that prompt to
+an approved provider and paste back a JSON array. The daemon accepts the result
+only when the analyzer version and prompt digest still match the current session,
+then verifies every evidence and counter-evidence ID before replacing the
+`ai-analyzer` findings. Provider output is always rendered as escaped text and
+kept visually distinct from facts and deterministic findings.
+
 Every field or source activity the adapter cannot observe must become a
 `capture.gap` event with an explicit reason. Session scorecards expose
 independent, evidence-linked dimensions and never collapse the record into a

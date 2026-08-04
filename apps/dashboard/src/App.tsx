@@ -17,6 +17,7 @@ import {
   type SessionScorecard,
   type StoredEvent,
 } from './api.js';
+import { AiReviewPanel } from './AiReviewPanel.js';
 import { Inspector } from './Inspector.js';
 import {
   AnnotationsPanel,
@@ -75,7 +76,8 @@ type WorkbenchView =
   | 'context'
   | 'causal'
   | 'findings'
-  | 'annotations';
+  | 'annotations'
+  | 'ai-review';
 
 export interface ForensicWorkbenchProps {
   readonly session: SessionSummary;
@@ -155,6 +157,7 @@ export function ForensicWorkbench({
             ['causal', 'Causal graph'],
             ['findings', `Findings ${findings.length}`],
             ['annotations', `Annotations ${annotations.length}`],
+            ['ai-review', 'AI review'],
           ] as const
         ).map(([value, label]) => (
           <button
@@ -277,6 +280,7 @@ export function ForensicWorkbench({
           onSave={onSaveAnnotation}
         />
       ) : null}
+      {view === 'ai-review' ? <AiReviewPanel sessionId={session.id} /> : null}
     </main>
   );
 }

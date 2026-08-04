@@ -101,6 +101,12 @@ vibetrace start
 vibetrace open
 ```
 
+For optional model-assisted diagnosis, open a session and choose **AI review**.
+The dashboard prepares a bounded prompt locally; you copy it to a provider you
+approve and paste back the JSON response. VibeTrace does not call a provider or
+send trace data over the network, and it rejects responses whose analyzer
+version, prompt digest, or evidence IDs no longer match the session.
+
 List and inspect sessions, or preview and create an encrypted scrubbed bundle:
 
 ```bash
