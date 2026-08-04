@@ -444,6 +444,12 @@ try {
     appServerSummary.eventCount < 1
   )
     throw new Error('Native app-server command returned an invalid summary.');
+  const appServerCheckoutStatus = await git(
+    ['status', '--porcelain'],
+    checkout,
+  );
+  if (appServerCheckoutStatus.stdout.trim() !== '')
+    throw new Error('Native app-server smoke modified its read-only checkout.');
   const appServerSessions = await waitForSessions(
     env,
     (candidate) =>
