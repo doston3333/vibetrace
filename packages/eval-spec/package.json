@@ -8,8 +8,13 @@
       "types": "./src/index.ts",
       "development": "./src/index.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./schema.json": "./generated/eval-manifest.schema.json"
   },
+  "files": [
+    "dist",
+    "generated"
+  ],
   "scripts": {
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",

@@ -17,10 +17,10 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@vibetrace/eval-spec": "workspace:*"
+    "@vibetrace/eval-spec": "workspace:*",
+    "@vibetrace/schema": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "24.13.3",
-    "@vibetrace/schema": "workspace:*"
+    "@types/node": "24.13.3"
   }
 }

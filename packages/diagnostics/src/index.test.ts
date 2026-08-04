@@ -176,9 +176,9 @@ describe('deterministic diagnostics', () => {
   it('publishes a fixture-scoped precision and recall report', () => {
     const report = evaluateFixtureCorpus();
     expect(report).toMatchObject({
-      fixtureCount: 30,
-      truePositive: 17,
-      trueNegative: 13,
+      fixtureCount: 45,
+      truePositive: 23,
+      trueNegative: 22,
       falsePositive: 0,
       falseNegative: 0,
       precision: 1,
@@ -205,7 +205,7 @@ describe('deterministic diagnostics', () => {
     const started = performance.now();
     const result = analyzeSession(trace.events);
     const elapsed = performance.now() - started;
-    expect(result.evaluatedRuleIds).toHaveLength(10);
+    expect(result.evaluatedRuleIds).toHaveLength(15);
     expect(result.findings.length).toBeGreaterThan(0);
     expect(elapsed).toBeLessThan(3_000);
   });

@@ -25,6 +25,19 @@ import {
 } from '@vibetrace/schema';
 import { z } from 'zod';
 
+import { resolveAppServerSchema } from './schemas.js';
+
+export {
+  AppServerRpcEnvelopeSchema,
+  CODEX_APP_SERVER_BASELINE_VERSION,
+  CODEX_APP_SERVER_VALIDATED_VERSIONS,
+  CODEX_APP_SERVER_SCHEMA_REGISTRY,
+  assertSupportedAppServerVersion,
+  resolveAppServerSchema,
+  type AppServerRpcEnvelope,
+  type AppServerSchemaDescriptor,
+} from './schemas.js';
+
 /** Adapter identifier and version are persisted with every source event. */
 export const APP_SERVER_ADAPTER_ID = 'codex-app-server';
 export const APP_SERVER_ADAPTER_VERSION = '0.1.0';
@@ -428,7 +441,21 @@ function canonicalEvent(
 ): AppServerMappedEvent {
   const method = message.method ?? '';
   const params = record(message.params);
-  const kind = eventKind(method, params);
+  const unsupportedVersion =
+    context.sourceVersion !== undefined &&
+    resolveAppServerSchema(context.sourceVersion) === undefined;
+  const kind: ReturnType<typeof eventKind> = unsupportedVersion
+    ? {
+        type: 'capture.gap' as const,
+        source: 'vibetrace' as const,
+        payload: {
+          dataClass: 'unknown' as const,
+          state: 'unknown' as const,
+          reason: `Unsupported Codex app-server version: ${context.sourceVersion}`,
+          expectedSource: 'codex-app-server',
+        },
+      }
+    : eventKind(method, params);
   const sourceEventId = `${method || 'response'}:${String(message.id ?? sequence)}:${sequence}`;
   const sourceSessionId = context.sourceSessionId;
   const sourceTurnId =

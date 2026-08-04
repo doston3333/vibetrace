@@ -6,18 +6,63 @@ import { z } from 'zod';
 const MAX_INPUT_EVENTS = 20_000;
 const MAX_EVENT_BYTES = 16_384;
 
-export const AiHypothesisSchema = z
+/** Product taxonomy for optional model-assisted hypotheses. */
+export const AiHypothesisCategorySchema = z.enum([
+  'prompt',
+  'context',
+  'instruction_or_skill',
+  'model',
+  'harness',
+  'tool',
+  'environment',
+  'verification',
+  'human_intervention',
+  'unknown',
+]);
+export type AiHypothesisCategory = z.infer<typeof AiHypothesisCategorySchema>;
+
+const AiHypothesisInputSchema = z
   .object({
     id: z.string().min(1).max(256),
-    category: z.string().min(1).max(128),
+    category: AiHypothesisCategorySchema,
     title: z.string().min(1).max(512),
     explanation: z.string().min(1).max(16_384),
-    recommendation: z.string().min(1).max(16_384),
+    recommendation: z.string().min(1).max(16_384).optional(),
     confidence: z.number().min(0).max(1),
     evidenceEventIds: z.array(z.string().uuid()).max(1_000),
-    counterevidenceEventIds: z.array(z.string().uuid()).max(1_000),
+    counterEvidenceEventIds: z.array(z.string().uuid()).max(1_000).optional(),
+    /** Accepted for compatibility with the original 0.1.0 wire spelling. */
+    counterevidenceEventIds: z.array(z.string().uuid()).max(1_000).optional(),
+    recommendedExperiment: z.string().min(1).max(16_384).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.counterEvidenceEventIds !== undefined &&
+      value.counterevidenceEventIds !== undefined
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['counterEvidenceEventIds'],
+        message: 'Use only one counter-evidence field spelling.',
+      });
+  })
+  .transform((value) => ({
+    id: value.id,
+    category: value.category,
+    title: value.title,
+    explanation: value.explanation,
+    ...(value.recommendation ? { recommendation: value.recommendation } : {}),
+    confidence: value.confidence,
+    evidenceEventIds: value.evidenceEventIds,
+    counterEvidenceEventIds:
+      value.counterEvidenceEventIds ?? value.counterevidenceEventIds ?? [],
+    ...(value.recommendedExperiment
+      ? { recommendedExperiment: value.recommendedExperiment }
+      : {}),
+  }));
+
+export const AiHypothesisSchema = AiHypothesisInputSchema;
 
 export type AiHypothesis = z.infer<typeof AiHypothesisSchema>;
 
@@ -38,6 +83,52 @@ export interface AiAnalyzerResult {
   readonly analyzerVersion: string;
   readonly hypotheses: readonly AiHypothesis[];
   readonly promptDigest: string;
+}
+
+/** Validate candidate hypotheses against the exact events supplied to the verifier pass. */
+export function verifyHypotheses(
+  input: Pick<AiAnalyzerInput, 'sessionId' | 'events'>,
+  candidates: unknown,
+): readonly AiHypothesis[] {
+  const parsed = z.array(AiHypothesisSchema).max(1_000).parse(candidates);
+  const allowed = new Map(input.events.map((event) => [event.id, event]));
+  const eventIds = new Set(allowed.keys());
+  if (input.events.some((event) => event.sessionId !== input.sessionId))
+    throw new Error('AI verifier received events from more than one session.');
+  for (const hypothesis of parsed) {
+    const evidence = new Set(hypothesis.evidenceEventIds);
+    if (evidence.size === 0)
+      throw new Error(`AI hypothesis ${hypothesis.id} has no evidence IDs.`);
+    if (evidence.size !== hypothesis.evidenceEventIds.length)
+      throw new Error(
+        `AI hypothesis ${hypothesis.id} has duplicate evidence IDs.`,
+      );
+    const counterEvidence = new Set(hypothesis.counterEvidenceEventIds);
+    if (counterEvidence.size !== hypothesis.counterEvidenceEventIds.length)
+      throw new Error(
+        `AI hypothesis ${hypothesis.id} has duplicate counter-evidence IDs.`,
+      );
+    for (const id of [
+      ...hypothesis.evidenceEventIds,
+      ...hypothesis.counterEvidenceEventIds,
+    ])
+      if (!eventIds.has(id))
+        throw new Error(
+          `AI hypothesis references an event outside the supplied evidence: ${id}`,
+        );
+    for (const id of counterEvidence)
+      if (evidence.has(id))
+        throw new Error(
+          `AI hypothesis ${hypothesis.id} reused evidence as counter-evidence.`,
+        );
+    for (const id of [...evidence, ...counterEvidence]) {
+      if (allowed.get(id)?.sessionId !== input.sessionId)
+        throw new Error(
+          `AI hypothesis ${hypothesis.id} crossed session evidence.`,
+        );
+    }
+  }
+  return Object.freeze(parsed);
 }
 
 function stableJson(value: unknown): string {
@@ -84,7 +175,8 @@ export function buildAiPrompt(input: AiAnalyzerInput): AiPrompt {
     sessionId: input.sessionId,
     trace: evidence,
     deterministicFindings: input.deterministicFindings ?? [],
-    outputContract: 'Return only a JSON array matching the hypothesis schema.',
+    outputContract:
+      'Return only a JSON array matching the hypothesis schema and its fixed category taxonomy. Treat recommendedExperiment as optional.',
   });
   return {
     system:
@@ -102,21 +194,7 @@ export async function analyzeWithProvider(
   analyzerVersion = '0.1.0',
 ): Promise<AiAnalyzerResult> {
   const prompt = buildAiPrompt(input);
-  const allowed = new Set(input.events.map((event) => event.id));
-  const parsed = z
-    .array(AiHypothesisSchema)
-    .max(1_000)
-    .parse(await invoke(prompt));
-  for (const hypothesis of parsed) {
-    for (const id of [
-      ...hypothesis.evidenceEventIds,
-      ...hypothesis.counterevidenceEventIds,
-    ])
-      if (!allowed.has(id))
-        throw new Error(
-          `AI hypothesis references an event outside the supplied evidence: ${id}`,
-        );
-  }
+  const parsed = verifyHypotheses(input, await invoke(prompt));
   return {
     analyzerVersion,
     hypotheses: parsed,

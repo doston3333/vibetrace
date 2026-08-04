@@ -5,9 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   APP_SERVER_ADAPTER_ID,
+  assertSupportedAppServerVersion,
   captureAppServerJsonl,
   captureAppServerToSpool,
   parseAppServerJsonl,
+  resolveAppServerSchema,
   runAppServerSession,
 } from './index.js';
 
@@ -25,6 +27,29 @@ function line(value: unknown): string {
 }
 
 describe('Codex app-server adapter', () => {
+  it('resolves the versioned contract and turns older versions into explicit gaps', async () => {
+    expect(resolveAppServerSchema('0.144.3')).toMatchObject({
+      schemaVersion: '0.144.3',
+      validated: true,
+    });
+    expect(resolveAppServerSchema('0.145.0')).toMatchObject({
+      schemaVersion: '0.145.0',
+      validated: true,
+    });
+    expect(resolveAppServerSchema('0.147.0')).toMatchObject({
+      schemaVersion: '0.146.0',
+      compatibility: 'forward-compatible',
+    });
+    expect(() => assertSupportedAppServerVersion('0.144.2')).toThrow(
+      'below the supported',
+    );
+    const result = await captureAppServerJsonl(
+      Readable.from([line({ method: 'thread/started', params: {} })]),
+      { ...context, sourceVersion: '0.143.9' },
+    );
+    expect(result.events[0]?.type).toBe('capture.gap');
+  });
+
   it('parses split JSONL chunks with a bounded message iterator', async () => {
     const parsed = [];
     for await (const item of parseAppServerJsonl(

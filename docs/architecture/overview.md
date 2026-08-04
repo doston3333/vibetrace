@@ -38,7 +38,10 @@ Raw source events are immutable. Normalization creates a separately stored, vers
 
 Codex lifecycle hooks are the standard capture mode. App-server capture, generic JSONL, OpenTelemetry, isolated eval execution, comparison matrices, and AI-assisted synthesis are opt-in capabilities. AI synthesis is provider-neutral, bounded, and tool-free; deterministic findings remain the primary analysis layer.
 
-Every field or source activity the adapter cannot observe must become a `capture.gap` event with an explicit reason. See [capture modes](capture-modes.md).
+Every field or source activity the adapter cannot observe must become a
+`capture.gap` event with an explicit reason. Session scorecards expose
+independent, evidence-linked dimensions and never collapse the record into a
+universal quality number. See [capture modes](capture-modes.md).
 
 ## Related decisions
 

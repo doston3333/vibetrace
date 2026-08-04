@@ -31,10 +31,14 @@ import {
   type ExportBundleOptions,
   type ImportBundleOptions,
 } from '@vibetrace/bundle';
-import { analyzeAndPersist } from '@vibetrace/diagnostics';
-import { captureOtelJson } from '@vibetrace/adapter-otel';
-import { AiHypothesisSchema } from '@vibetrace/analyzer-ai';
 import {
+  analyzeAndPersist,
+  buildSessionScorecard,
+} from '@vibetrace/diagnostics';
+import { captureOtelJson } from '@vibetrace/adapter-otel';
+import { AiHypothesisSchema, verifyHypotheses } from '@vibetrace/analyzer-ai';
+import {
+  ComparisonMatrixConfigurationSchema,
   firstDivergence,
   summarizeRuns,
   type FirstDivergence,
@@ -178,6 +182,7 @@ const evalRunCreateSchema = z
   .strict();
 const evalRunUpdateSchema = z
   .object({
+    sourceSessionId: z.string().uuid().optional(),
     status: z.enum(EVAL_RUN_STATUSES).optional(),
     outcome: z.record(z.string(), z.unknown()).optional(),
     metrics: z.record(z.string(), z.unknown()).optional(),
@@ -215,6 +220,9 @@ const evalComparisonDivergenceSchema = z
   .refine((value) => value.leftRunId !== value.rightRunId, {
     message: 'Compared runs must be different.',
   });
+const evalEventCaptureSchema = z
+  .object({ events: z.array(TraceEventSchema).max(20_000) })
+  .strict();
 const comparableEventSchema = z
   .object({
     id: z.string().min(1),
@@ -444,6 +452,73 @@ function parseComparisonEvents(
     events.push(parsed.data);
   }
   return events;
+}
+
+/** Derive comparable operational metrics from one captured eval stream. */
+function evalEventMetrics(events: readonly TraceEvent[]): JsonObject {
+  const timestamps = events
+    .map((event) => Date.parse(event.timestamp))
+    .filter((value) => Number.isFinite(value));
+  const diffPaths = new Set<string>();
+  let toolCount = 0;
+  let tokenCount = 0;
+  let estimatedCostMicros = 0;
+  let hasTokenUsage = false;
+  let verificationCount = 0;
+  let verificationFailureCount = 0;
+  for (const event of events) {
+    if (
+      event.type === 'tool.started' ||
+      event.type === 'tool.requested' ||
+      event.type === 'command.started'
+    )
+      toolCount += 1;
+    if (event.type === 'file.changed') {
+      const path = (event.payload as Record<string, unknown>).path;
+      if (typeof path === 'string' && path.length > 0) diffPaths.add(path);
+    }
+    if (event.type === 'git.snapshot') {
+      const changedFiles = (event.payload as Record<string, unknown>)
+        .changedFiles;
+      if (Array.isArray(changedFiles))
+        for (const item of changedFiles) {
+          const path =
+            item && typeof item === 'object'
+              ? (item as Record<string, unknown>).path
+              : undefined;
+          if (typeof path === 'string' && path.length > 0) diffPaths.add(path);
+        }
+    }
+    if (/^(test|lint|build|typecheck)\.completed$/u.test(event.type)) {
+      verificationCount += 1;
+      if ((event.payload as Record<string, unknown>).success === false)
+        verificationFailureCount += 1;
+    }
+    if (event.usage) {
+      hasTokenUsage = true;
+      tokenCount +=
+        (event.usage.inputTokens ?? 0) +
+        (event.usage.cachedInputTokens ?? 0) +
+        (event.usage.outputTokens ?? 0) +
+        (event.usage.reasoningTokens ?? 0);
+      estimatedCostMicros += event.usage.estimatedCostMicros ?? 0;
+    }
+  }
+  return {
+    ...(timestamps.length > 1
+      ? {
+          durationMs: Math.max(
+            0,
+            Math.max(...timestamps) - Math.min(...timestamps),
+          ),
+        }
+      : {}),
+    toolCount,
+    diffFileCount: diffPaths.size,
+    verificationCount,
+    verificationFailureCount,
+    ...(hasTokenUsage ? { tokenCount, estimatedCostMicros } : {}),
+  };
 }
 
 function comparisonDivergence(
@@ -717,7 +792,7 @@ export async function startDaemon(
     };
     const token = await loadOrCreateToken(stateDir);
     await hardenSpool(spoolPaths(stateDir));
-    app = fastify({ logger: false, bodyLimit: 1_048_576 });
+    app = fastify({ logger: false, bodyLimit: 32 * 1024 * 1024 });
     app.addContentTypeParser(
       'application/octet-stream',
       { parseAs: 'buffer', bodyLimit: 16 * 1024 * 1024 },
@@ -1245,6 +1320,90 @@ export async function startDaemon(
         return reply.code(400).send({ code: 'INVALID_EVAL_OUTPUT' });
       }
     });
+    app.post('/api/v1/eval/runs/:id/events', async (request, reply) => {
+      const id = evalRunId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_EVAL_RUN_ID' });
+      const run = storage.getEvalRun(id);
+      if (!run) return reply.code(404).send({ code: 'NOT_FOUND' });
+      const parsed = evalEventCaptureSchema.safeParse(request.body);
+      if (!parsed.success || parsed.data.events.length === 0)
+        return reply.code(400).send({ code: 'INVALID_EVAL_EVENTS' });
+      const events = [...parsed.data.events].sort(
+        (left, right) =>
+          left.sequence - right.sequence || left.id.localeCompare(right.id),
+      );
+      const sessionId = events[0]!.sessionId;
+      if (events.some((event) => event.sessionId !== sessionId))
+        return reply.code(400).send({ code: 'EVAL_EVENTS_MIXED_SESSIONS' });
+      if (run.sourceSessionId && run.sourceSessionId !== sessionId)
+        return reply.code(409).send({ code: 'EVAL_SESSION_ID_CONFLICT' });
+      const evalCase = storage.getEvalCase(run.evalCaseId);
+      if (!evalCase) return reply.code(404).send({ code: 'NOT_FOUND' });
+      const projectId = `eval-project:${run.evalCaseId}`;
+      const sourceSessionId = `eval-run:${id}`;
+      const first = events[0]!;
+      const last = events.at(-1)!;
+      const completed = last.type === 'session.completed';
+      try {
+        for (const event of events) {
+          storage.importEvent({
+            project: {
+              id: projectId,
+              displayName: `Evaluation · ${evalCase.name}`,
+            },
+            session: {
+              id: sessionId,
+              projectId,
+              source: 'vibetrace-eval',
+              sourceSessionId,
+              startedAt: first.timestamp,
+              ...(completed ? { endedAt: last.timestamp } : {}),
+              status: completed ? 'completed' : 'active',
+              captureMode: event.provenance.captureMode,
+              ...(event.model ? { model: event.model } : {}),
+              ...(event.provenance.sourceVersion
+                ? { sourceVersion: event.provenance.sourceVersion }
+                : {}),
+            },
+            raw: {
+              adapter: event.provenance.adapter,
+              adapterVersion: event.provenance.adapterVersion,
+              ...(event.provenance.sourceVersion
+                ? { sourceVersion: event.provenance.sourceVersion }
+                : {}),
+              sourceSessionId,
+              ...(event.turnId ? { sourceTurnId: event.turnId } : {}),
+              sourceEventId: event.sourceEventId ?? event.id,
+              receivedAt: event.timestamp,
+              payload: event.rawPayload,
+            },
+            event,
+            normalizerId: `eval/${event.provenance.adapter}/${event.provenance.adapterVersion}`,
+          });
+        }
+        try {
+          analyzeAndPersist(storage, sessionId);
+        } catch {
+          // Capture must remain durable even if a future rule rejects a stream.
+        }
+        const latestRun = storage.getEvalRun(id);
+        storage.updateEvalRun(id, {
+          sourceSessionId: sessionId,
+          metrics: {
+            ...(latestRun?.metrics ?? {}),
+            ...evalEventMetrics(events),
+            findingCount: storage.listFindings(sessionId).length,
+          },
+        });
+        return {
+          imported: events.length,
+          sessionId,
+          run: storage.getEvalRun(id),
+        };
+      } catch {
+        return reply.code(409).send({ code: 'EVAL_EVENT_IMPORT_CONFLICT' });
+      }
+    });
     app.post('/api/v1/eval/comparisons', async (request, reply) => {
       const parsed = evalComparisonCreateSchema.safeParse(request.body);
       if (!parsed.success)
@@ -1252,6 +1411,8 @@ export async function startDaemon(
       if (!storage.getEvalCase(parsed.data.evalCaseId))
         return reply.code(404).send({ code: 'NOT_FOUND' });
       const configuration = parsed.data.configuration as JsonObject;
+      if (!ComparisonMatrixConfigurationSchema.safeParse(configuration).success)
+        return reply.code(400).send({ code: 'INVALID_EVAL_MATRIX' });
       try {
         const id = storage.createEvalComparison({
           id: parsed.data.id ?? randomUUID(),
@@ -1276,10 +1437,40 @@ export async function startDaemon(
       const runs = results
         .map((result) => storage.getEvalRun(result.evalRunId))
         .filter((run): run is NonNullable<typeof run> => run !== undefined);
+      const capturedStreams = runs
+        .filter(
+          (run): run is typeof run & { sourceSessionId: string } =>
+            typeof run.sourceSessionId === 'string',
+        )
+        .map((run) => {
+          const events: TraceEvent[] = [];
+          let cursor: { afterSequence: number; afterId: string } | undefined;
+          do {
+            const page = storage.listEvents({
+              sessionId: run.sourceSessionId,
+              limit: 10_000,
+              ...(cursor ?? {}),
+            });
+            events.push(...page.map((item) => item.event));
+            const last = page.at(-1);
+            cursor =
+              page.length === 10_000 && last
+                ? { afterSequence: last.sequence, afterId: last.id }
+                : undefined;
+          } while (cursor);
+          return events;
+        });
+      const persisted = comparisonDivergence(results);
+      const streamDivergence =
+        persisted ??
+        (capturedStreams.length >= 2
+          ? firstDivergence(capturedStreams[0]!, capturedStreams[1]!)
+          : undefined);
       return {
         comparison,
         results,
-        summary: summarizeRuns(runs, comparisonDivergence(results)),
+        runs,
+        summary: summarizeRuns(runs, streamDivergence),
       };
     });
     app.post('/api/v1/eval/comparisons/:id/results', async (request, reply) => {
@@ -1511,6 +1702,35 @@ export async function startDaemon(
         ? { findings: storage.listFindings(id) }
         : reply.code(404).send({ code: 'NOT_FOUND' });
     });
+    app.get('/api/v1/sessions/:id/scorecard', async (request, reply) => {
+      const id = sessionId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
+      if (!storage.getSession(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const events: StoredNormalizedEvent[] = [];
+      let cursor: { afterSequence: number; afterId: string } | undefined;
+      do {
+        const page = storage.listEvents({
+          sessionId: id,
+          limit: 10_000,
+          ...(cursor ?? {}),
+        });
+        events.push(...page);
+        const last = page.at(-1);
+        cursor =
+          page.length === 10_000 && last
+            ? { afterSequence: last.sequence, afterId: last.id }
+            : undefined;
+      } while (cursor);
+      if (events.length === 0)
+        return reply.code(409).send({ code: 'SESSION_HAS_NO_EVENTS' });
+      return {
+        scorecard: buildSessionScorecard(
+          events.map((item) => item.event),
+          storage.listFindings(id),
+        ),
+      };
+    });
     app.post('/api/v1/sessions/:id/analyze', async (request, reply) => {
       const id = sessionId(request);
       if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
@@ -1546,7 +1766,16 @@ export async function startDaemon(
         if (events.length > 20_000)
           return reply.code(413).send({ code: 'AI_EVIDENCE_LIMIT' });
       } while (cursor);
-      const findings = parsed.data.hypotheses.map((hypothesis) => ({
+      let verifiedHypotheses;
+      try {
+        verifiedHypotheses = verifyHypotheses(
+          { sessionId: id, events: events.map((item) => item.event) },
+          parsed.data.hypotheses,
+        );
+      } catch {
+        return reply.code(400).send({ code: 'AI_EVIDENCE_INVALID' });
+      }
+      const findings = verifiedHypotheses.map((hypothesis) => ({
         id: createUuidV5([
           'vibetrace/ai-finding/0.1',
           id,
@@ -1561,9 +1790,12 @@ export async function startDaemon(
         confidence: hypothesis.confidence,
         title: hypothesis.title,
         explanation: hypothesis.explanation,
-        recommendation: hypothesis.recommendation,
+        recommendation:
+          hypothesis.recommendation ??
+          hypothesis.recommendedExperiment ??
+          'Review the linked evidence before acting on this hypothesis.',
         evidenceEventIds: hypothesis.evidenceEventIds,
-        counterevidenceEventIds: hypothesis.counterevidenceEventIds,
+        counterevidenceEventIds: hypothesis.counterEvidenceEventIds,
         state: 'open',
       }));
       try {

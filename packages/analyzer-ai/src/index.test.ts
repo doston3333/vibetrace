@@ -5,7 +5,12 @@ import {
 } from '@vibetrace/schema';
 import { describe, expect, it } from 'vitest';
 
-import { analyzeWithProvider, buildAiPrompt } from './index.js';
+import {
+  AiHypothesisSchema,
+  analyzeWithProvider,
+  buildAiPrompt,
+  verifyHypotheses,
+} from './index.js';
 
 const event = TraceEventSchema.parse({
   schemaVersion: '0.1.0',
@@ -59,5 +64,36 @@ describe('optional AI analyzer boundary', () => {
         ],
       ),
     ).rejects.toThrow('outside the supplied evidence');
+  });
+
+  it('normalizes the public counter-evidence spelling and taxonomy', () => {
+    const hypothesis = AiHypothesisSchema.parse({
+      id: 'h2',
+      category: 'harness',
+      title: 'A bounded hypothesis',
+      explanation: 'The event may have been represented incorrectly.',
+      confidence: 0.5,
+      evidenceEventIds: [event.id],
+      counterEvidenceEventIds: [],
+      recommendedExperiment: 'Compare the adapter fixture with the raw event.',
+    });
+    expect(hypothesis.counterEvidenceEventIds).toEqual([]);
+    expect(hypothesis.recommendedExperiment).toContain('Compare');
+  });
+
+  it('rejects evidence reused as counter-evidence in the verifier pass', () => {
+    expect(() =>
+      verifyHypotheses({ sessionId: event.sessionId, events: [event] }, [
+        {
+          id: 'h3',
+          category: 'context',
+          title: 'Conflicting evidence',
+          explanation: 'The same event cannot support both sides.',
+          confidence: 0.3,
+          evidenceEventIds: [event.id],
+          counterEvidenceEventIds: [event.id],
+        },
+      ]),
+    ).toThrow('reused evidence');
   });
 });

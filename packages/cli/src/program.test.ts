@@ -208,6 +208,7 @@ describe('createProgram', () => {
         worktreeFingerprintHash: 'b'.repeat(64),
         jsonRecordCount: 0,
         malformedJsonRecordCount: 0,
+        events: [],
       }),
       output: (line) => outputs.push(line),
     });

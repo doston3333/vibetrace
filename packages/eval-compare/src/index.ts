@@ -2,6 +2,42 @@ import { createHash } from 'node:crypto';
 
 import type { JsonObject, TraceEvent } from '@vibetrace/schema';
 import type { StoredEvalRun } from '@vibetrace/storage';
+import { z } from 'zod';
+
+export const COMPARISON_DIMENSIONS = [
+  'model',
+  'reasoningEffort',
+  'approvalPolicy',
+  'sandboxPolicy',
+  'networkPolicy',
+  'instructionSet',
+  'skillSet',
+  'environmentFingerprint',
+  'repetition',
+] as const;
+export type ComparisonDimension = (typeof COMPARISON_DIMENSIONS)[number];
+
+/** Reviewable matrix controls; unknown extension fields remain opaque metadata. */
+export const ComparisonMatrixConfigurationSchema = z
+  .object({
+    dimensions: z.array(z.enum(COMPARISON_DIMENSIONS)).max(16).optional(),
+    repetitions: z.number().int().min(1).max(100).optional(),
+    controlRunId: z.string().uuid().optional(),
+  })
+  .passthrough()
+  .superRefine((value, context) => {
+    if (value.dimensions === undefined) return;
+    const unique = new Set(value.dimensions);
+    if (unique.size !== value.dimensions.length)
+      context.addIssue({
+        code: 'custom',
+        path: ['dimensions'],
+        message: 'Comparison dimensions must be unique.',
+      });
+  });
+export type ComparisonMatrixConfiguration = z.infer<
+  typeof ComparisonMatrixConfigurationSchema
+>;
 
 export interface ComparableEvent {
   readonly id: string;

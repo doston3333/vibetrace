@@ -12,6 +12,10 @@ patch, prompt and constraints, configuration fingerprint, and one or more
 success assertions. Unknown source fields remain in the encrypted source event
 payload; inferred manifest fields are marked explicitly for review.
 
+The generated JSON Schema is published alongside the package at
+`packages/eval-spec/generated/eval-manifest.schema.json` so external tooling
+can validate manifests without importing the TypeScript implementation.
+
 The daemon stores the manifest as an authenticated encrypted blob and records
 its stable content hash. The manifest endpoint verifies both blob decryption
 and the canonical manifest hash before returning it. A pre-task patch is
@@ -29,11 +33,16 @@ output are rejected.
 
 Human assertions remain `pending_review`; they are not silently converted into
 failures. Captured command output is uploaded to the encrypted blob store and
-linked from the persisted run.
+linked from the persisted run. The bounded JSONL transcript is also normalized
+into a `vibetrace-eval` session: canonical records are retained, while
+unrecognized records become explicit capture gaps with their raw payloads
+preserved. Re-submitting the same run events is idempotent.
 
 ## Comparisons
 
-Comparison matrices link selected runs for one eval case. Summaries report
+Comparison matrices link selected runs for one eval case. Matrix configuration
+is schema-checked for dimensions such as model, reasoning effort, policies,
+instruction/skill sets, environment fingerprint, and repetition. Summaries report
 pass/fail/pending counts, success rate over definitive runs, duration, tool,
 diff, token, and estimated-cost distributions. There is intentionally no
 universal quality score. `@vibetrace/eval-compare` compares normalized
@@ -41,9 +50,14 @@ observable events while ignoring transport timing and IDs, and reports the
 first meaningful divergence with evidence IDs. The authenticated
 `/api/v1/eval/comparisons/:id/divergence` endpoint and
 `vibetrace eval compare-divergence` command accept bounded, schema-validated
-event streams, compute the divergence, and persist it with the comparison;
-until that operation runs, the dashboard reports that divergence is not yet
-computed rather than claiming the runs are identical.
+event streams, compute the divergence, and persist it with the comparison. If
+captured eval sessions are available, the comparison API derives the first
+divergence directly from those sessions; otherwise the dashboard reports that
+divergence is not yet computed rather than claiming the runs are identical.
+Captured streams also derive per-run tool, changed-file, verification, token,
+cost, duration, and evidence-linked finding metrics. The dashboard renders
+those values beside each run and links back to the captured session for the
+full timeline and findings.
 
 ## Trust boundaries
 

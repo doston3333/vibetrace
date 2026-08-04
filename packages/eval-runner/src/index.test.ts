@@ -8,7 +8,13 @@ import { join } from 'node:path';
 import { createSessionId } from '@vibetrace/schema';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { evaluateAssertions, parseCommand, runEvaluation } from './index.js';
+import {
+  captureEvalJsonl,
+  evaluateAssertions,
+  normalizeExecutionEvents,
+  parseCommand,
+  runEvaluation,
+} from './index.js';
 
 const execFile = promisify(nodeExecFile);
 const directories: string[] = [];
@@ -34,6 +40,76 @@ async function repository(): Promise<{ path: string; commit: string }> {
 }
 
 describe('isolated evaluation runner', () => {
+  it('captures canonical JSONL records and explicit gaps deterministically', () => {
+    const manifest = {
+      schemaVersion: '1.0.0' as const,
+      id: createSessionId('eval', 'capture-fixture'),
+      name: 'Capture fixture',
+      sourceEvidence: {
+        eventIds: [],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: { baseCommit: 'a'.repeat(40) },
+      task: { prompt: 'Capture', constraints: [], inferredFields: [] },
+      configuration: { skills: [], instructionHashes: [], inferredFields: [] },
+      success: {
+        assertions: [
+          { type: 'human_rating' as const, prompt: 'Good?', minimum: 1 },
+        ],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const output = JSON.stringify({ type: 'unknown', payload: { keep: true } });
+    const first = captureEvalJsonl(output, manifest);
+    const second = captureEvalJsonl(output, manifest);
+    expect(first).toEqual(second);
+    expect(first).toHaveLength(1);
+    expect(first[0]?.type).toBe('capture.gap');
+    expect(first[0]?.rawPayload).toMatchObject({ type: 'unknown' });
+  });
+
+  it('rejects mixed-session or duplicate adapter event captures', () => {
+    const manifest = {
+      schemaVersion: '1.0.0' as const,
+      id: createSessionId('eval', 'capture-validation'),
+      name: 'Capture validation',
+      sourceEvidence: {
+        eventIds: [],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: { baseCommit: 'a'.repeat(40) },
+      task: { prompt: 'Capture', constraints: [], inferredFields: [] },
+      configuration: { skills: [], instructionHashes: [], inferredFields: [] },
+      success: {
+        assertions: [
+          { type: 'human_rating' as const, prompt: 'Good?', minimum: 1 },
+        ],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const event = captureEvalJsonl(
+      JSON.stringify({
+        type: 'message.user',
+        source: 'user',
+        payload: { content: 'hello' },
+      }),
+      manifest,
+    )[0]!;
+    expect(() => normalizeExecutionEvents([event, event])).toThrow(
+      'duplicate event IDs',
+    );
+    const other = {
+      ...event,
+      id: createSessionId('eval', 'other-event'),
+      sessionId: createSessionId('eval', 'other-session'),
+    };
+    expect(() => normalizeExecutionEvents([event, other])).toThrow(
+      'more than one session',
+    );
+  });
+
   it('tokenizes only shell-free commands', () => {
     expect(parseCommand("pnpm test --filter 'unit tests'")).toEqual([
       'pnpm',

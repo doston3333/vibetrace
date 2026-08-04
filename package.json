@@ -14,7 +14,7 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "build": "pnpm -r --if-present build",
-    "schema:generate": "pnpm --filter @vibetrace/schema build && node scripts/generate-schema.mjs",
+    "schema:generate": "pnpm --filter @vibetrace/schema build && pnpm --filter @vibetrace/eval-spec build && node scripts/generate-schema.mjs",
     "test:integration": "node scripts/run-gate.mjs integration",
     "test:e2e": "node scripts/run-gate.mjs e2e",
     "test:security": "node scripts/run-gate.mjs security",

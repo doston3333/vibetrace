@@ -6,6 +6,7 @@ import type {
   CoverageDatum,
   Finding,
   SessionSummary,
+  SessionScorecard,
   StoredEvent,
 } from './api.js';
 import { eventDetail, eventTitle, formatDuration } from './forensics.js';
@@ -15,11 +16,13 @@ export function SessionOverview({
   events,
   findings,
   gaps,
+  scorecard,
 }: {
   readonly session: SessionSummary;
   readonly events: readonly StoredEvent[];
   readonly findings: readonly Finding[];
   readonly gaps: number;
+  readonly scorecard?: SessionScorecard;
 }) {
   const failed = events.filter(
     (item) =>
@@ -89,6 +92,31 @@ export function SessionOverview({
           </p>
         </div>
       )}
+      {scorecard ? (
+        <section
+          className="overview-scorecard"
+          aria-label="Independent scorecard dimensions"
+        >
+          <div>
+            <span className="eyebrow">Independent scorecard dimensions</span>
+            <small>
+              Not a universal quality score · v{scorecard.schemaVersion}
+            </small>
+          </div>
+          <div className="overview-scorecard-grid">
+            {scorecard.dimensions.map((dimension) => (
+              <div key={dimension.id}>
+                <span>{dimension.label}</span>
+                <strong>
+                  {dimension.score === null
+                    ? 'Unknown'
+                    : `${dimension.score}/100`}
+                </strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </section>
   );
 }
@@ -135,6 +163,115 @@ export function CoveragePanel({
           </article>
         ))}
       </div>
+    </section>
+  );
+}
+
+export function ScorecardPanel({
+  scorecard,
+  onSelect,
+}: {
+  readonly scorecard: SessionScorecard;
+  readonly onSelect: (id: string) => void;
+}) {
+  return (
+    <section
+      className="panel-page scorecard-page"
+      aria-labelledby="scorecard-title"
+    >
+      <header>
+        <p className="eyebrow">
+          Transparent dimensions · v{scorecard.schemaVersion}
+        </p>
+        <h2 id="scorecard-title">Session scorecard</h2>
+        <p>
+          Independent evidence dimensions, not a universal quality score. A
+          blank value means the required observable signal was not captured.
+        </p>
+      </header>
+      <div className="scorecard-grid">
+        {scorecard.dimensions.map((item) => (
+          <article key={item.id} className="scorecard-card">
+            <div className="scorecard-card-heading">
+              <h3>{item.label}</h3>
+              <span data-confidence={item.confidence}>{item.confidence}</span>
+            </div>
+            <strong className="scorecard-value">
+              {item.score === null ? 'Unknown' : `${item.score}/100`}
+            </strong>
+            <p>{item.calculation}</p>
+            {item.evidenceEventIds.length > 0 ? (
+              <div
+                className="scorecard-evidence"
+                aria-label={`${item.label} evidence`}
+              >
+                {item.evidenceEventIds.map((id) => (
+                  <button type="button" key={id} onClick={() => onSelect(id)}>
+                    Evidence {id.slice(0, 8)}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <span className="scorecard-no-evidence">No linked evidence</span>
+            )}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function ApprovalsPanel({
+  events,
+  onSelect,
+}: {
+  readonly events: readonly StoredEvent[];
+  readonly onSelect: (id: string) => void;
+}) {
+  const approvals = events.filter(
+    (item) =>
+      item.event.type === 'permission.requested' ||
+      item.event.type === 'permission.resolved' ||
+      item.event.status === 'declined',
+  );
+  return (
+    <section
+      className="panel-page approvals-page"
+      aria-labelledby="approvals-title"
+    >
+      <header>
+        <p className="eyebrow">Scoped safety evidence</p>
+        <h2 id="approvals-title">Approvals</h2>
+        <p>
+          Requests and observed decisions are shown as facts. An absent
+          resolution is a capture gap, never an assumed approval.
+        </p>
+      </header>
+      {approvals.length === 0 ? (
+        <p className="teaching-empty">No approval activity was captured.</p>
+      ) : (
+        <div className="approval-ledger">
+          {approvals.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              className="approval-row"
+              onClick={() => onSelect(item.id)}
+            >
+              <span>{item.event.type.replaceAll('.', ' ')}</span>
+              <strong>
+                {String(
+                  (item.event.payload as Record<string, unknown>).requestId ??
+                    item.event.toolName ??
+                    'scoped request',
+                )}
+              </strong>
+              <em>{item.event.status ?? 'observed'}</em>
+              <small>{eventDetail(item.event)}</small>
+            </button>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

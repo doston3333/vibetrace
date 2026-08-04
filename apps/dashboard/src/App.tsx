@@ -14,17 +14,20 @@ import {
   type CoverageDatum,
   type Finding,
   type SessionSummary,
+  type SessionScorecard,
   type StoredEvent,
 } from './api.js';
 import { Inspector } from './Inspector.js';
 import {
   AnnotationsPanel,
+  ApprovalsPanel,
   CausalGraph,
   CoveragePanel,
   ContextMap,
   DiffHistory,
   FindingsPanel,
   SessionOverview,
+  ScorecardPanel,
 } from './Panels.js';
 import { Timeline } from './Timeline.js';
 import {
@@ -67,6 +70,8 @@ type WorkbenchView =
   | 'timeline'
   | 'diffs'
   | 'coverage'
+  | 'scorecard'
+  | 'approvals'
   | 'context'
   | 'causal'
   | 'findings'
@@ -78,6 +83,7 @@ export interface ForensicWorkbenchProps {
   readonly artifacts: readonly Artifact[];
   readonly coverage: readonly CoverageDatum[];
   readonly findings: readonly Finding[];
+  readonly scorecard?: SessionScorecard;
   readonly annotations: readonly Annotation[];
   readonly loadingMore?: boolean;
   readonly savingAnnotation?: boolean;
@@ -102,6 +108,7 @@ export function ForensicWorkbench({
   artifacts,
   coverage,
   findings,
+  scorecard,
   annotations,
   loadingMore = false,
   savingAnnotation = false,
@@ -134,6 +141,7 @@ export function ForensicWorkbench({
         events={events}
         findings={findings}
         gaps={gaps}
+        scorecard={scorecard}
       />
       <nav className="case-nav" aria-label="Session evidence views">
         {(
@@ -141,6 +149,8 @@ export function ForensicWorkbench({
             ['timeline', 'Timeline'],
             ['diffs', 'Diff history'],
             ['coverage', 'Coverage'],
+            ...(scorecard ? ([['scorecard', 'Scorecard']] as const) : []),
+            ['approvals', 'Approvals'],
             ['context', 'Context map'],
             ['causal', 'Causal graph'],
             ['findings', `Findings ${findings.length}`],
@@ -235,6 +245,12 @@ export function ForensicWorkbench({
       {view === 'coverage' ? (
         <CoveragePanel coverage={coverage} onSelect={selectEvidence} />
       ) : null}
+      {view === 'scorecard' && scorecard ? (
+        <ScorecardPanel scorecard={scorecard} onSelect={selectEvidence} />
+      ) : null}
+      {view === 'approvals' ? (
+        <ApprovalsPanel events={events} onSelect={selectEvidence} />
+      ) : null}
       {view === 'context' ? (
         <ContextMap events={events} onSelect={selectEvidence} />
       ) : null}
@@ -291,6 +307,10 @@ export function SessionPage() {
     queryKey: ['findings', sessionId],
     queryFn: () => api.findings(sessionId),
   });
+  const scorecard = useQuery({
+    queryKey: ['scorecard', sessionId],
+    queryFn: () => api.scorecard(sessionId),
+  });
   const annotations = useQuery({
     queryKey: ['annotations', 'session', sessionId],
     queryFn: () => api.annotations('session', sessionId),
@@ -330,7 +350,12 @@ export function SessionPage() {
       `/api/v1/sessions/${encodeURIComponent(sessionId)}/events/stream`,
     );
     stream.onmessage = () => {
-      void queryClient.invalidateQueries({ queryKey: ['events', sessionId] });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['events', sessionId] }),
+        queryClient.invalidateQueries({ queryKey: ['coverage', sessionId] }),
+        queryClient.invalidateQueries({ queryKey: ['findings', sessionId] }),
+        queryClient.invalidateQueries({ queryKey: ['scorecard', sessionId] }),
+      ]);
     };
     return () => stream.close();
   }, [queryClient, sessionId]);
@@ -341,6 +366,7 @@ export function SessionPage() {
     artifacts.isPending ||
     coverage.isPending ||
     findings.isPending ||
+    scorecard.isPending ||
     annotations.isPending
   )
     return (
@@ -355,6 +381,7 @@ export function SessionPage() {
     artifacts.isError ||
     coverage.isError ||
     findings.isError ||
+    scorecard.isError ||
     annotations.isError
   )
     return (
@@ -372,6 +399,7 @@ export function SessionPage() {
       artifacts={artifacts.data}
       coverage={coverage.data}
       findings={findings.data}
+      scorecard={scorecard.data}
       annotations={annotations.data}
       loadingMore={eventPages.hasNextPage || eventPages.isFetchingNextPage}
       savingAnnotation={saveAnnotation.isPending}

@@ -622,6 +622,11 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
               }),
             },
           );
+          if (result.events.length > 0)
+            await api(`/eval/runs/${stored.run.id}/events`, {
+              method: 'POST',
+              body: JSON.stringify({ events: result.events }),
+            });
           await api(`/eval/runs/${stored.run.id}`, {
             method: 'PATCH',
             body: JSON.stringify({

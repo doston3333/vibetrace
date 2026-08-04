@@ -798,6 +798,21 @@ describe('daemon API', () => {
         })
       ).statusCode,
     ).toBe(200);
+    const scorecard = await daemon.app.inject({
+      method: 'GET',
+      url: `/api/v1/sessions/${sessionId}/scorecard`,
+      headers,
+    });
+    expect(scorecard.statusCode).toBe(200);
+    expect(scorecard.json()).toMatchObject({
+      scorecard: {
+        sessionId,
+        dimensions: expect.arrayContaining([
+          expect.objectContaining({ id: 'capture-confidence' }),
+          expect.objectContaining({ id: 'tool-reliability' }),
+        ]),
+      },
+    });
     const ai = await daemon.app.inject({
       method: 'POST',
       url: `/api/v1/sessions/${sessionId}/ai-findings`,
@@ -1168,6 +1183,7 @@ describe('daemon API', () => {
     });
     expect(patchResponse.statusCode).toBe(200);
     expect(Buffer.from(patchResponse.rawPayload)).toEqual(preTaskPatch);
+    const capturedSessionId = createSessionId('vibetrace-eval', 'api-run');
     const run = await daemon.app.inject({
       method: 'POST',
       url: `/api/v1/eval/cases/${evalCase.id}/runs`,
@@ -1179,6 +1195,65 @@ describe('daemon API', () => {
     });
     expect(run.statusCode).toBe(201);
     const evalRun = (run.json() as { run: { id: string } }).run;
+    const capturedEvent = TraceEventSchema.parse({
+      ...segment().event,
+      id: createEventId({
+        adapter: 'vibetrace-eval',
+        sourceSessionId: 'api-run',
+        sourceSequence: 1,
+        type: 'message.agent',
+      }),
+      sessionId: capturedSessionId,
+      sourceEventId: 'api-run-event-1',
+      source: 'agent',
+      type: 'message.agent',
+      payload: { content: 'captured eval evidence' },
+      rawPayload: { content: 'captured eval evidence' },
+      usage: { inputTokens: 12, outputTokens: 8, estimatedCostMicros: 3 },
+    });
+    const capturedCommand = TraceEventSchema.parse({
+      ...capturedEvent,
+      id: createEventId({
+        adapter: 'vibetrace-eval',
+        sourceSessionId: 'api-run',
+        sourceSequence: 2,
+        type: 'command.started',
+      }),
+      sourceEventId: 'api-run-event-2',
+      sequence: 2,
+      source: 'tool',
+      type: 'command.started',
+      payload: { command: 'pnpm test', category: 'test' },
+      rawPayload: { command: 'pnpm test', category: 'test' },
+      usage: undefined,
+    });
+    const captured = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/runs/${evalRun.id}/events`,
+      headers,
+      payload: { events: [capturedEvent, capturedCommand] },
+    });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.json()).toMatchObject({
+      imported: 2,
+      sessionId: capturedSessionId,
+    });
+    expect(storage.listEvents({ sessionId: capturedSessionId })).toHaveLength(
+      2,
+    );
+    expect(storage.getEvalRun(evalRun.id)?.metrics).toMatchObject({
+      toolCount: 1,
+      tokenCount: 20,
+      estimatedCostMicros: 3,
+      findingCount: 0,
+    });
+    const capturedAgain = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/runs/${evalRun.id}/events`,
+      headers,
+      payload: { events: [capturedEvent, capturedCommand] },
+    });
+    expect(capturedAgain.statusCode).toBe(200);
     const updated = await daemon.app.inject({
       method: 'PATCH',
       url: `/api/v1/eval/runs/${evalRun.id}`,

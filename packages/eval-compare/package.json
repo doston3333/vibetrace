@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "@vibetrace/schema": "workspace:*",
-    "@vibetrace/storage": "workspace:*"
+    "@vibetrace/storage": "workspace:*",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.13.3"

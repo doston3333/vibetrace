@@ -1,6 +1,6 @@
 # Deterministic diagnostics fixture report
 
-Corpus: 30 synthetic positive, negative, and edge fixtures.
+Corpus: 45 synthetic positive, negative, and edge fixtures.
 
 | Rule                                             |  TP |  TN |  FP |  FN | Precision | Recall |
 | ------------------------------------------------ | --: | --: | --: | --: | --------: | -----: |
@@ -14,6 +14,11 @@ Corpus: 30 synthetic positive, negative, and edge fixtures.
 | skill-instruction-contradiction-signal           |   1 |   2 |   0 |   0 |      1.00 |   1.00 |
 | repeated-tool-error-loop                         |   2 |   1 |   0 |   0 |      1.00 |   1.00 |
 | declined-approval-followed-by-equivalent-request |   1 |   2 |   0 |   0 |      1.00 |   1.00 |
+| large-code-churn-relative-to-task                |   1 |   2 |   0 |   0 |      1.00 |   1.00 |
+| test-before-final-change-without-rerun           |   1 |   2 |   0 |   0 |      1.00 |   1.00 |
+| user-correction-after-unsupported-success        |   1 |   2 |   0 |   0 |      1.00 |   1.00 |
+| excessive-search-with-little-state-change        |   2 |   1 |   0 |   0 |      1.00 |   1.00 |
+| relevant-file-discovered-after-implementation    |   1 |   2 |   0 |   0 |      1.00 |   1.00 |
 
 Overall precision: 1.00. Overall recall: 1.00.
 

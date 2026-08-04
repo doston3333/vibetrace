@@ -137,6 +137,50 @@ export function EvalsPage() {
                 </dd>
               </div>
             </dl>
+            <div
+              className="comparison-side-by-side"
+              aria-label="Run side by side"
+            >
+              <h4>Run matrix</h4>
+              <div className="comparison-run-grid">
+                {comparison.data.runs.map((run) => (
+                  <article key={run.id}>
+                    <strong>{run.id.slice(0, 12)}…</strong>
+                    <span>{run.status}</span>
+                    <small>
+                      {run.outcome?.success === true
+                        ? 'passed'
+                        : run.outcome?.success === false
+                          ? 'failed'
+                          : 'pending'}
+                    </small>
+                    {run.metrics?.durationMs !== undefined ? (
+                      <small>{String(run.metrics.durationMs)} ms</small>
+                    ) : null}
+                    <small>
+                      Tools {metricText(run.metrics?.toolCount)} · Files{' '}
+                      {metricText(run.metrics?.diffFileCount)}
+                    </small>
+                    <small>
+                      Tokens {metricText(run.metrics?.tokenCount)} · Cost{' '}
+                      {metricText(run.metrics?.estimatedCostMicros)} μ$
+                    </small>
+                    <pre className="comparison-run-config">
+                      {JSON.stringify(run.configuration, null, 2)}
+                    </pre>
+                    {run.sourceSessionId ? (
+                      <a
+                        href={`/sessions/${encodeURIComponent(run.sourceSessionId)}`}
+                      >
+                        Open evidence session
+                      </a>
+                    ) : (
+                      <small>Session capture not attached</small>
+                    )}
+                  </article>
+                ))}
+              </div>
+            </div>
             {comparison.data.summary.firstDivergence ? (
               <p>
                 First divergence at event{' '}
@@ -155,4 +199,10 @@ export function EvalsPage() {
       </section>
     </main>
   );
+}
+
+function metricText(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toLocaleString()
+    : 'not captured';
 }

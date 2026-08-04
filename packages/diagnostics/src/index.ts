@@ -15,6 +15,17 @@ import type {
   StoredNormalizedEvent,
 } from '@vibetrace/storage';
 
+export {
+  buildSessionScorecard,
+  SCORECARD_DIMENSION_IDS,
+  SCORECARD_VERSION,
+  type ScorecardConfidence,
+  type ScorecardDimension,
+  type ScorecardDimensionId,
+  type SessionScorecard,
+  type FindingEvidence,
+} from './scorecard.js';
+
 export const DIAGNOSTICS_VERSION = '0.1.0' as const;
 
 export const DIAGNOSTIC_RULE_IDS = [
@@ -28,6 +39,11 @@ export const DIAGNOSTIC_RULE_IDS = [
   'skill-instruction-contradiction-signal',
   'repeated-tool-error-loop',
   'declined-approval-followed-by-equivalent-request',
+  'large-code-churn-relative-to-task',
+  'test-before-final-change-without-rerun',
+  'user-correction-after-unsupported-success',
+  'excessive-search-with-little-state-change',
+  'relevant-file-discovered-after-implementation',
 ] as const;
 export type DiagnosticRuleId = (typeof DIAGNOSTIC_RULE_IDS)[number];
 
@@ -164,6 +180,50 @@ function isChange(event: TraceEvent): boolean {
     Array.isArray(value.changedFiles) &&
     value.changedFiles.length > 0 &&
     value.phase === 'event'
+  );
+}
+
+function lineCount(
+  event: TraceEvent,
+  key: 'addedLines' | 'deletedLines',
+): number {
+  const candidate = payload(event)[key];
+  return typeof candidate === 'number' && Number.isFinite(candidate)
+    ? Math.max(0, Math.floor(candidate))
+    : 0;
+}
+
+function changedLineCount(event: TraceEvent): number {
+  const value = payload(event);
+  const explicit =
+    lineCount(event, 'addedLines') + lineCount(event, 'deletedLines');
+  if (explicit > 0) return explicit;
+  const diff = text(value.diff);
+  if (!diff) return 0;
+  return diff
+    .split('\n')
+    .filter(
+      (line) =>
+        (line.startsWith('+') && !line.startsWith('+++')) ||
+        (line.startsWith('-') && !line.startsWith('---')),
+    ).length;
+}
+
+function searchCommand(event: TraceEvent): boolean {
+  if (event.type !== 'command.completed' && event.type !== 'command.started')
+    return false;
+  const value = payload(event);
+  if (value.category === 'search') return true;
+  return /(?:^|\s)(?:rg|grep|git\s+grep|find|fd|ag|ack)(?:\s|$)/iu.test(
+    text(value.command),
+  );
+}
+
+function correctionEvent(event: TraceEvent): boolean {
+  if (event.type !== 'user.steered' && event.type !== 'message.user')
+    return false;
+  return /\b(?:actually|wrong|no,?|not quite|still|instead|that is not|doesn'?t|should have|you need to)\b/iu.test(
+    text(payload(event).content),
   );
 }
 
@@ -643,6 +703,186 @@ const declinedApprovalRepeated = defineRule({
   },
 });
 
+const largeCodeChurn = defineRule({
+  id: 'large-code-churn-relative-to-task',
+  version: DIAGNOSTICS_VERSION,
+  evaluate: ({ events }) => {
+    const prompt = events.find((event) => event.type === 'message.user');
+    const promptText = prompt ? text(payload(prompt).content).trim() : '';
+    const taskWords = promptText ? promptText.split(/\s+/u).length : 0;
+    const threshold = Math.max(40, taskWords * 10);
+    const changes = events.filter(isChange);
+    const churn = changes.reduce(
+      (total, event) => total + changedLineCount(event),
+      0,
+    );
+    if (changes.length < 2 || churn <= threshold) return [];
+    const evidence = [
+      ...(prompt ? [prompt.id] : []),
+      ...changes.slice(0, 12).map((event) => event.id),
+    ];
+    return [
+      {
+        key: `churn:${churn}:${threshold}`,
+        category: 'efficiency',
+        severity: 'medium',
+        title: 'Code churn was large relative to the task signal',
+        explanation: `The observed changes contain ${churn} added or deleted lines against a prompt of approximately ${taskWords} words (threshold ${threshold}).`,
+        recommendation:
+          'Break the work into smaller verified changes and confirm the task boundary before expanding the diff.',
+        evidenceEventIds: evidence,
+      },
+    ];
+  },
+});
+
+const testBeforeFinalChangeWithoutRerun = defineRule({
+  id: 'test-before-final-change-without-rerun',
+  version: DIAGNOSTICS_VERSION,
+  evaluate: ({ events }) => {
+    const finalChange = [...events].reverse().find(isChange);
+    if (!finalChange) return [];
+    const priorTest = [...events]
+      .reverse()
+      .find(
+        (event) =>
+          event.sequence < finalChange.sequence && isTestAttempt(event),
+      );
+    const laterTest = events.some(
+      (event) => event.sequence > finalChange.sequence && isTestAttempt(event),
+    );
+    if (!priorTest || laterTest) return [];
+    return [
+      {
+        key: finalChange.id,
+        category: 'verification',
+        severity: 'high',
+        title: 'Tests ran before the final change but were not rerun',
+        explanation:
+          'The session records a test attempt before its last observed change and no subsequent test attempt.',
+        recommendation:
+          'Rerun the relevant test suite after the final change so the result covers the delivered state.',
+        evidenceEventIds: [priorTest.id, finalChange.id],
+      },
+    ];
+  },
+});
+
+const userCorrectionAfterUnsupportedSuccess = defineRule({
+  id: 'user-correction-after-unsupported-success',
+  version: DIAGNOSTICS_VERSION,
+  evaluate: ({ events }) => {
+    for (const [index, event] of events.entries()) {
+      if (!isSuccessClaim(event)) continue;
+      const correction = events
+        .slice(index + 1)
+        .find(
+          (candidate) =>
+            candidate.sequence - event.sequence <= 3 &&
+            correctionEvent(candidate),
+        );
+      if (!correction) continue;
+      const verification = events.find(
+        (candidate) =>
+          candidate.sequence > event.sequence &&
+          candidate.sequence < correction.sequence &&
+          /^(?:test|lint|build|typecheck)\.completed$/.test(candidate.type) &&
+          payload(candidate).success === true,
+      );
+      if (verification) continue;
+      return [
+        {
+          key: `${event.id}:${correction.id}`,
+          category: 'human-intervention',
+          severity: 'high',
+          title: 'A user correction followed an unsupported success claim',
+          explanation:
+            'A correction-like user message arrived immediately after a success claim without an intervening successful verification.',
+          recommendation:
+            'Treat the claim as provisional and require evidence that addresses the user correction before closing the task.',
+          evidenceEventIds: [event.id, correction.id],
+          counterevidenceEventIds: [],
+        },
+      ];
+    }
+    return [];
+  },
+});
+
+const excessiveSearchLittleStateChange = defineRule({
+  id: 'excessive-search-with-little-state-change',
+  version: DIAGNOSTICS_VERSION,
+  evaluate: ({ events }) => {
+    const searches = events.filter(searchCommand);
+    const changes = events.filter(isChange);
+    if (searches.length < 5 || changes.length > 1) return [];
+    return [
+      {
+        key: `searches:${searches.length}:changes:${changes.length}`,
+        category: 'context-utilization',
+        severity: 'medium',
+        title: 'Search activity was excessive relative to state change',
+        explanation: `The session records ${searches.length} search commands but only ${changes.length} observed code changes.`,
+        recommendation:
+          'Turn search results into a concrete inspection or implementation step, then verify the chosen path.',
+        evidenceEventIds: [
+          ...searches.slice(0, 8).map((event) => event.id),
+          ...changes.map((event) => event.id),
+        ],
+      },
+    ];
+  },
+});
+
+const relevantFileDiscoveredAfterImplementation = defineRule({
+  id: 'relevant-file-discovered-after-implementation',
+  version: DIAGNOSTICS_VERSION,
+  evaluate: ({ events }) => {
+    const firstChange = events.find(isChange);
+    if (!firstChange) return [];
+    const changedPaths = new Set(
+      events
+        .filter(
+          (event) => isChange(event) && event.sequence >= firstChange.sequence,
+        )
+        .map(pathOf)
+        .filter((value): value is string => value !== undefined),
+    );
+    for (const read of events.filter(
+      (event) =>
+        event.type === 'file.read' && event.sequence > firstChange.sequence,
+    )) {
+      const path = pathOf(read);
+      if (!path || !changedPaths.has(path)) continue;
+      const earlierRead = events.some(
+        (event) =>
+          event.type === 'file.read' &&
+          pathOf(event) === path &&
+          event.sequence < firstChange.sequence,
+      );
+      if (earlierRead) continue;
+      const change = events.find(
+        (event) => isChange(event) && pathOf(event) === path,
+      );
+      if (!change) continue;
+      return [
+        {
+          key: path,
+          category: 'context-utilization',
+          severity: 'medium',
+          title: 'A relevant file was discovered after implementation began',
+          explanation:
+            'The timeline shows the file being changed before its first observed inspection.',
+          recommendation:
+            'Inspect relevant files and their callers before implementing changes that depend on them.',
+          evidenceEventIds: [change.id, read.id],
+        },
+      ];
+    }
+    return [];
+  },
+});
+
 export const DIAGNOSTIC_RULES: readonly DiagnosticRule[] = Object.freeze([
   noTestsAfterFinalChange,
   successClaimAfterFailure,
@@ -654,6 +894,11 @@ export const DIAGNOSTIC_RULES: readonly DiagnosticRule[] = Object.freeze([
   instructionContradiction,
   repeatedToolErrorLoop,
   declinedApprovalRepeated,
+  largeCodeChurn,
+  testBeforeFinalChangeWithoutRerun,
+  userCorrectionAfterUnsupportedSuccess,
+  excessiveSearchLittleStateChange,
+  relevantFileDiscoveredAfterImplementation,
 ]);
 
 function validateDraft(

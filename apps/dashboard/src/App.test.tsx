@@ -4,7 +4,13 @@ import { performance } from 'node:perf_hooks';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createSyntheticTrace } from '@vibetrace/test-fixtures';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +20,7 @@ import type {
   CoverageDatum,
   Finding,
   SessionSummary,
+  SessionScorecard,
   StoredEvent,
 } from './api.js';
 import {
@@ -131,6 +138,29 @@ const findings: readonly Finding[] = [
     state: 'open',
   },
 ];
+const scorecard: SessionScorecard = {
+  schemaVersion: '0.1.0',
+  sessionId: trace.sessionId,
+  dimensions: [
+    'outcome-correctness',
+    'context-utilization',
+    'tool-reliability',
+    'verification-quality',
+    'efficiency',
+    'recovery-behavior',
+    'instruction-adherence',
+    'safety-permissions',
+    'human-effort',
+    'capture-confidence',
+  ].map((id) => ({
+    id,
+    label: id,
+    score: null,
+    confidence: 'unknown' as const,
+    calculation: 'Observable evidence only.',
+    evidenceEventIds: [],
+  })),
+};
 
 function renderWorkbench(
   save = vi.fn(async () => undefined),
@@ -150,6 +180,7 @@ function renderWorkbench(
           artifacts={[]}
           coverage={coverage}
           findings={findings}
+          scorecard={scorecard}
           annotations={[]}
           onSaveAnnotation={save}
           onReviewFinding={review}
@@ -248,6 +279,22 @@ describe('forensic dashboard', () => {
       label: 'outcome:partial failure',
       note: 'Tests were not rerun.',
     });
+  });
+
+  it('renders independent scorecard dimensions without a universal score', () => {
+    renderWorkbench();
+    fireEvent.click(screen.getByRole('button', { name: 'Scorecard' }));
+    expect(
+      screen.getByRole('heading', { name: 'Session scorecard' }),
+    ).toBeTruthy();
+    expect(screen.getByText(/not a universal quality score/)).toBeTruthy();
+    const panel = screen
+      .getByRole('heading', { name: 'Session scorecard' })
+      .closest('section');
+    expect(panel).toBeTruthy();
+    expect(within(panel as HTMLElement).getAllByText('Unknown')).toHaveLength(
+      10,
+    );
   });
 
   it('labels AI hypotheses separately from deterministic findings', () => {

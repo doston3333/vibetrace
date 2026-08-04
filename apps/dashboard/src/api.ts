@@ -86,6 +86,23 @@ export interface CoverageDatum {
   }[];
 }
 
+export type ScorecardConfidence = 'high' | 'medium' | 'low' | 'unknown';
+
+export interface ScorecardDimension {
+  readonly id: string;
+  readonly label: string;
+  readonly score: number | null;
+  readonly confidence: ScorecardConfidence;
+  readonly calculation: string;
+  readonly evidenceEventIds: readonly string[];
+}
+
+export interface SessionScorecard {
+  readonly schemaVersion: string;
+  readonly sessionId: string;
+  readonly dimensions: readonly ScorecardDimension[];
+}
+
 export interface EvalCaseSummary {
   readonly id: string;
   readonly sourceSessionId?: string;
@@ -100,6 +117,7 @@ export interface EvalCaseSummary {
 export interface EvalRunSummary {
   readonly id: string;
   readonly evalCaseId: string;
+  readonly sourceSessionId?: string;
   readonly status: string;
   readonly configuration: JsonObject;
   readonly outcome?: JsonObject;
@@ -117,6 +135,7 @@ export interface EvalComparisonSummary {
 
 export interface EvalComparisonResponse {
   readonly comparison: EvalComparisonSummary;
+  readonly runs: readonly EvalRunSummary[];
   readonly results: readonly {
     readonly comparisonId: string;
     readonly evalRunId: string;
@@ -275,6 +294,12 @@ export const api = {
       `/api/v1/sessions/${encodeURIComponent(id)}/findings`,
     );
     return response.findings;
+  },
+  async scorecard(id: string): Promise<SessionScorecard> {
+    const response = await jsonRequest<{ scorecard: SessionScorecard }>(
+      `/api/v1/sessions/${encodeURIComponent(id)}/scorecard`,
+    );
+    return response.scorecard;
   },
   async annotations(
     targetType?: string,

@@ -16,11 +16,22 @@ import {
   type EvalManifest,
   type SuccessAssertion,
 } from '@vibetrace/eval-spec';
+import {
+  EventSourceSchema,
+  EventTypeSchema,
+  SCHEMA_VERSION,
+  TraceEventSchema,
+  createEventId,
+  createSessionId,
+  type JsonObject,
+  type TraceEvent,
+} from '@vibetrace/schema';
 
 const execFile = promisify(nodeExecFile);
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+export const MAX_CAPTURE_EVENTS = 20_000;
 
 export interface CommandResult {
   readonly argv: readonly string[];
@@ -67,6 +78,8 @@ export interface EvalExecutionContext {
 export interface EvalExecutionRecord {
   readonly commandResults?: readonly CommandResult[];
   readonly output?: string;
+  /** Optional canonical events supplied by an adapter-backed executor. */
+  readonly events?: readonly TraceEvent[];
 }
 
 export interface RunEvaluationOptions {
@@ -90,6 +103,8 @@ export interface EvalRunResult extends EvalOutcome {
   readonly output?: string;
   readonly jsonRecordCount: number;
   readonly malformedJsonRecordCount: number;
+  readonly sessionId?: string;
+  readonly events: readonly TraceEvent[];
 }
 
 export interface CodexExecOptions {
@@ -508,6 +523,136 @@ function jsonRecords(output: string): { count: number; malformed: number } {
   return { count, malformed };
 }
 
+function jsonObject(value: unknown): JsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as JsonObject)
+    : { value: String(value ?? '') };
+}
+
+/** Validate adapter-supplied canonical events before they become an eval session. */
+export function normalizeExecutionEvents(
+  events: readonly TraceEvent[],
+): readonly TraceEvent[] {
+  if (events.length > MAX_CAPTURE_EVENTS)
+    throw new Error(
+      `Evaluation capture exceeds the ${MAX_CAPTURE_EVENTS}-event limit.`,
+    );
+  const parsed = events
+    .map((event) => TraceEventSchema.parse(event))
+    .sort(
+      (left, right) =>
+        left.sequence - right.sequence || left.id.localeCompare(right.id),
+    );
+  if (parsed.length === 0) return Object.freeze([]);
+  const sessionId = parsed[0]!.sessionId;
+  if (parsed.some((event) => event.sessionId !== sessionId))
+    throw new Error('Evaluation capture contains more than one session.');
+  const ids = new Set(parsed.map((event) => event.id));
+  if (ids.size !== parsed.length)
+    throw new Error('Evaluation capture contains duplicate event IDs.');
+  return Object.freeze(parsed);
+}
+
+/**
+ * Convert a bounded eval JSONL transcript into a canonical evidence session.
+ * Canonical records are preserved; unrecognized records become explicit gaps
+ * with the original JSON retained as encrypted raw payload by the caller.
+ */
+export function captureEvalJsonl(
+  output: string,
+  manifest: EvalManifest,
+): readonly TraceEvent[] {
+  const sessionId = createSessionId('vibetrace-eval', manifest.id);
+  const sourceVersion = manifest.configuration.codexVersion ?? 'unknown';
+  const events: TraceEvent[] = [];
+  for (const [index, line] of output.split('\n').filter(Boolean).entries()) {
+    const sequence = index + 1;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      parsed = { malformed: true, line };
+    }
+    const candidate =
+      parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      'event' in parsed
+        ? (parsed as { event?: unknown }).event
+        : parsed;
+    const record = jsonObject(candidate);
+    const type = EventTypeSchema.safeParse(record.type);
+    const source = EventSourceSchema.safeParse(record.source);
+    const timestamp =
+      typeof record.timestamp === 'string' &&
+      Number.isFinite(Date.parse(record.timestamp))
+        ? record.timestamp
+        : new Date(
+            Date.parse(manifest.createdAt) + sequence * 1_000,
+          ).toISOString();
+    const sourceEventId =
+      typeof record.sourceEventId === 'string'
+        ? record.sourceEventId
+        : `line-${sequence}`;
+    const candidatePayload = jsonObject(record.payload ?? record);
+    const common = {
+      schemaVersion: SCHEMA_VERSION,
+      id: createEventId({
+        adapter: 'vibetrace-eval',
+        sourceVersion,
+        sourceSessionId: manifest.id,
+        sourceEventId,
+        sourceSequence: sequence,
+        type: type.success ? type.data : 'capture.gap',
+      }),
+      sessionId,
+      sourceEventId,
+      sequence,
+      timestamp,
+      source: source.success ? source.data : ('harness' as const),
+      rawPayload: record,
+      provenance: {
+        adapter: 'vibetrace-eval',
+        adapterVersion: '0.1.0',
+        sourceVersion,
+        captureMode: type.success ? ('full' as const) : ('partial' as const),
+      },
+    };
+    const attempt = type.success
+      ? TraceEventSchema.safeParse({
+          ...common,
+          type: type.data,
+          payload: candidatePayload,
+          ...(typeof record.status === 'string'
+            ? { status: record.status }
+            : {}),
+          ...(typeof record.toolName === 'string'
+            ? { toolName: record.toolName }
+            : {}),
+        })
+      : { success: false as const };
+    if (attempt.success) {
+      events.push(attempt.data);
+      continue;
+    }
+    events.push(
+      TraceEventSchema.parse({
+        ...common,
+        type: 'capture.gap',
+        source: 'vibetrace',
+        payload: {
+          dataClass: 'unknown',
+          state: 'unknown',
+          reason: 'Eval transcript record was not a canonical trace event.',
+          expectedSource: 'vibetrace-eval',
+        },
+        provenance: { ...common.provenance, captureMode: 'partial' },
+      }),
+    );
+  }
+  return Object.freeze(events);
+}
+
 /** Run Codex batch mode with a shell-free argv and bounded transcript output. */
 export async function runCodexExec(
   manifest: EvalManifest,
@@ -610,6 +755,12 @@ export async function runEvaluation(
       maxOutputBytes: options.maxOutputBytes,
     });
     const output = execution?.output;
+    const events =
+      execution?.events !== undefined
+        ? normalizeExecutionEvents(execution.events)
+        : output
+          ? captureEvalJsonl(output, manifest)
+          : Object.freeze([]);
     const records = output ? jsonRecords(output) : { count: 0, malformed: 0 };
     return {
       manifestId: manifest.id,
@@ -626,6 +777,8 @@ export async function runEvaluation(
         : {}),
       jsonRecordCount: records.count,
       malformedJsonRecordCount: records.malformed,
+      ...(events.length > 0 ? { sessionId: events[0]!.sessionId } : {}),
+      events,
     };
   } finally {
     await handle.cleanup();

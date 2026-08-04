@@ -332,6 +332,9 @@ importers:
       '@vibetrace/storage':
         specifier: workspace:*
         version: link:../storage
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: 24.13.3
@@ -342,13 +345,13 @@ importers:
       '@vibetrace/eval-spec':
         specifier: workspace:*
         version: link:../eval-spec
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
     devDependencies:
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
-      '@vibetrace/schema':
-        specifier: workspace:*
-        version: link:../schema
 
   packages/eval-spec:
     dependencies:

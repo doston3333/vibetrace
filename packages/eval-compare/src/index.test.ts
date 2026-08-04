@@ -5,7 +5,11 @@ import {
 } from '@vibetrace/schema';
 import { describe, expect, it } from 'vitest';
 
-import { firstDivergence, summarizeRuns } from './index.js';
+import {
+  ComparisonMatrixConfigurationSchema,
+  firstDivergence,
+  summarizeRuns,
+} from './index.js';
 
 function event(sequence: number, content: string) {
   return TraceEventSchema.parse({
@@ -74,5 +78,19 @@ describe('evaluation comparison', () => {
       successRate: 0.5,
     });
     expect(summary.durationMs.median).toBe(20);
+  });
+
+  it('rejects duplicate matrix dimensions at the configuration boundary', () => {
+    expect(
+      ComparisonMatrixConfigurationSchema.safeParse({
+        dimensions: ['model', 'model'],
+      }).success,
+    ).toBe(false);
+    expect(
+      ComparisonMatrixConfigurationSchema.parse({
+        dimensions: ['model', 'skillSet'],
+        repetitions: 2,
+      }),
+    ).toMatchObject({ dimensions: ['model', 'skillSet'], repetitions: 2 });
   });
 });

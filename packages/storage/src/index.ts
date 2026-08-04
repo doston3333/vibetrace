@@ -195,6 +195,7 @@ export interface EvalRunInput {
 }
 
 export interface EvalRunUpdate {
+  readonly sourceSessionId?: string;
   readonly status?: EvalRunStatus;
   readonly outcome?: JsonObject;
   readonly metrics?: JsonObject;
@@ -1939,6 +1940,8 @@ export class Storage {
 
   updateEvalRun(id: string, update: EvalRunUpdate): void {
     assertText(id, 'evalRun.id');
+    if (update.sourceSessionId !== undefined)
+      assertText(update.sourceSessionId, 'evalRun.sourceSessionId');
     if (update.status !== undefined) {
       assertText(update.status, 'evalRun.status');
       assertEvalRunStatus(update.status, 'evalRun.status');
@@ -1959,6 +1962,10 @@ export class Storage {
     }
     const fields: string[] = [];
     const values: unknown[] = [];
+    if (update.sourceSessionId !== undefined) {
+      fields.push('source_session_id = ?');
+      values.push(update.sourceSessionId);
+    }
     if (update.status !== undefined) {
       fields.push('status = ?');
       values.push(update.status);

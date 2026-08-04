@@ -1,0 +1,32 @@
+# Example configuration. Values are illustrative and are never read from the
+# environment by the collector.
+
+[storage]
+# Defaults to VIBETRACE_HOME or ~/.vibetrace.
+home = "~/.vibetrace"
+capture_profile = "standard"
+
+[capture.standard]
+prompts = true
+messages = true
+tool_inputs = true
+tool_outputs = true
+diffs = true
+verification = true
+repository_snapshots = false
+environment_values = false
+telemetry = false
+
+[daemon]
+loopback_only = true
+browser_ticket_seconds = 60
+
+[privacy]
+# Portable exports always require an age passphrase.
+export_profile = "share-safe"
+redact_before_persist = true
+
+[retention]
+# The daemon API persists this policy after explicit user confirmation.
+retention_days = 365
+max_sessions = 10000

@@ -101,6 +101,13 @@ function command(command: string, exitCode: number): EventSpec {
   };
 }
 
+function search(commandValue: string): EventSpec {
+  return {
+    type: 'command.completed',
+    payload: { command: commandValue, category: 'search', exitCode: 0 },
+  };
+}
+
 function tool(status: 'completed' | 'failed'): EventSpec {
   return {
     type: 'tool.completed',
@@ -335,6 +342,121 @@ export const DIAGNOSTIC_FIXTURES: readonly DiagnosticFixture[] = Object.freeze([
       status: 'declined',
     },
     approvalRequest('request-2'),
+  ]),
+
+  fixture('large-code-churn-relative-to-task', 'positive', true, [
+    { type: 'message.user', payload: { content: 'Fix a typo.' } },
+    {
+      type: 'file.changed',
+      payload: { path: 'src/a.ts', addedLines: 40, deletedLines: 40 },
+    },
+    {
+      type: 'file.changed',
+      payload: { path: 'src/b.ts', addedLines: 40, deletedLines: 40 },
+    },
+  ]),
+  fixture('large-code-churn-relative-to-task', 'negative', false, [
+    {
+      type: 'message.user',
+      payload: {
+        content:
+          'Please carefully update the authentication subsystem, preserve compatibility, add coverage, document migration behavior, and verify every affected integration path.',
+      },
+    },
+    {
+      type: 'file.changed',
+      payload: { path: 'src/a.ts', addedLines: 20, deletedLines: 20 },
+    },
+    {
+      type: 'file.changed',
+      payload: { path: 'src/b.ts', addedLines: 20, deletedLines: 20 },
+    },
+  ]),
+  fixture('large-code-churn-relative-to-task', 'edge', false, [
+    { type: 'message.user', payload: { content: 'Fix it.' } },
+    { type: 'file.changed', payload: { path: 'src/a.ts' } },
+    { type: 'file.changed', payload: { path: 'src/b.ts' } },
+  ]),
+
+  fixture('test-before-final-change-without-rerun', 'positive', true, [
+    testResult(true),
+    { type: 'file.changed', payload: { path: 'src/a.ts' } },
+  ]),
+  fixture('test-before-final-change-without-rerun', 'negative', false, [
+    { type: 'file.changed', payload: { path: 'src/a.ts' } },
+    testResult(true),
+  ]),
+  fixture('test-before-final-change-without-rerun', 'edge', false, [
+    testResult(false),
+    { type: 'file.changed', payload: { path: 'src/a.ts' } },
+    testResult(true),
+  ]),
+
+  fixture('user-correction-after-unsupported-success', 'positive', true, [
+    {
+      type: 'message.agent',
+      payload: { content: 'Implemented and fixed it.' },
+    },
+    {
+      type: 'user.steered' as EventType,
+      payload: { content: 'Actually, this is wrong.' },
+    },
+  ]),
+  fixture('user-correction-after-unsupported-success', 'negative', false, [
+    {
+      type: 'message.agent',
+      payload: { content: 'Implemented and fixed it.' },
+    },
+    {
+      type: 'user.steered' as EventType,
+      payload: { content: 'Thanks, continue.' },
+    },
+  ]),
+  fixture('user-correction-after-unsupported-success', 'edge', false, [
+    {
+      type: 'message.agent',
+      payload: { content: 'Implemented and fixed it.' },
+    },
+    testResult(true),
+    {
+      type: 'user.steered' as EventType,
+      payload: { content: 'Actually, this is wrong.' },
+    },
+  ]),
+
+  fixture('excessive-search-with-little-state-change', 'positive', true, [
+    search('rg auth src'),
+    search('rg role src'),
+    search('rg policy src'),
+    search('rg permission src'),
+    search('rg middleware src'),
+  ]),
+  fixture('excessive-search-with-little-state-change', 'negative', false, [
+    search('rg auth src'),
+    search('rg role src'),
+    search('rg policy src'),
+    search('rg permission src'),
+  ]),
+  fixture('excessive-search-with-little-state-change', 'edge', true, [
+    search('rg auth src'),
+    search('rg role src'),
+    search('rg policy src'),
+    search('rg permission src'),
+    search('rg middleware src'),
+    { type: 'file.changed', payload: { path: 'src/a.ts' } },
+  ]),
+
+  fixture('relevant-file-discovered-after-implementation', 'positive', true, [
+    { type: 'file.changed', payload: { path: 'src/auth.ts' } },
+    { type: 'file.read', payload: { path: 'src/auth.ts' } },
+  ]),
+  fixture('relevant-file-discovered-after-implementation', 'negative', false, [
+    { type: 'file.read', payload: { path: 'src/auth.ts' } },
+    { type: 'file.changed', payload: { path: 'src/auth.ts' } },
+  ]),
+  fixture('relevant-file-discovered-after-implementation', 'edge', false, [
+    { type: 'file.changed', payload: { path: 'src/auth.ts' } },
+    { type: 'file.read', payload: { path: 'src/other.ts' } },
   ]),
 ]);
 
