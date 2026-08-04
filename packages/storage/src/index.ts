@@ -125,6 +125,11 @@ export interface FindingInput {
   readonly sessionId: string;
   readonly ruleId: string;
   readonly detectorVersion: string;
+  /** Non-secret provenance for findings produced by an optional AI analyzer. */
+  readonly analyzerProvider?: string;
+  readonly analyzerModel?: string;
+  /** Lowercase SHA-256 digest of the analyzer prompt; never the prompt itself. */
+  readonly promptDigest?: string;
   readonly category: string;
   readonly severity: string;
   readonly title: string;
@@ -338,6 +343,28 @@ type Row = Record<string, unknown>;
 function assertText(value: unknown, field: string): asserts value is string {
   if (typeof value !== 'string' || value.length === 0)
     throw new Error(`${field} must be a non-empty string.`);
+}
+
+function assertFindingProvenance(input: FindingInput): void {
+  if (input.analyzerProvider !== undefined) {
+    assertText(input.analyzerProvider, 'finding.analyzerProvider');
+    if (input.analyzerProvider.length > 64)
+      throw new Error(
+        'finding.analyzerProvider must be at most 64 characters.',
+      );
+  }
+  if (input.analyzerModel !== undefined) {
+    assertText(input.analyzerModel, 'finding.analyzerModel');
+    if (input.analyzerModel.length > 200)
+      throw new Error('finding.analyzerModel must be at most 200 characters.');
+  }
+  if (
+    input.promptDigest !== undefined &&
+    !/^[a-f0-9]{64}$/.test(input.promptDigest)
+  )
+    throw new Error(
+      'finding.promptDigest must be a lowercase SHA-256 hexadecimal digest.',
+    );
 }
 
 function assertEvalRunStatus(
@@ -1275,6 +1302,7 @@ export class Storage {
       recommendation: input.recommendation,
     }))
       assertText(value, `finding.${name}`);
+    assertFindingProvenance(input);
     if (input.evidenceEventIds.length === 0)
       throw new Error('Findings require at least one evidence event ID.');
     const ids = [
@@ -1295,13 +1323,16 @@ export class Storage {
       }
       this.#database
         .prepare(
-          'INSERT INTO findings (id, session_id, rule_id, detector_version, category, severity, confidence, title, explanation, evidence_event_ids_json, counterevidence_event_ids_json, recommendation, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO findings (id, session_id, rule_id, detector_version, analyzer_provider, analyzer_model, prompt_digest, category, severity, confidence, title, explanation, evidence_event_ids_json, counterevidence_event_ids_json, recommendation, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           input.id,
           input.sessionId,
           input.ruleId,
           input.detectorVersion,
+          input.analyzerProvider ?? null,
+          input.analyzerModel ?? null,
+          input.promptDigest ?? null,
           input.category,
           input.severity,
           input.confidence ?? null,
@@ -1348,6 +1379,7 @@ export class Storage {
         recommendation: input.recommendation,
       }))
         assertText(value, `finding.${name}`);
+      assertFindingProvenance(input);
       if (input.evidenceEventIds.length === 0)
         throw new Error('Findings require at least one evidence event ID.');
     }
@@ -1376,11 +1408,14 @@ export class Storage {
           throw new Error('Finding ID belongs to another session.');
         this.#database
           .prepare(
-            `INSERT INTO findings (id, session_id, rule_id, detector_version, category, severity, confidence, title, explanation, evidence_event_ids_json, counterevidence_event_ids_json, recommendation, state)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO findings (id, session_id, rule_id, detector_version, analyzer_provider, analyzer_model, prompt_digest, category, severity, confidence, title, explanation, evidence_event_ids_json, counterevidence_event_ids_json, recommendation, state)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                rule_id = excluded.rule_id,
                detector_version = excluded.detector_version,
+               analyzer_provider = excluded.analyzer_provider,
+               analyzer_model = excluded.analyzer_model,
+               prompt_digest = excluded.prompt_digest,
                category = excluded.category,
                severity = excluded.severity,
                confidence = excluded.confidence,
@@ -1396,6 +1431,9 @@ export class Storage {
             sessionId,
             input.ruleId,
             input.detectorVersion,
+            input.analyzerProvider ?? null,
+            input.analyzerModel ?? null,
+            input.promptDigest ?? null,
             input.category,
             input.severity,
             input.confidence ?? null,
@@ -1465,6 +1503,7 @@ export class Storage {
       this.#database
         .prepare(
           `SELECT f.id, f.session_id, f.rule_id, f.detector_version,
+             f.analyzer_provider, f.analyzer_model, f.prompt_digest,
              COALESCE(r.category_override, f.category) AS category,
              f.severity, f.confidence, f.title, f.explanation, f.recommendation,
              f.evidence_event_ids_json, f.counterevidence_event_ids_json,
@@ -1479,6 +1518,15 @@ export class Storage {
       sessionId: String(row.session_id),
       ruleId: String(row.rule_id),
       detectorVersion: String(row.detector_version),
+      ...(typeof row.analyzer_provider === 'string'
+        ? { analyzerProvider: row.analyzer_provider }
+        : {}),
+      ...(typeof row.analyzer_model === 'string'
+        ? { analyzerModel: row.analyzer_model }
+        : {}),
+      ...(typeof row.prompt_digest === 'string'
+        ? { promptDigest: row.prompt_digest }
+        : {}),
       category: String(row.category),
       severity: String(row.severity),
       title: String(row.title),

@@ -38,10 +38,15 @@ import {
 import { captureOtelJson } from '@vibetrace/adapter-otel';
 import {
   AI_ANALYZER_VERSION,
-  AiHypothesisSchema,
+  AiProviderError,
   buildAiPrompt,
   digestAiPrompt,
+  invokeCodexProvider,
+  invokeDirectApiProvider,
   verifyHypotheses,
+  type AiProviderInvocationResult,
+  type CodexProviderInput,
+  type DirectApiProviderInput,
 } from '@vibetrace/analyzer-ai';
 import {
   ComparisonMatrixConfigurationSchema,
@@ -311,13 +316,32 @@ const retentionPolicySchema = z
     apply: z.boolean().default(false),
   })
   .strict();
-const aiFindingSubmissionSchema = z
-  .object({
-    analyzerVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
-    promptDigest: z.string().regex(/^[a-f0-9]{64}$/),
-    hypotheses: z.array(AiHypothesisSchema).max(1_000),
-  })
-  .strict();
+const aiModelSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9._:/-]+$/);
+const aiAnalysisRequestSchema = z.discriminatedUnion('provider', [
+  z
+    .object({
+      provider: z.literal('direct-api'),
+      endpoint: z.string().min(1).max(4_096),
+      apiKey: z
+        .string()
+        .min(1)
+        .max(4_096)
+        .refine((value) => !/[\r\n]/.test(value)),
+      model: aiModelSchema,
+      consent: z.literal(true),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.literal('codex'),
+      model: aiModelSchema.optional(),
+    })
+    .strict(),
+]);
 const SAFE_ARTIFACT_MEDIA_TYPES = new Set([
   'application/json',
   'text/csv',
@@ -350,10 +374,17 @@ export interface DaemonOptions {
   readonly dashboardDir?: string;
   readonly spoolFaults?: SpoolImportOptions;
   readonly bundleOperations?: BundleOperations;
+  readonly aiProviderOperations?: AiProviderOperations;
   readonly otel?: {
     readonly enabled: boolean;
     readonly allowPromptContent?: boolean;
   };
+}
+
+/** Injectable provider boundary for daemon tests; credentials are request-scoped. */
+export interface AiProviderOperations {
+  directApi(input: DirectApiProviderInput): Promise<AiProviderInvocationResult>;
+  codex(input: CodexProviderInput): Promise<AiProviderInvocationResult>;
 }
 
 /** Test seam around CPU-heavy encryption while preserving route validation. */
@@ -458,6 +489,24 @@ function bundleFailure(error: unknown): {
   if (message.includes('collision'))
     return { status: 409, code: 'BUNDLE_ID_COLLISION' };
   return { status: 400, code: 'INVALID_BUNDLE_OR_PASSPHRASE' };
+}
+
+function aiProviderFailure(error: unknown): {
+  readonly status: 400 | 502 | 503 | 504;
+  readonly code: string;
+} {
+  if (!(error instanceof AiProviderError))
+    return { status: 502, code: 'AI_PROVIDER_FAILED' };
+  switch (error.code) {
+    case 'AI_PROVIDER_CONFIG_INVALID':
+      return { status: 400, code: error.code };
+    case 'AI_PROVIDER_TIMEOUT':
+      return { status: 504, code: error.code };
+    case 'AI_PROVIDER_EXECUTION_FAILED':
+      return { status: 503, code: error.code };
+    default:
+      return { status: 502, code: error.code };
+  }
 }
 
 /** Read a decrypted blob only when a route has an explicit bounded size contract. */
@@ -898,6 +947,11 @@ export async function startDaemon(
       export: exportBundle,
       import: importBundle,
     };
+    const aiProviderOperations: AiProviderOperations =
+      options.aiProviderOperations ?? {
+        directApi: invokeDirectApiProvider,
+        codex: invokeCodexProvider,
+      };
     const token = await loadOrCreateToken(stateDir);
     await hardenSpool(spoolPaths(stateDir));
     app = fastify({ logger: false, bodyLimit: 32 * 1024 * 1024 });
@@ -942,6 +996,7 @@ export async function startDaemon(
       lastErrorCode: undefined as string | undefined,
     };
     const pendingAnalysis = new Set<string>();
+    const activeAiAnalyses = new Set<string>();
     let importing: Promise<void> | undefined;
     const importOnce = async (): Promise<void> => {
       if (importing) return importing;
@@ -2129,14 +2184,16 @@ export async function startDaemon(
         prompt: prepared.prompt,
       };
     });
-    app.post('/api/v1/sessions/:id/ai-findings', async (request, reply) => {
+    app.post('/api/v1/sessions/:id/ai-analyze', async (request, reply) => {
       const id = sessionId(request);
       if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
       if (!storage.getSession(id))
         return reply.code(404).send({ code: 'NOT_FOUND' });
-      const parsed = aiFindingSubmissionSchema.safeParse(request.body);
+      const parsed = aiAnalysisRequestSchema.safeParse(request.body);
       if (!parsed.success)
-        return reply.code(400).send({ code: 'INVALID_AI_FINDINGS' });
+        return reply.code(400).send({ code: 'INVALID_AI_ANALYSIS_REQUEST' });
+      if (activeAiAnalyses.has(id))
+        return reply.code(409).send({ code: 'AI_ANALYSIS_IN_PROGRESS' });
       let prepared: ReturnType<typeof aiPromptForSession>;
       try {
         prepared = aiPromptForSession(id);
@@ -2145,54 +2202,77 @@ export async function startDaemon(
           return reply.code(413).send({ code: 'AI_EVIDENCE_LIMIT' });
         return reply.code(409).send({ code: 'AI_EVIDENCE_UNAVAILABLE' });
       }
-      if (
-        parsed.data.promptDigest !== digestAiPrompt(prepared.prompt) ||
-        parsed.data.analyzerVersion !== AI_ANALYZER_VERSION
-      )
-        return reply.code(409).send({ code: 'AI_PROMPT_STALE' });
-      let verifiedHypotheses;
+      if (prepared.events.length === 0)
+        return reply.code(409).send({ code: 'SESSION_HAS_NO_EVENTS' });
+      const promptDigest = digestAiPrompt(prepared.prompt);
+      activeAiAnalyses.add(id);
       try {
-        verifiedHypotheses = verifyHypotheses(
-          { sessionId: id, events: prepared.events },
-          parsed.data.hypotheses,
-        );
-      } catch {
-        return reply.code(400).send({ code: 'AI_EVIDENCE_INVALID' });
-      }
-      const findings = verifiedHypotheses.map((hypothesis) => ({
-        id: createUuidV5([
-          'vibetrace/ai-finding/0.1',
-          id,
-          parsed.data.promptDigest,
-          hypothesis.id,
-        ]),
-        sessionId: id,
-        ruleId: 'ai-analyzer',
-        detectorVersion: parsed.data.analyzerVersion,
-        category: hypothesis.category,
-        severity: hypothesis.confidence >= 0.8 ? 'high' : 'medium',
-        confidence: hypothesis.confidence,
-        title: hypothesis.title,
-        explanation: hypothesis.explanation,
-        recommendation:
-          hypothesis.recommendation ??
-          hypothesis.recommendedExperiment ??
-          'Review the linked evidence before acting on this hypothesis.',
-        evidenceEventIds: hypothesis.evidenceEventIds,
-        counterevidenceEventIds: hypothesis.counterEvidenceEventIds,
-        state: 'open',
-      }));
-      try {
+        const invocation =
+          parsed.data.provider === 'direct-api'
+            ? await aiProviderOperations.directApi({
+                prompt: prepared.prompt,
+                endpoint: parsed.data.endpoint,
+                apiKey: parsed.data.apiKey,
+                model: parsed.data.model,
+              })
+            : await aiProviderOperations.codex({
+                prompt: prepared.prompt,
+                ...(parsed.data.model ? { model: parsed.data.model } : {}),
+              });
+        if (invocation.provider !== parsed.data.provider)
+          return reply.code(502).send({ code: 'AI_PROVIDER_MISMATCH' });
+        let verifiedHypotheses;
+        try {
+          verifiedHypotheses = verifyHypotheses(
+            { sessionId: id, events: prepared.events },
+            invocation.hypotheses,
+          );
+        } catch {
+          return reply.code(502).send({ code: 'AI_PROVIDER_RESPONSE_INVALID' });
+        }
+        const findings = verifiedHypotheses.map((hypothesis) => ({
+          id: createUuidV5([
+            'vibetrace/ai-finding/0.2',
+            id,
+            promptDigest,
+            invocation.provider,
+            invocation.model ?? 'provider-default',
+            hypothesis.id,
+          ]),
+          sessionId: id,
+          ruleId: 'ai-analyzer',
+          detectorVersion: AI_ANALYZER_VERSION,
+          analyzerProvider: invocation.provider,
+          ...(invocation.model ? { analyzerModel: invocation.model } : {}),
+          promptDigest,
+          category: hypothesis.category,
+          severity: hypothesis.confidence >= 0.8 ? 'high' : 'medium',
+          confidence: hypothesis.confidence,
+          title: hypothesis.title,
+          explanation: hypothesis.explanation,
+          recommendation:
+            hypothesis.recommendation ??
+            hypothesis.recommendedExperiment ??
+            'Review the linked evidence before acting on this hypothesis.',
+          evidenceEventIds: hypothesis.evidenceEventIds,
+          counterevidenceEventIds: hypothesis.counterEvidenceEventIds,
+          state: 'open',
+        }));
         storage.replaceFindings(id, ['ai-analyzer'], findings);
         return {
           analysis: {
-            analyzerVersion: parsed.data.analyzerVersion,
-            promptDigest: parsed.data.promptDigest,
+            analyzerVersion: AI_ANALYZER_VERSION,
+            promptDigest,
+            provider: invocation.provider,
+            ...(invocation.model ? { model: invocation.model } : {}),
             hypotheses: findings,
           },
         };
-      } catch {
-        return reply.code(400).send({ code: 'INVALID_AI_EVIDENCE' });
+      } catch (error) {
+        const failure = aiProviderFailure(error);
+        return reply.code(failure.status).send({ code: failure.code });
+      } finally {
+        activeAiAnalyses.delete(id);
       }
     });
     app.patch('/api/v1/findings/:id/review', async (request, reply) => {

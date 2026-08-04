@@ -1,7 +1,7 @@
 {
   "name": "@vibetrace/analyzer-ai",
   "version": "0.1.0",
-  "description": "Optional provider-neutral, tool-free structured AI analyzer boundary.",
+  "description": "Evidence-verified direct API and isolated Codex AI analyzer providers.",
   "type": "module",
   "exports": {
     ".": {

@@ -11,6 +11,17 @@ import type {
 } from './api.js';
 import { eventDetail, eventTitle, formatDuration } from './forensics.js';
 
+function aiFindingLabel(finding: Finding): string {
+  if (finding.ruleId !== 'ai-analyzer') return 'Deterministic finding';
+  const provider =
+    finding.analyzerProvider === 'direct-api'
+      ? 'Direct API'
+      : finding.analyzerProvider === 'codex'
+        ? 'Codex'
+        : 'AI';
+  return `${provider} hypothesis${finding.analyzerModel ? ` · ${finding.analyzerModel}` : ''} · review required`;
+}
+
 export function SessionOverview({
   session,
   events,
@@ -76,7 +87,7 @@ export function SessionOverview({
         <div className="primary-hypothesis">
           <span>
             {findings[0].ruleId === 'ai-analyzer'
-              ? 'Primary AI hypothesis · review required'
+              ? `Primary ${aiFindingLabel(findings[0])}`
               : 'Primary deterministic finding'}
           </span>
           <strong>{findings[0].title}</strong>
@@ -431,11 +442,7 @@ export function CausalGraph({
                   ↓
                 </span>
                 <div className="causal-finding">
-                  <span>
-                    {finding.ruleId === 'ai-analyzer'
-                      ? 'AI hypothesis · review required'
-                      : 'Deterministic finding'}
-                  </span>
+                  <span>{aiFindingLabel(finding)}</span>
                   <strong>{finding.title}</strong>
                   <p>{finding.explanation}</p>
                 </div>
@@ -500,10 +507,8 @@ export function FindingsPanel({
               </span>
               <div>
                 <p className="finding-meta">
-                  {finding.ruleId === 'ai-analyzer'
-                    ? 'AI hypothesis · review required'
-                    : 'Deterministic'}{' '}
-                  · {finding.category} · {finding.severity} · {finding.ruleId}
+                  {aiFindingLabel(finding)} · {finding.category} ·{' '}
+                  {finding.severity} · {finding.ruleId}
                 </p>
                 <h3>{finding.title}</h3>
                 <p>{finding.explanation}</p>

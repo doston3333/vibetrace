@@ -12,7 +12,11 @@ import {
 import { MemoryKeyProvider, Storage } from '@vibetrace/storage';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { encryptRecordStream, type PreparedRecord } from './codec.js';
+import {
+  decryptRecordStream,
+  encryptRecordStream,
+  type PreparedRecord,
+} from './codec.js';
 import { createBundlePreview, exportBundle, importBundle } from './index.js';
 
 const roots: string[] = [];
@@ -136,6 +140,9 @@ async function sourceStorage(): Promise<{
     explanation: `Observed ${KNOWN_KEY}`,
     recommendation: 'Inspect the evidence.',
     evidenceEventIds: [event.id],
+    analyzerProvider: 'openai',
+    analyzerModel: 'gpt-5.2',
+    promptDigest: 'a'.repeat(64),
   });
   storage.reviewFinding('finding-1', {
     decision: 'confirmed',
@@ -240,6 +247,11 @@ describe('encrypted portable bundles', () => {
     expect(target.listFindings(sessionId)[0]?.review).toMatchObject({
       decision: 'confirmed',
       note: 'Keep this review',
+    });
+    expect(target.listFindings(sessionId)[0]).toMatchObject({
+      analyzerProvider: 'openai',
+      analyzerModel: 'gpt-5.2',
+      promptDigest: 'a'.repeat(64),
     });
     expect(target.listAnnotations()).toMatchObject([
       { id: 'annotation-1', targetId: 'finding-1' },
@@ -450,4 +462,80 @@ describe('encrypted portable bundles', () => {
     target.close();
     source.close();
   }, 15_000);
+
+  it('rejects invalid analyzer provenance in an encrypted bundle before mutation', async () => {
+    const { storage, sessionId } = await sourceStorage();
+    const outputRoot = await temporaryRoot('invalid-provenance-output');
+    const source = join(outputRoot, 'source.vibetrace.age');
+    await exportBundle(storage, {
+      sessionId,
+      profile: { kind: 'share-safe', restorePointers: [] },
+      destination: source,
+      passphrase: PASSPHRASE,
+    });
+    const staged = await decryptRecordStream(source, PASSPHRASE, {
+      temporaryRoot: await temporaryRoot('invalid-provenance-stage'),
+    });
+    const findingsRecord = staged.records.find(
+      (record) => record.header.path === 'findings.json',
+    )!;
+    const findings = JSON.parse(
+      await readFile(findingsRecord.contentPath, 'utf8'),
+    ) as Array<Record<string, unknown>>;
+    findings[0]!.promptDigest = 'not-a-sha256-digest';
+    const findingsBytes = Buffer.from(JSON.stringify(findings), 'utf8');
+    await writeFile(findingsRecord.contentPath, findingsBytes, { mode: 0o600 });
+
+    const manifestRecord = staged.records.find(
+      (record) => record.header.path === 'manifest.json',
+    )!;
+    const manifest = JSON.parse(
+      await readFile(manifestRecord.contentPath, 'utf8'),
+    ) as {
+      records: Array<{ path: string; byteLength: number; sha256: string }>;
+    };
+    const findingsHash = createHash('sha256')
+      .update(findingsBytes)
+      .digest('hex');
+    const record = manifest.records.find(
+      (item) => item.path === 'findings.json',
+    )!;
+    record.byteLength = findingsBytes.byteLength;
+    record.sha256 = findingsHash;
+    const manifestBytes = Buffer.from(JSON.stringify(manifest), 'utf8');
+    await writeFile(manifestRecord.contentPath, manifestBytes, { mode: 0o600 });
+
+    const invalid = join(outputRoot, 'invalid.vibetrace.age');
+    await encryptRecordStream(
+      staged.records.map((item) => ({
+        header:
+          item.header.path === 'findings.json'
+            ? {
+                ...item.header,
+                byteLength: findingsBytes.byteLength,
+                sha256: findingsHash,
+              }
+            : item.header.path === 'manifest.json'
+              ? {
+                  ...item.header,
+                  byteLength: manifestBytes.byteLength,
+                  sha256: createHash('sha256')
+                    .update(manifestBytes)
+                    .digest('hex'),
+                }
+              : item.header,
+        contentPath: item.contentPath,
+      })),
+      invalid,
+      PASSPHRASE,
+      { scryptWorkFactor: 10 },
+    );
+    const target = await emptyStorage('invalid-provenance-target');
+    await expect(
+      importBundle(target, { source: invalid, passphrase: PASSPHRASE }),
+    ).rejects.toThrow();
+    expect(target.listSessions()).toEqual([]);
+    target.close();
+    storage.close();
+  });
 });

@@ -36,16 +36,18 @@ Raw source events are immutable. Normalization creates a separately stored, vers
 
 ## Capability boundaries
 
-Codex lifecycle hooks are the standard capture mode. App-server capture, generic JSONL, OpenTelemetry, isolated eval execution, comparison matrices, and AI-assisted synthesis are opt-in capabilities. AI synthesis is provider-neutral, bounded, and tool-free; deterministic findings remain the primary analysis layer.
+Codex lifecycle hooks are the standard capture mode. App-server capture, generic JSONL, OpenTelemetry, isolated eval execution, comparison matrices, and AI-assisted synthesis are opt-in capabilities. AI synthesis is bounded and evidence-verified; deterministic findings remain available as reproducible signals and counter-evidence.
 
 The session's **AI review** view makes that boundary explicit. The daemon builds a
 bounded prompt from the encrypted session and current deterministic findings,
-returns a digest, and performs no provider call. A user may copy that prompt to
-an approved provider and paste back a JSON array. The daemon accepts the result
-only when the analyzer version and prompt digest still match the current session,
-then verifies every evidence and counter-evidence ID before replacing the
-`ai-analyzer` findings. Provider output is always rendered as escaped text and
-kept visually distinct from facts and deterministic findings.
+returns a digest, and invokes exactly one user-selected provider: an
+OpenAI-compatible HTTPS API using an ephemeral per-run key, or an ephemeral
+read-only Codex CLI task using the existing Codex sign-in. Both choices require
+an explicit user action and send the bounded evidence dossier to a remote model.
+The daemon verifies every evidence and counter-evidence ID before replacing the
+`ai-analyzer` findings. It persists safe provider/model/prompt provenance but no
+credential. Provider output is always rendered as escaped text and kept
+visually distinct from facts and deterministic findings. See [AI analysis](ai-analysis.md).
 
 Every field or source activity the adapter cannot observe must become a
 `capture.gap` event with an explicit reason. Session scorecards expose
@@ -59,3 +61,4 @@ universal quality number. See [capture modes](capture-modes.md).
 - [ADR 0003: Codex-first capture](../decisions/0003-codex-first-capture.md)
 - [ADR 0004: Deterministic analysis first](../decisions/0004-deterministic-analysis-first.md)
 - [ADR 0005: Encryption at rest](../decisions/0005-encryption-at-rest.md)
+- [ADR 0006: Dual AI analysis providers](../decisions/0006-dual-ai-analysis-providers.md)

@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 const prompt = {
-  analyzerVersion: '0.1.0',
+  analyzerVersion: '0.2.0',
   promptDigest: 'a'.repeat(64),
   prompt: {
     system: 'You are a read-only analyst.',
@@ -35,58 +35,85 @@ function renderPanel() {
 }
 
 describe('AiReviewPanel', () => {
-  it('prepares a local prompt and verifies pasted evidence-linked output', async () => {
+  it('runs an evidence-linked review through the existing Codex login', async () => {
     vi.spyOn(api, 'aiPrompt').mockResolvedValue(prompt);
-    const submit = vi.spyOn(api, 'submitAiFindings').mockResolvedValue({
+    const run = vi.spyOn(api, 'runAiAnalysis').mockResolvedValue({
+      analyzerVersion: '0.2.0',
+      promptDigest: 'a'.repeat(64),
+      provider: 'codex',
       hypotheses: [],
     });
     renderPanel();
 
     expect(await screen.findByText('AI evidence review')).toBeTruthy();
-    const editor = await screen.findByLabelText('Provider hypotheses JSON');
-    fireEvent.change(editor, {
-      target: {
-        value: JSON.stringify([
-          {
-            id: 'hypothesis-1',
-            category: 'verification',
-            title: 'A check was skipped',
-            explanation: 'The evidence shows no later verification.',
-            confidence: 0.8,
-            evidenceEventIds: ['00000000-0000-4000-8000-000000000001'],
-            counterEvidenceEventIds: [],
-          },
-        ]),
-      },
-    });
     fireEvent.click(
-      screen.getByRole('button', { name: 'Verify and save hypotheses' }),
+      await screen.findByRole('button', { name: 'Analyze session' }),
     );
 
-    expect(
-      await screen.findByText(/Verified and saved 0 hypotheses/),
-    ).toBeTruthy();
-    expect(submit).toHaveBeenCalledWith('session-1', {
-      analyzerVersion: '0.1.0',
-      promptDigest: 'a'.repeat(64),
-      hypotheses: expect.arrayContaining([
-        expect.objectContaining({ id: 'hypothesis-1' }),
-      ]),
-    });
+    expect((await screen.findByRole('status')).textContent).toContain(
+      'Saved 0 evidence-linked hypotheses from codex.',
+    );
+    expect(run).toHaveBeenCalledWith('session-1', { provider: 'codex' });
+    expect(screen.queryByLabelText('Provider hypotheses JSON')).toBeNull();
   });
 
-  it('rejects malformed provider output before the daemon is called', async () => {
+  it('sends a consented direct API request and clears the ephemeral key', async () => {
     vi.spyOn(api, 'aiPrompt').mockResolvedValue(prompt);
-    const submit = vi.spyOn(api, 'submitAiFindings');
-    renderPanel();
-    await screen.findByText('AI evidence review');
-    fireEvent.change(await screen.findByLabelText('Provider hypotheses JSON'), {
-      target: { value: '{not json' },
+    const run = vi.spyOn(api, 'runAiAnalysis').mockResolvedValue({
+      analyzerVersion: '0.2.0',
+      promptDigest: 'a'.repeat(64),
+      provider: 'direct-api',
+      model: 'deep-model',
+      hypotheses: [],
     });
+    renderPanel();
+
     fireEvent.click(
-      screen.getByRole('button', { name: 'Verify and save hypotheses' }),
+      await screen.findByRole('radio', { name: /Use direct API/ }),
     );
-    expect(await screen.findByRole('status')).toBeTruthy();
-    expect(submit).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Direct API model'), {
+      target: { value: 'deep-model' },
+    });
+    const key = screen.getByLabelText('Direct API key');
+    fireEvent.change(key, { target: { value: 'ephemeral-secret' } });
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /Send this bounded session dossier/,
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze session' }));
+
+    expect((await screen.findByRole('status')).textContent).toContain(
+      'Saved 0 evidence-linked hypotheses from direct-api · deep-model.',
+    );
+    expect(run).toHaveBeenCalledWith('session-1', {
+      provider: 'direct-api',
+      endpoint: 'https://api.deepseek.com/chat/completions',
+      apiKey: 'ephemeral-secret',
+      model: 'deep-model',
+      consent: true,
+    });
+    expect((key as HTMLInputElement).value).toBe('');
+  });
+
+  it('requires explicit consent before calling a direct provider', async () => {
+    vi.spyOn(api, 'aiPrompt').mockResolvedValue(prompt);
+    const run = vi.spyOn(api, 'runAiAnalysis');
+    renderPanel();
+    fireEvent.click(
+      await screen.findByRole('radio', { name: /Use direct API/ }),
+    );
+    fireEvent.change(screen.getByLabelText('Direct API model'), {
+      target: { value: 'deep-model' },
+    });
+    fireEvent.change(screen.getByLabelText('Direct API key'), {
+      target: { value: 'ephemeral-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze session' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'Confirm that this session may be sent',
+    );
+    expect(run).not.toHaveBeenCalled();
   });
 });

@@ -177,6 +177,12 @@ const findingSchema = z
     sessionId: z.string().uuid(),
     ruleId: z.string().min(1),
     detectorVersion: z.string().min(1),
+    analyzerProvider: z.string().min(1).max(64).optional(),
+    analyzerModel: z.string().min(1).max(200).optional(),
+    promptDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     category: z.string().min(1),
     severity: z.string().min(1),
     confidence: z.number().finite().optional(),

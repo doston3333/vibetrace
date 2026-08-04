@@ -19,6 +19,7 @@ import {
   TraceEventSchema,
   type TraceEvent,
 } from '@vibetrace/schema';
+import { AiProviderError } from '@vibetrace/analyzer-ai';
 import { MemoryKeyProvider, Storage } from '@vibetrace/storage';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -880,7 +881,43 @@ describe('daemon API', () => {
     const { path, storage } = await state();
     await writeSegment(spoolPaths(path), failedCommandSegment(1));
     await writeSegment(spoolPaths(path), failedCommandSegment(2));
-    const daemon = await startDaemon({ stateDir: path, storage });
+    const directApiKey = 'direct-api-key-that-must-not-be-persisted';
+    const providerCalls: string[] = [];
+    const providerHypothesis = {
+      id: 'hypothesis-1',
+      category: 'verification' as const,
+      title: 'The retry loop lacked a new signal',
+      explanation: 'The same failure evidence was repeated.',
+      recommendation: 'Change the command or inspect the first error.',
+      confidence: 0.82,
+      evidenceEventIds: [failedCommandSegment(1).event.id],
+      counterEvidenceEventIds: [],
+    };
+    const daemon = await startDaemon({
+      stateDir: path,
+      storage,
+      aiProviderOperations: {
+        directApi: async (input) => {
+          expect(input.apiKey).toBe(directApiKey);
+          expect(input.prompt.tools).toEqual([]);
+          providerCalls.push(`direct:${input.endpoint}:${input.model}`);
+          return {
+            provider: 'direct-api',
+            model: input.model,
+            hypotheses: [providerHypothesis],
+          };
+        },
+        codex: async (input) => {
+          expect(input.prompt.networkAllowed).toBe(false);
+          providerCalls.push(`codex:${input.model ?? 'default'}`);
+          return {
+            provider: 'codex',
+            model: input.model,
+            hypotheses: [providerHypothesis],
+          };
+        },
+      },
+    });
     const headers = { authorization: `Bearer ${daemon.token}` };
     const sessionId = segment().event.sessionId;
     const initial = storage.listFindings(sessionId);
@@ -933,56 +970,86 @@ describe('daemon API', () => {
     });
     expect(aiPrompt.statusCode).toBe(200);
     expect(aiPrompt.json()).toMatchObject({
-      analyzerVersion: '0.1.0',
+      analyzerVersion: '0.2.0',
       promptDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       prompt: {
         tools: [],
         networkAllowed: false,
       },
     });
-    const aiPromptBody = aiPrompt.json() as {
-      analyzerVersion: string;
-      promptDigest: string;
-    };
-    const staleAi = await daemon.app.inject({
+    const missingConsent = await daemon.app.inject({
       method: 'POST',
-      url: `/api/v1/sessions/${sessionId}/ai-findings`,
+      url: `/api/v1/sessions/${sessionId}/ai-analyze`,
       headers,
       payload: {
-        analyzerVersion: aiPromptBody.analyzerVersion,
-        promptDigest: 'c'.repeat(64),
-        hypotheses: [],
+        provider: 'direct-api',
+        endpoint: 'https://api.example.test/v1/chat/completions',
+        apiKey: directApiKey,
+        model: 'deep-model',
+        consent: false,
       },
     });
-    expect(staleAi.statusCode).toBe(409);
-    expect(staleAi.json()).toEqual({ code: 'AI_PROMPT_STALE' });
+    expect(missingConsent.statusCode).toBe(400);
+    expect(missingConsent.json()).toEqual({
+      code: 'INVALID_AI_ANALYSIS_REQUEST',
+    });
     const ai = await daemon.app.inject({
       method: 'POST',
-      url: `/api/v1/sessions/${sessionId}/ai-findings`,
+      url: `/api/v1/sessions/${sessionId}/ai-analyze`,
       headers,
       payload: {
-        analyzerVersion: aiPromptBody.analyzerVersion,
-        promptDigest: aiPromptBody.promptDigest,
-        hypotheses: [
-          {
-            id: 'hypothesis-1',
-            category: 'verification',
-            title: 'The retry loop lacked a new signal',
-            explanation: 'The same failure evidence was repeated.',
-            recommendation: 'Change the command or inspect the first error.',
-            confidence: 0.82,
-            evidenceEventIds: [failedCommandSegment(1).event.id],
-            counterevidenceEventIds: [],
-          },
-        ],
+        provider: 'direct-api',
+        endpoint: 'https://api.example.test/v1/chat/completions',
+        apiKey: directApiKey,
+        model: 'deep-model',
+        consent: true,
       },
     });
     expect(ai.statusCode).toBe(200);
+    expect(ai.json()).toMatchObject({
+      analysis: {
+        analyzerVersion: '0.2.0',
+        provider: 'direct-api',
+        model: 'deep-model',
+        promptDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
     expect(storage.listFindings(sessionId)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ ruleId: 'ai-analyzer', state: 'open' }),
+        expect.objectContaining({
+          ruleId: 'ai-analyzer',
+          state: 'open',
+          analyzerProvider: 'direct-api',
+          analyzerModel: 'deep-model',
+          promptDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
       ]),
     );
+    expect(JSON.stringify(storage.listFindings(sessionId))).not.toContain(
+      directApiKey,
+    );
+    const codex = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/ai-analyze`,
+      headers,
+      payload: { provider: 'codex', model: 'codex-analysis-model' },
+    });
+    expect(codex.statusCode).toBe(200);
+    expect(codex.json()).toMatchObject({
+      analysis: { provider: 'codex', model: 'codex-analysis-model' },
+    });
+    expect(
+      storage
+        .listFindings(sessionId)
+        .find((finding) => finding.ruleId === 'ai-analyzer'),
+    ).toMatchObject({
+      analyzerProvider: 'codex',
+      analyzerModel: 'codex-analysis-model',
+    });
+    expect(providerCalls).toEqual([
+      'direct:https://api.example.test/v1/chat/completions:deep-model',
+      'codex:codex-analysis-model',
+    ]);
     expect(
       storage
         .listFindings(sessionId)
@@ -1002,6 +1069,41 @@ describe('daemon API', () => {
         })
       ).statusCode,
     ).toBe(400);
+    await daemon.close();
+    storage.close();
+  });
+
+  it('returns bounded provider errors without reflecting credentials', async () => {
+    const { path, storage } = await state();
+    await writeSegment(spoolPaths(path), segment());
+    const daemon = await startDaemon({
+      stateDir: path,
+      storage,
+      aiProviderOperations: {
+        directApi: async () => {
+          throw new AiProviderError('AI_PROVIDER_TIMEOUT');
+        },
+        codex: async () => {
+          throw new AiProviderError('AI_PROVIDER_EXECUTION_FAILED');
+        },
+      },
+    });
+    const secret = 'provider-key-that-must-not-be-reflected';
+    const response = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${segment().event.sessionId}/ai-analyze`,
+      headers: { authorization: `Bearer ${daemon.token}` },
+      payload: {
+        provider: 'direct-api',
+        endpoint: 'https://api.example.test/v1/chat/completions',
+        apiKey: secret,
+        model: 'deep-model',
+        consent: true,
+      },
+    });
+    expect(response.statusCode).toBe(504);
+    expect(response.json()).toEqual({ code: 'AI_PROVIDER_TIMEOUT' });
+    expect(response.body).not.toContain(secret);
     await daemon.close();
     storage.close();
   });

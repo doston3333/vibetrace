@@ -696,6 +696,81 @@ describe('encrypted Storage', () => {
     storage.close();
   });
 
+  it('round-trips and replaces non-secret analyzer finding provenance', async () => {
+    const { storage, sessionId } = await setup();
+    const rawId = storage.appendRaw(sessionId, raw(1));
+    const eventId = storage.appendNormalized(
+      event(sessionId, rawId, 1),
+      'normalizer-v1',
+    );
+    const finding = {
+      id: 'ai-finding',
+      sessionId,
+      ruleId: 'ai-rule',
+      detectorVersion: '1.0.0',
+      category: 'verification',
+      severity: 'medium',
+      title: 'AI finding',
+      explanation: 'Evidence-linked analyzer finding.',
+      recommendation: 'Inspect the evidence.',
+      evidenceEventIds: [eventId],
+      analyzerProvider: 'openai',
+      analyzerModel: 'gpt-5.2',
+      promptDigest: 'a'.repeat(64),
+    };
+    storage.createFinding(finding);
+    expect(storage.listFindings(sessionId)).toMatchObject([
+      {
+        id: finding.id,
+        analyzerProvider: 'openai',
+        analyzerModel: 'gpt-5.2',
+        promptDigest: 'a'.repeat(64),
+      },
+    ]);
+    storage.replaceFindings(
+      sessionId,
+      ['ai-rule'],
+      [
+        {
+          ...finding,
+          analyzerProvider: 'anthropic',
+          analyzerModel: 'claude-test',
+          promptDigest: 'b'.repeat(64),
+        },
+      ],
+    );
+    expect(storage.listFindings(sessionId)).toMatchObject([
+      {
+        id: finding.id,
+        analyzerProvider: 'anthropic',
+        analyzerModel: 'claude-test',
+        promptDigest: 'b'.repeat(64),
+      },
+    ]);
+    expect(() =>
+      storage.createFinding({
+        ...finding,
+        id: 'invalid-digest',
+        promptDigest: 'A'.repeat(64),
+      }),
+    ).toThrow('promptDigest');
+    expect(() =>
+      storage.createFinding({
+        ...finding,
+        id: 'invalid-provider',
+        analyzerProvider: '',
+      }),
+    ).toThrow('analyzerProvider');
+    expect(() =>
+      storage.createFinding({
+        ...finding,
+        id: 'invalid-model',
+        analyzerModel: 'm'.repeat(201),
+      }),
+    ).toThrow('analyzerModel');
+    storage.close();
+  });
+
   it('replaces analyzer findings while preserving durable human reviews', async () => {
     const { storage, sessionId } = await setup();
     const rawId = storage.appendRaw(sessionId, raw(1));

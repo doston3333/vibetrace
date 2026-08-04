@@ -141,6 +141,14 @@ CREATE TABLE retention_policies (
 );
 `,
   },
+  {
+    id: 7,
+    sql: `
+ALTER TABLE findings ADD COLUMN analyzer_provider TEXT;
+ALTER TABLE findings ADD COLUMN analyzer_model TEXT;
+ALTER TABLE findings ADD COLUMN prompt_digest TEXT;
+`,
+  },
 ];
 
 /** Apply only migrations not already recorded in the encrypted database. */

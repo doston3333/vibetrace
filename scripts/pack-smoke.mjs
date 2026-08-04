@@ -405,26 +405,28 @@ try {
     throw new Error('Packed daemon AI prompt endpoint failed.');
   const aiPrompt = await aiPromptResponse.json();
   if (
-    aiPrompt.analyzerVersion !== '0.1.0' ||
+    aiPrompt.analyzerVersion !== '0.2.0' ||
     !/^[a-f0-9]{64}$/.test(String(aiPrompt.promptDigest)) ||
     aiPrompt.prompt?.networkAllowed !== false ||
     !Array.isArray(aiPrompt.prompt?.tools)
   )
     throw new Error('Packed daemon returned an unsafe AI prompt contract.');
-  const staleAiResponse = await fetch(
-    `${descriptor.origin}/api/v1/sessions/${encodeURIComponent(sessionId)}/ai-findings`,
+  const unconsentedAiResponse = await fetch(
+    `${descriptor.origin}/api/v1/sessions/${encodeURIComponent(sessionId)}/ai-analyze`,
     {
       method: 'POST',
       headers: { ...authorization, 'content-type': 'application/json' },
       body: JSON.stringify({
-        analyzerVersion: aiPrompt.analyzerVersion,
-        promptDigest: '0'.repeat(64),
-        hypotheses: [],
+        provider: 'direct-api',
+        endpoint: 'https://api.example.test/v1/chat/completions',
+        apiKey: 'pack-smoke-ephemeral-key',
+        model: 'pack-smoke-model',
+        consent: false,
       }),
     },
   );
-  if (staleAiResponse.status !== 409)
-    throw new Error('Packed daemon accepted a stale AI prompt response.');
+  if (unconsentedAiResponse.status !== 400)
+    throw new Error('Packed daemon accepted an unconsented AI request.');
   await cli(
     [
       'export',
