@@ -63,7 +63,9 @@ VIBETRACE_CODEX_AUTH_HOME="$TMPDIR/vibetrace-codex-home" \
 
 The reusable `Native Codex smoke` workflow runs this harness on Ubuntu, both
 supported macOS runner architectures, and Windows, and uploads one
-metadata-only evidence artifact per runner. It requires the repository's
+metadata-only evidence artifact per runner. It also verifies that a wrong
+storage passphrase is rejected and that the correct passphrase can unlock the
+same local envelope afterward. It requires the repository's
 `CODEX_OPENAI_API_KEY` secret and is intentionally separate from ordinary
 pull-request CI because it invokes a real model. The `Release gate` workflow
 calls both the full cross-platform CI matrix and this native-smoke workflow for

@@ -376,6 +376,24 @@ try {
   if (!adapters.has('codex-hooks') || !sourceVersions.has(codexVersion))
     throw new Error('Native smoke events are missing Codex provenance.');
 
+  // Verify that a bad passphrase cannot unlock the existing envelope, then
+  // prove that the same local state remains recoverable with the right one.
+  await stop(env);
+  daemonStarted = false;
+  await waitForStatus(env, 'stopped');
+  await cli(['start', '--storage-passphrase-stdin'], {
+    env,
+    input: `${storagePassphrase}-wrong\n`,
+    timeoutMs: 15_000,
+  });
+  await waitForStatus(env, 'stopped');
+  await cli(['start', '--storage-passphrase-stdin'], {
+    env,
+    input: `${storagePassphrase}\n`,
+  });
+  daemonStarted = true;
+  await waitForStatus(env, 'running');
+
   await writeReport({
     schemaVersion: 1,
     status: 'passed',
@@ -392,6 +410,7 @@ try {
     codexOutputEventTypes: [...codexEventTypes].sort(),
     adapters: [...adapters].sort(),
     sourceVersions: [...sourceVersions].sort(),
+    storagePassphraseRecovery: 'verified',
   });
 } catch (error) {
   const message = error instanceof Error ? error.message : 'unknown error';
