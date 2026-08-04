@@ -512,6 +512,7 @@ describe('sealed spool', () => {
     expect(
       storage.listEvents({ sessionId: segment().event.sessionId }),
     ).toHaveLength(1);
+    expect((await readdir(spool.incoming)).includes('link.jsonl')).toBe(false);
     storage.close();
   });
 });

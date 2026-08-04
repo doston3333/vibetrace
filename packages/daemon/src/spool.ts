@@ -310,7 +310,7 @@ async function directoryUsage(path: string): Promise<{
       break;
     }
     const metadata = await lstat(join(path, entry)).catch(() => undefined);
-    if (!metadata?.isFile() || metadata.isSymbolicLink()) continue;
+    if (!metadata?.isFile() && !metadata?.isSymbolicLink()) continue;
     bytes += metadata.size;
     files += 1;
   }
@@ -543,7 +543,7 @@ async function pruneArchive(
     if (!entry.endsWith('.jsonl')) continue;
     const path = join(paths.archive, entry);
     const metadata = await lstat(path).catch(() => undefined);
-    if (!metadata?.isFile() || metadata.isSymbolicLink()) continue;
+    if (!metadata?.isFile() && !metadata.isSymbolicLink()) continue;
     candidates.push({ path, size: metadata.size, mtimeMs: metadata.mtimeMs });
   }
   let total = candidates.reduce((sum, candidate) => sum + candidate.size, 0);
@@ -582,7 +582,7 @@ async function pruneQuarantine(
       continue;
     const path = join(paths.quarantine, entry);
     const metadata = await lstat(path).catch(() => undefined);
-    if (!metadata?.isFile() || metadata.isSymbolicLink()) continue;
+    if (!metadata?.isFile() && !metadata.isSymbolicLink()) continue;
     if (entry.endsWith('.reason')) {
       candidates.push({ path, size: metadata.size, mtimeMs: metadata.mtimeMs });
       continue;
@@ -745,7 +745,7 @@ async function quarantine(
   const target = join(paths.quarantine, `${file}.${randomUUID()}.quarantine`);
   const source = join(paths.incoming, file);
   const metadata = await lstat(source).catch(() => undefined);
-  if (!metadata?.isFile() || metadata.isSymbolicLink()) return;
+  if (!metadata?.isFile() && !metadata.isSymbolicLink()) return;
   await withCapacityReservation(paths, 0, override, async () => {
     await rename(source, target);
     const reasonPath = `${target}.reason`;
