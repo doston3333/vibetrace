@@ -211,6 +211,16 @@ try {
     throw new Error('Packed CLI reports the wrong version.');
   if (!(await cli(['--help'])).stdout.includes('export'))
     throw new Error('Packed CLI help is incomplete.');
+  const adapterList = JSON.parse(
+    (await cli(['adapters', 'list', '--json'])).stdout,
+  );
+  const adapterIds = new Set(
+    Array.isArray(adapterList.adapters)
+      ? adapterList.adapters.map((adapter) => adapter?.id)
+      : [],
+  );
+  if (!adapterIds.has('claude-code') || !adapterIds.has('codex-app-server'))
+    throw new Error('Packed CLI is missing a bundled coding-agent adapter.');
 
   const sourceEnv = {
     ...process.env,
