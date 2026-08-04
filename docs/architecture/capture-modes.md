@@ -43,9 +43,9 @@ The label never substitutes for the gap events that explain missing data.
 ## Opt-in modes
 
 VibeTrace also ships bounded opt-in adapters. The Codex app-server adapter
-ships a versioned schema registry beginning at Codex `0.144.3`; later versions
-are explicitly marked forward-compatible and older/unknown versions produce
-capture gaps instead of being silently treated as equivalent:
+ships an exact versioned schema registry beginning at Codex `0.144.3`; any
+version without a checked-in contract produces a capture gap instead of being
+silently treated as equivalent:
 
 - `codex-app-server` uses the documented stdio JSONL handshake and captures
   rich lifecycle, messages, plans, exposed reasoning, commands, file changes,

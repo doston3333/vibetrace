@@ -26,7 +26,7 @@ export interface AppServerSchemaDescriptor {
   /** Packaged generated envelope schema for this validated contract. */
   readonly artifactPath: `schemas/${string}.json`;
   readonly validated: boolean;
-  readonly compatibility: 'validated' | 'forward-compatible';
+  readonly compatibility: 'validated';
 }
 
 export const CODEX_APP_SERVER_SCHEMA_REGISTRY: readonly AppServerSchemaDescriptor[] =
@@ -54,29 +54,16 @@ function compare(
   return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
 }
 
-/** Resolve the oldest validated schema that can safely parse a Codex version. */
+/** Resolve an exact packaged schema; unknown versions must become capture gaps. */
 export function resolveAppServerSchema(
   codexVersion: string,
 ): AppServerSchemaDescriptor | undefined {
   const requested = version(codexVersion);
-  const baseline = version(CODEX_APP_SERVER_BASELINE_VERSION);
-  if (!requested || !baseline || compare(requested, baseline) < 0)
-    return undefined;
-  const candidate = [...CODEX_APP_SERVER_SCHEMA_REGISTRY]
-    .reverse()
-    .find((item) => {
-      const itemVersion = version(item.schemaVersion);
-      return itemVersion !== undefined && compare(itemVersion, requested) <= 0;
-    });
-  if (!candidate) return undefined;
-  return {
-    ...candidate,
-    compatibility:
-      candidate.schemaVersion === codexVersion
-        ? 'validated'
-        : 'forward-compatible',
-    validated: candidate.schemaVersion === codexVersion,
-  };
+  if (!requested) return undefined;
+  return CODEX_APP_SERVER_SCHEMA_REGISTRY.find((item) => {
+    const itemVersion = version(item.schemaVersion);
+    return itemVersion !== undefined && compare(itemVersion, requested) === 0;
+  });
 }
 
 /** Return a stable error for unsupported or malformed app-server versions. */
@@ -86,7 +73,7 @@ export function assertSupportedAppServerVersion(
   const resolved = resolveAppServerSchema(codexVersion);
   if (!resolved)
     throw new Error(
-      `Codex app-server version ${codexVersion} is below the supported ${CODEX_APP_SERVER_BASELINE_VERSION} contract.`,
+      `Codex app-server version ${codexVersion} has no validated contract. Supported versions: ${CODEX_APP_SERVER_VALIDATED_VERSIONS.join(', ')}.`,
     );
   return resolved;
 }

@@ -37,12 +37,12 @@ describe('Codex app-server adapter', () => {
       schemaVersion: '0.145.0',
       validated: true,
     });
-    expect(resolveAppServerSchema('0.147.0')).toMatchObject({
-      schemaVersion: '0.146.0',
-      compatibility: 'forward-compatible',
-    });
+    expect(resolveAppServerSchema('0.147.0')).toBeUndefined();
     expect(() => assertSupportedAppServerVersion('0.144.2')).toThrow(
-      'below the supported',
+      'no validated contract',
+    );
+    expect(() => assertSupportedAppServerVersion('0.147.0')).toThrow(
+      'no validated contract',
     );
     const result = await captureAppServerJsonl(
       Readable.from([line({ method: 'thread/started', params: {} })]),
@@ -310,6 +310,129 @@ describe('Codex app-server adapter', () => {
       ),
     ).toBe(true);
     expect(stdin.writableEnded).toBe(true);
+  });
+
+  it.each([
+    {
+      mode: 'resume' as const,
+      threadId: 'thread-existing',
+      expectedMethod: 'thread/resume',
+      expectedParams: { threadId: 'thread-existing', cwd: '/repo' },
+      notification: 'thread/resumed',
+      returnedThread: 'thread-existing',
+    },
+    {
+      mode: 'fork' as const,
+      threadId: 'thread-existing',
+      lastTurnId: 'turn-1',
+      ephemeral: true,
+      expectedMethod: 'thread/fork',
+      expectedParams: {
+        threadId: 'thread-existing',
+        lastTurnId: 'turn-1',
+        ephemeral: true,
+        cwd: '/repo',
+      },
+      notification: 'thread/started',
+      returnedThread: 'thread-forked',
+    },
+  ])('supports $mode app-server thread mode', async (mode) => {
+    const stdout = new PassThrough();
+    const requests: Record<string, unknown>[] = [];
+    const stdin = new Writable({
+      write(chunk, _encoding, callback) {
+        const request = JSON.parse(String(chunk)) as Record<string, unknown>;
+        requests.push(request);
+        const id = request.id;
+        if (id === 1)
+          stdout.write(
+            line({ id: 1, result: { serverInfo: { version: '0.144.3' } } }),
+          );
+        if (id === 2) {
+          stdout.write(
+            line({
+              method: mode.notification,
+              params: {
+                thread: {
+                  id: mode.returnedThread,
+                  ...(mode.mode === 'fork'
+                    ? { forkedFromId: mode.threadId }
+                    : {}),
+                },
+              },
+            }),
+          );
+          stdout.write(
+            line({
+              id: 2,
+              result: { thread: { id: mode.returnedThread } },
+            }),
+          );
+        }
+        if (id === 3) {
+          stdout.write(
+            line({
+              method: 'turn/started',
+              params: { turn: { id: 'turn-live' } },
+            }),
+          );
+          stdout.write(line({ id: 3, result: { turn: { id: 'turn-live' } } }));
+          stdout.write(
+            line({
+              method: 'turn/completed',
+              params: { turn: { id: 'turn-live', status: 'completed' } },
+            }),
+          );
+        }
+        callback();
+      },
+    });
+    const result = await runAppServerSession({
+      cwd: '/repo',
+      prompt: 'Continue the fixture.',
+      context: { ...context, sourceSessionId: 'temporary-session' },
+      thread: mode,
+      spawn() {
+        return { stdin, stdout };
+      },
+      write: async () => 'segment-thread-mode',
+    });
+    stdout.end();
+    expect(requests[2]).toMatchObject({
+      method: mode.expectedMethod,
+      params: mode.expectedParams,
+    });
+    expect(result.events[0]?.payload).toMatchObject({
+      mode: mode.mode,
+      threadId: mode.returnedThread,
+    });
+    expect(result.events[0]?.sessionId).toBe(
+      createSessionId(APP_SERVER_ADAPTER_ID, mode.returnedThread),
+    );
+  });
+
+  it('rejects invalid resume and fork options before spawning Codex', async () => {
+    const spawn = () => {
+      throw new Error('spawn must not be reached');
+    };
+    await expect(
+      runAppServerSession({
+        cwd: '/repo',
+        prompt: 'invalid',
+        context,
+        thread: { mode: 'resume' },
+        spawn,
+      }),
+    ).rejects.toThrow('resume requires threadId');
+    await expect(
+      runAppServerSession({
+        cwd: '/repo',
+        prompt: 'invalid',
+        context,
+        thread: { mode: 'start', lastTurnId: 'turn-1' },
+        spawn,
+      }),
+    ).rejects.toThrow('start cannot target');
   });
 
   it('bounds a nonresponsive child and records the timed-out phase', async () => {

@@ -138,6 +138,19 @@ export interface AppServerCaptureResult {
   readonly gaps: readonly AppServerGap[];
 }
 
+export type AppServerThreadMode = 'start' | 'resume' | 'fork';
+
+export interface AppServerThreadOptions {
+  /** Start a new thread by default, or continue/branch an existing thread. */
+  readonly mode?: AppServerThreadMode;
+  /** Existing Codex thread required for resume and fork. */
+  readonly threadId?: string;
+  /** Copy history only through this turn when forking. */
+  readonly lastTurnId?: string;
+  /** Keep a newly started or forked thread in memory only. */
+  readonly ephemeral?: boolean;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -239,12 +252,24 @@ function eventKind(
   const kind = itemType(item).toLowerCase();
   const turn = record(params.turn);
   const status = normalizedStatus(turn.status);
-  if (method === 'thread/started' || method === 'thread/resumed')
+  if (method === 'thread/started' || method === 'thread/resumed') {
+    const thread = record(params.thread);
+    const threadId = stringValue(thread.id) ?? stringValue(params.threadId);
+    const forkedFromId = stringValue(thread.forkedFromId);
     return {
       type: 'session.started',
       source: 'harness',
-      payload: { threadId: stringValue(record(params.thread).id) ?? '' },
+      payload: {
+        threadId: threadId ?? '',
+        mode: forkedFromId
+          ? 'fork'
+          : method === 'thread/resumed'
+            ? 'resume'
+            : 'start',
+        ...(forkedFromId ? { forkedFromId } : {}),
+      },
     };
+  }
   if (method === 'thread/archived' || method === 'thread/closed')
     return {
       type: 'session.completed',
@@ -774,6 +799,8 @@ export interface AppServerClientOptions {
     request: AppServerRpcMessage,
   ) => Promise<AppServerApprovalDecision>;
   readonly approvalTimeoutMs?: number;
+  /** Select a fresh, resumed, or forked Codex thread for the captured turn. */
+  readonly thread?: AppServerThreadOptions;
   /** Bound each handshake phase and the complete turn so a stuck child cannot hang the collector. */
   readonly initializeTimeoutMs?: number;
   readonly threadStartTimeoutMs?: number;
@@ -796,6 +823,24 @@ function defaultSpawn(
 
 function send(stdin: Writable, message: Record<string, unknown>): void {
   stdin.write(`${JSON.stringify(message)}\n`, 'utf8');
+}
+
+function validateThreadOptions(
+  options: AppServerThreadOptions | undefined,
+): AppServerThreadOptions & { readonly mode: AppServerThreadMode } {
+  const mode = options?.mode ?? 'start';
+  const threadId = options?.threadId?.trim();
+  if ((mode === 'resume' || mode === 'fork') && !threadId)
+    throw new Error(`Codex app-server ${mode} requires threadId.`);
+  if (mode === 'start' && (threadId || options?.lastTurnId))
+    throw new Error('Codex app-server start cannot target an existing thread.');
+  if (mode !== 'fork' && options?.lastTurnId)
+    throw new Error('lastTurnId is only valid when forking a thread.');
+  return {
+    ...options,
+    mode,
+    ...(threadId ? { threadId } : {}),
+  };
 }
 
 class AppServerPhaseTimeout extends Error {
@@ -838,6 +883,7 @@ async function withTimeout<T>(
 export async function runAppServerSession(
   options: AppServerClientOptions,
 ): Promise<AppServerCaptureResult> {
+  const threadOptions = validateThreadOptions(options.thread);
   const process = (options.spawn ?? defaultSpawn)(
     options.executable ?? DEFAULT_CODEX_EXECUTABLE,
     ['app-server', '--stdio'],
@@ -858,6 +904,9 @@ export async function runAppServerSession(
   let sequence = options.context.sequence ?? 0;
   let activeContext: AppServerCaptureContext & { readonly stateDir: string } = {
     ...options.context,
+    ...(threadOptions.threadId
+      ? { sourceSessionId: threadOptions.threadId }
+      : {}),
   };
   const initializeTimeout = timeoutMs(
     options.initializeTimeoutMs,
@@ -884,7 +933,11 @@ export async function runAppServerSession(
       | { readonly message: AppServerRpcMessage; readonly receivedAt: string }
       | { readonly gap: AppServerGap },
   ): Promise<void> => {
-    if ('message' in item && item.message.method === 'thread/started') {
+    if (
+      'message' in item &&
+      (item.message.method === 'thread/started' ||
+        item.message.method === 'thread/resumed')
+    ) {
       const discovered = stringValue(
         record(record(item.message.params).thread).id,
       );
@@ -1073,14 +1126,51 @@ export async function runAppServerSession(
     const version = stringValue(record(serverInfo).version);
     if (version) activeContext = { ...activeContext, sourceVersion: version };
     send(process.stdin, { jsonrpc: '2.0', method: 'initialized', params: {} });
+    const threadRequest =
+      threadOptions.mode === 'resume'
+        ? {
+            method: 'thread/resume',
+            params: {
+              threadId: threadOptions.threadId,
+              cwd: options.cwd,
+              ...(options.context.model
+                ? { model: options.context.model }
+                : {}),
+            },
+          }
+        : threadOptions.mode === 'fork'
+          ? {
+              method: 'thread/fork',
+              params: {
+                threadId: threadOptions.threadId,
+                cwd: options.cwd,
+                ...(threadOptions.lastTurnId
+                  ? { lastTurnId: threadOptions.lastTurnId }
+                  : {}),
+                ...(threadOptions.ephemeral !== undefined
+                  ? { ephemeral: threadOptions.ephemeral }
+                  : {}),
+                ...(options.context.model
+                  ? { model: options.context.model }
+                  : {}),
+              },
+            }
+          : {
+              method: 'thread/start',
+              params: {
+                cwd: options.cwd,
+                ...(threadOptions.ephemeral !== undefined
+                  ? { ephemeral: threadOptions.ephemeral }
+                  : {}),
+                ...(options.context.model
+                  ? { model: options.context.model }
+                  : {}),
+              },
+            };
     send(process.stdin, {
       jsonrpc: '2.0',
       id: 2,
-      method: 'thread/start',
-      params: {
-        cwd: options.cwd,
-        ...(options.context.model ? { model: options.context.model } : {}),
-      },
+      ...threadRequest,
     });
     const thread = await waitForResponse(2, threadStartTimeout, 'thread-start');
     if (!thread) {
