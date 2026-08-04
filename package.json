@@ -17,6 +17,8 @@
     "schema:generate": "pnpm --filter @vibetrace/schema build && pnpm --filter @vibetrace/eval-spec build && node scripts/generate-schema.mjs && node scripts/generate-app-server-schemas.mjs",
     "schema:check": "node scripts/generate-app-server-schemas.mjs --check",
     "release:config-check": "node scripts/check-release-config.mjs",
+    "release:candidate-check": "node scripts/check-release-candidate.mjs",
+    "test:release-candidate-check": "node scripts/check-release-candidate.test.mjs",
     "test:integration": "node scripts/run-gate.mjs integration",
     "test:e2e": "node scripts/run-gate.mjs e2e",
     "test:security": "node scripts/run-gate.mjs security",

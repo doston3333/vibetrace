@@ -1,0 +1,13 @@
+# Release and publishing controls require repository-owner review.
+/.github/workflows/ @doston3333
+/.github/CODEOWNERS @doston3333
+/.gitleaksignore @doston3333
+/package.json @doston3333
+/pnpm-lock.yaml @doston3333
+/scripts/check-release-config.mjs @doston3333
+/scripts/check-release-candidate.mjs @doston3333
+/scripts/check-release-candidate.test.mjs @doston3333
+/packages/cli/package.json @doston3333
+/docs/release.md @doston3333
+/docs/production-readiness.md @doston3333
+/CHANGELOG.md @doston3333

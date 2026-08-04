@@ -26,6 +26,7 @@ pnpm lint
 pnpm format:check
 pnpm schema:check
 pnpm release:config-check
+pnpm test:release-candidate-check
 pnpm typecheck
 pnpm test
 pnpm build
@@ -79,3 +80,32 @@ thread identifier is known.
 The release workflow is complete only after the CI matrix passes and a native
 Codex smoke session has been recorded on macOS, Linux, and Windows. A local
 pass on one operating system is not evidence for the other two.
+
+## npm trusted publishing
+
+Version-tag pushes run `.github/workflows/release-gate.yml`. After cross-platform
+verification and the native smoke workflow pass, its release-candidate step
+requires the exact `v<packages/cli version>` tag, validates the public CLI
+metadata, rejects tracked checkout changes, and confirms that the npm version is
+not already published. The publishing job packs one tarball and publishes that
+same tarball with `npm publish --access public`; it then checks the exact
+registry version.
+
+Publishing uses npm trusted publishing, not an `NPM_TOKEN`. Configure npm with
+these exact trusted-publisher values:
+
+| Setting           | Value                  |
+| ----------------- | ---------------------- |
+| npm user          | `doston3333`           |
+| GitHub repository | `doston3333/vibetrace` |
+| workflow          | `release-gate.yml`     |
+| environment       | `npm-production`       |
+| action            | `npm publish`          |
+
+The job runs on a GitHub-hosted Ubuntu runner with Node 24, npm `11.17.0`,
+`contents: read`, and `id-token: write`. It does not use a dependency cache or
+store a registry token. npm trusted publishing must be configured in npm before
+the workflow can publish. In particular, npm cannot configure a trusted
+publisher for a package that has not yet been published, so the first public
+publication must be completed through npm’s approved bootstrap process before
+this automated path can publish later versions.

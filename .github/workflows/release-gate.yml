@@ -27,3 +27,61 @@ jobs:
       codex_model: ${{ inputs.codex_model }}
     secrets:
       CODEX_OPENAI_API_KEY: ${{ secrets.CODEX_OPENAI_API_KEY }}
+
+  release-candidate:
+    name: Release candidate
+    needs: [verify, native-smoke]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      exact_tag: ${{ steps.candidate.outputs.exact_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+      - id: candidate
+        name: Validate release candidate
+        run: |
+          node scripts/check-release-candidate.mjs --tag "$GITHUB_REF_NAME" --require-clean --check-published
+          echo "exact_tag=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish npm package
+    needs: [verify, native-smoke, release-candidate]
+    if: github.event_name == 'push' && needs.release-candidate.outputs.exact_tag == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    environment: npm-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10.33.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+      - name: Install npm 11.17.0
+        run: |
+          npm install --global npm@11.17.0
+          test "$(npm --version)" = '11.17.0'
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @vibetrace/cli build
+      - name: Pack the release tarball
+        run: pnpm --filter @vibetrace/cli pack --pack-destination "$RUNNER_TEMP"
+      - name: Publish the exact tarball
+        run: npm publish "$RUNNER_TEMP/vibetrace-cli-${GITHUB_REF_NAME#v}.tgz" --access public
+      - name: Verify published registry version
+        run: test "$(npm view "@vibetrace/cli@${GITHUB_REF_NAME#v}" version)" = "${GITHUB_REF_NAME#v}"
