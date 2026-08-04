@@ -8,11 +8,11 @@ remain platform-native npm dependencies.
 
 ## Supported matrix
 
-| Platform                      | Architecture | CI runtime                       |
-| ----------------------------- | ------------ | -------------------------------- |
-| macOS 14+                     | x64, arm64   | Node 24 (`macos-13`, `macos-14`) |
-| Ubuntu-compatible glibc Linux | x64          | Node 22.12.0, Node 24            |
-| Windows 11                    | x64          | Node 24                          |
+| Platform                      | Architecture | CI runtime                             |
+| ----------------------------- | ------------ | -------------------------------------- |
+| macOS 14+                     | x64, arm64   | Node 24 (`macos-14-large`, `macos-14`) |
+| Ubuntu-compatible glibc Linux | x64          | Node 22.12.0, Node 24                  |
+| Windows 11                    | x64          | Node 24                                |
 
 WSL2 follows the Linux path. Node 22.12.0 is the minimum supported runtime.
 
