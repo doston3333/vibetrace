@@ -56,7 +56,7 @@ output):
 
 ```bash
 printf '%s\n' "$OPENAI_API_KEY" | CODEX_HOME="$TMPDIR/vibetrace-codex-home" codex login --with-api-key
-CODEX_HOME="$TMPDIR/vibetrace-codex-home" \
+VIBETRACE_CODEX_AUTH_HOME="$TMPDIR/vibetrace-codex-home" \
   VIBETRACE_NATIVE_SMOKE_OUTPUT="$TMPDIR/vibetrace-native-smoke.json" \
   pnpm native:smoke
 ```
