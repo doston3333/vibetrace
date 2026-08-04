@@ -516,6 +516,14 @@ try {
   const appServerGapCount = appServerEvents.filter(
     (item) => item?.event?.type === 'capture.gap',
   ).length;
+  const appServerAgentMessages = appServerEvents
+    .filter((item) => item?.event?.type === 'message.agent')
+    .map((item) => item?.event?.payload?.content)
+    .filter((value) => typeof value === 'string');
+  if (!appServerAgentMessages.join('').includes('APP_SERVER_SMOKE_OK'))
+    throw new Error(
+      'Native app-server response mapping lost the smoke sentinel.',
+    );
 
   // Verify that a bad passphrase cannot unlock the existing envelope, then
   // prove that the same local state remains recoverable with the right one.
