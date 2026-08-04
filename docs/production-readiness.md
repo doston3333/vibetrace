@@ -38,7 +38,7 @@ can be inferred from a single developer workstation.
 
 ## Local verification record
 
-Commit `be7fdcc` was verified on 2026-08-04 from a clean macOS arm64 checkout
+Commit `be8261f` was verified on 2026-08-04 from a clean macOS arm64 checkout
 with Node `v26.4.0`, pnpm `10.33.4`, and npm `11.17.0`. Node 26 is newer than
 the supported release runtimes, so this record supplements rather than replaces
 the CI matrix.
@@ -58,6 +58,11 @@ pnpm test:security      # 7 files, 83 tests
 pnpm test:performance   # 7 files, 94 tests
 pnpm pack:smoke
 ```
+
+The native smoke harness also passed locally on macOS arm64 with Codex
+`0.144.3` and Node `v26.4.0`: 12 captured events, adapter `codex-hooks`, and
+source version `0.144.3`. This is supplementary evidence because the release
+runtime matrix requires Node 24 and independent Linux and Windows runners.
 
 The packed-install smoke test exercises the bundled CLI, isolated temporary
 homes, daemon authentication and lifecycle, dashboard serving, encrypted
