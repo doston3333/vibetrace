@@ -109,6 +109,11 @@ vibetrace sessions show <session-id>
 vibetrace export <session-id> --profile share-safe --output trace.vibetrace.age
 vibetrace import trace.vibetrace.age
 
+# Run an opt-in full-fidelity Codex Lab session with scoped interactive approvals.
+vibetrace codex app-server --prompt "Inspect the repository" --approval-policy prompt
+# Resume or fork a captured app-server thread when the source contract supports it.
+vibetrace codex app-server --prompt "Continue" --thread-mode resume --thread-id <thread-id>
+
 # Convert a captured session into a reviewed eval, run it in a detached worktree,
 # then compare persisted runs.
 vibetrace eval create <session-id> --name "authorization regression"

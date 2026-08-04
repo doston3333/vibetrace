@@ -4,6 +4,10 @@ import { join } from 'node:path';
 
 import { createSessionId } from '@vibetrace/schema';
 import { parseEvalManifest } from '@vibetrace/eval-spec';
+import type {
+  AppServerApprovalDecision,
+  AppServerRpcMessage,
+} from '@vibetrace/adapter-codex-app-server';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { cliVersion, createProgram } from './program.js';
@@ -232,6 +236,46 @@ describe('createProgram', () => {
         },
       },
     ]);
+  });
+
+  it('defaults interactive approval to an explicit denial without a terminal', async () => {
+    const state = await mkdtemp(
+      join(tmpdir(), 'vibetrace-cli-app-server-approval-'),
+    );
+    directories.push(state);
+    let approval:
+      | ((request: AppServerRpcMessage) => Promise<AppServerApprovalDecision>)
+      | undefined;
+    const program = createProgram({
+      stateDir: () => state,
+      isInteractive: () => false,
+      runAppServerSession: async (options) => {
+        approval = options.approval;
+        return { events: [], raw: [], gaps: [] };
+      },
+      output: () => undefined,
+    });
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'codex',
+      'app-server',
+      '--prompt',
+      'Inspect safely.',
+      '--approval-policy',
+      'prompt',
+    ]);
+    expect(approval).toBeDefined();
+    if (!approval) throw new Error('Approval callback was not supplied.');
+    await expect(
+      approval({
+        method: 'item/commandExecution/requestApproval',
+        params: { command: 'printf "\\u001b[31munsafe"' },
+      }),
+    ).resolves.toEqual({
+      decision: 'decline',
+      reason: 'non-interactive-terminal',
+    });
   });
 
   it('validates manifests and persists human review as pending_review status', async () => {

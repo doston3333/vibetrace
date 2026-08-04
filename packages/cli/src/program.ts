@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { basename, dirname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -17,6 +18,8 @@ import {
 import {
   APP_SERVER_ADAPTER_ID,
   runAppServerSession,
+  type AppServerApprovalDecision,
+  type AppServerRpcMessage,
   type AppServerCaptureResult,
   type AppServerThreadMode,
 } from '@vibetrace/adapter-codex-app-server';
@@ -58,6 +61,7 @@ export interface CliDependencies {
   readonly fetch?: typeof fetch;
   readonly readStdin?: (maxBytes: number) => Promise<string | undefined>;
   readonly readSecret?: (prompt: string) => Promise<string>;
+  readonly isInteractive?: () => boolean;
   readonly collectCodexHook?: (text: string) => Promise<boolean>;
   readonly installCodexHooks?: (options: {
     readonly dryRun?: boolean;
@@ -145,6 +149,87 @@ function exportProfile(
       'Profile must be metadata-only, share-safe, or custom:<id>.',
     );
   return ExportProfileSchema.parse(profile);
+}
+
+function safeApprovalText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return [...value]
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return !(code <= 0x1f || code === 0x7f || code === 0x9b);
+    })
+    .join('')
+    .slice(0, 512);
+}
+
+function approvalRequestDetails(request: AppServerRpcMessage): {
+  readonly command: string;
+  readonly reason: string;
+} {
+  const params = request.params ?? {};
+  const item =
+    params.item !== null &&
+    typeof params.item === 'object' &&
+    !Array.isArray(params.item)
+      ? (params.item as Record<string, unknown>)
+      : {};
+  const command = [params.command, params.cmd, item.command, item.cmd].find(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+  const reason = [params.reason, item.reason].find(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+  return {
+    command: safeApprovalText(command) || 'Not provided',
+    reason: safeApprovalText(reason) || 'Not provided',
+  };
+}
+
+function approvalHandlerForPolicy(
+  policy: 'allow' | 'decline' | 'prompt',
+  interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY),
+):
+  | {
+      readonly approval: (
+        request: AppServerRpcMessage,
+      ) => Promise<AppServerApprovalDecision>;
+      readonly close: () => void;
+    }
+  | undefined {
+  if (policy === 'allow')
+    return {
+      approval: async () => ({ decision: 'allow', reason: 'cli-policy' }),
+      close: () => undefined,
+    };
+  if (policy === 'decline')
+    return {
+      approval: async () => ({ decision: 'decline', reason: 'cli-policy' }),
+      close: () => undefined,
+    };
+  if (!interactive)
+    return {
+      approval: async () => ({
+        decision: 'decline',
+        reason: 'non-interactive-terminal',
+      }),
+      close: () => undefined,
+    };
+  const prompt = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  return {
+    approval: async (request) => {
+      const details = approvalRequestDetails(request);
+      const answer = await prompt.question(
+        `\nCodex requests approval.\nCommand: ${details.command}\nReason: ${details.reason}\nAllow this request? [y/N] `,
+      );
+      return /^y(?:es)?$/iu.test(answer.trim())
+        ? { decision: 'allow', reason: 'cli-prompt-confirmed' }
+        : { decision: 'decline', reason: 'cli-prompt-declined' };
+    },
+    close: () => prompt.close(),
+  };
 }
 
 async function readBoundedStdin(maxBytes: number): Promise<string | undefined> {
@@ -288,6 +373,9 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     dependencies.waitForReady ??
     ((directory: string) => waitForReady(directory, request));
   const secret = dependencies.readSecret ?? readHiddenSecret;
+  const isInteractive =
+    dependencies.isInteractive ??
+    (() => Boolean(process.stdin.isTTY && process.stdout.isTTY));
   const api = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
     const directory = stateDir();
     await start(directory, spawnDaemon, request);
@@ -1139,7 +1227,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     )
     .option(
       '--approval-policy <policy>',
-      'Approval response policy: decline (default) or allow.',
+      'Approval response policy: decline (default), allow, or prompt.',
       'decline',
     )
     .action(
@@ -1158,48 +1246,48 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         const cwd = resolve(options.cwd);
         if (!['start', 'resume', 'fork'].includes(options.threadMode))
           throw new Error('Thread mode must be start, resume, or fork.');
-        if (
-          options.approvalPolicy !== 'allow' &&
-          options.approvalPolicy !== 'decline'
-        )
-          throw new Error('Approval policy must be allow or decline.');
-        const approvalDecision =
-          options.approvalPolicy === 'allow'
-            ? ('allow' as const)
-            : ('decline' as const);
-        const result = await runAppServer({
-          cwd,
-          prompt: options.prompt,
-          approval: async () => ({
-            decision: approvalDecision,
-            reason: 'cli-policy',
-          }),
-          context: {
-            stateDir: stateDir(),
-            sourceSessionId: `cli-${randomUUID()}`,
-            project: {
-              projectId: options.projectId,
-              displayName: options.projectName ?? basename(cwd),
-              pathHash: createHash('sha256').update(cwd).digest('hex'),
-            },
-            ...(options.model ? { model: options.model } : {}),
-          },
-          thread: {
-            mode: options.threadMode as AppServerThreadMode,
-            ...(options.threadId ? { threadId: options.threadId } : {}),
-            ...(options.lastTurnId ? { lastTurnId: options.lastTurnId } : {}),
-            ...(options.ephemeral !== undefined
-              ? { ephemeral: options.ephemeral }
-              : {}),
-          },
-        });
-        output(
-          JSON.stringify({
-            adapter: APP_SERVER_ADAPTER_ID,
-            eventCount: result.events.length,
-            gapCount: result.gaps.length,
-          }),
+        if (!['allow', 'decline', 'prompt'].includes(options.approvalPolicy))
+          throw new Error('Approval policy must be allow, decline, or prompt.');
+        const approval = approvalHandlerForPolicy(
+          options.approvalPolicy as 'allow' | 'decline' | 'prompt',
+          isInteractive(),
         );
+        if (!approval)
+          throw new Error('Approval handler could not be created.');
+        try {
+          const result = await runAppServer({
+            cwd,
+            prompt: options.prompt,
+            approval: approval.approval,
+            context: {
+              stateDir: stateDir(),
+              sourceSessionId: `cli-${randomUUID()}`,
+              project: {
+                projectId: options.projectId,
+                displayName: options.projectName ?? basename(cwd),
+                pathHash: createHash('sha256').update(cwd).digest('hex'),
+              },
+              ...(options.model ? { model: options.model } : {}),
+            },
+            thread: {
+              mode: options.threadMode as AppServerThreadMode,
+              ...(options.threadId ? { threadId: options.threadId } : {}),
+              ...(options.lastTurnId ? { lastTurnId: options.lastTurnId } : {}),
+              ...(options.ephemeral !== undefined
+                ? { ephemeral: options.ephemeral }
+                : {}),
+            },
+          });
+          output(
+            JSON.stringify({
+              adapter: APP_SERVER_ADAPTER_ID,
+              eventCount: result.events.length,
+              gapCount: result.gaps.length,
+            }),
+          );
+        } finally {
+          approval.close();
+        }
       },
     );
   sessions
