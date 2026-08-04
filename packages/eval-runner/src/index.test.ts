@@ -17,6 +17,10 @@ import {
   resolveCodexExecution,
   runCodexExec,
   runEvaluation,
+  runEvaluationMatrix,
+  MAX_EVALUATION_MATRIX_REPETITIONS,
+  MAX_EVALUATION_MATRIX_RUNS,
+  MAX_EVALUATION_MATRIX_VARIANTS,
 } from './index.js';
 
 const execFile = promisify(nodeExecFile);
@@ -425,6 +429,204 @@ describe('isolated evaluation runner', () => {
     });
     expect(result.success).toBe(true);
     expect(await readFile(join(path, 'README.md'), 'utf8')).toBe('baseline\n');
+  });
+
+  it('runs matrix variants and repetitions sequentially with effective manifests', async () => {
+    const { path, commit } = await repository();
+    const sentinel = join(path, 'matrix-sentinel.txt');
+    await writeFile(sentinel, 'active checkout\n');
+    const manifest = {
+      schemaVersion: '1.0.0',
+      id: createSessionId('eval', 'matrix-runner'),
+      name: 'matrix runner fixture',
+      sourceEvidence: {
+        eventIds: [],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: { baseCommit: commit },
+      task: { prompt: 'Base prompt', constraints: [], inferredFields: [] },
+      configuration: { skills: [], instructionHashes: [], inferredFields: [] },
+      success: {
+        assertions: [
+          { type: 'human_rating' as const, prompt: 'Review', minimum: 0 },
+        ],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const observed: Array<{
+      prompt: string;
+      model?: string;
+      approvalPolicy?: string;
+      sandboxPolicy?: string;
+      networkPolicy?: string;
+      extraArgs?: readonly string[];
+      skillCount: number;
+    }> = [];
+    let activeExecutions = 0;
+    let maximumActiveExecutions = 0;
+    const runs = await runEvaluationMatrix({
+      manifest,
+      activeCheckout: path,
+      repetitions: 2,
+      variants: [
+        {
+          id: 'control',
+          prompt: 'Prompt alpha',
+          model: 'gpt-5.6-control',
+          approvalPolicy: 'never',
+          sandboxPolicy: 'workspace-write',
+          networkPolicy: 'disabled',
+          extraArgs: ['--ephemeral'],
+          skills: [],
+        },
+        {
+          id: 'treatment',
+          prompt: 'Prompt beta',
+          model: 'gpt-5.6-treatment',
+          approvalPolicy: 'on-request',
+          sandboxPolicy: 'workspace-write',
+          networkPolicy: 'enabled',
+          extraArgs: ['--color=never'],
+          skills: [{ name: 'fixture-skill', sha256: 'a'.repeat(64) }],
+        },
+      ],
+      humanRatings: { 0: 0 },
+      execute: async ({ manifest: effectiveManifest, cwd }) => {
+        activeExecutions += 1;
+        maximumActiveExecutions = Math.max(
+          maximumActiveExecutions,
+          activeExecutions,
+        );
+        try {
+          observed.push({
+            prompt: effectiveManifest.task.prompt,
+            model: effectiveManifest.configuration.model,
+            approvalPolicy: effectiveManifest.configuration.approvalPolicy,
+            sandboxPolicy: effectiveManifest.configuration.sandboxPolicy,
+            networkPolicy: effectiveManifest.configuration.networkPolicy,
+            extraArgs: effectiveManifest.configuration.execution?.extraArgs,
+            skillCount: effectiveManifest.configuration.skills.length,
+          });
+          await writeFile(join(cwd, 'matrix-output.txt'), 'isolated\n');
+          return undefined;
+        } finally {
+          activeExecutions -= 1;
+        }
+      },
+    });
+    expect(runs).toHaveLength(4);
+    expect(runs.map((run) => [run.variantId, run.repetition])).toEqual([
+      ['control', 1],
+      ['control', 2],
+      ['treatment', 1],
+      ['treatment', 2],
+    ]);
+    expect(maximumActiveExecutions).toBe(1);
+    expect(observed).toEqual([
+      {
+        prompt: 'Prompt alpha',
+        model: 'gpt-5.6-control',
+        approvalPolicy: 'never',
+        sandboxPolicy: 'workspace-write',
+        networkPolicy: 'disabled',
+        extraArgs: ['--ephemeral'],
+        skillCount: 0,
+      },
+      {
+        prompt: 'Prompt alpha',
+        model: 'gpt-5.6-control',
+        approvalPolicy: 'never',
+        sandboxPolicy: 'workspace-write',
+        networkPolicy: 'disabled',
+        extraArgs: ['--ephemeral'],
+        skillCount: 0,
+      },
+      {
+        prompt: 'Prompt beta',
+        model: 'gpt-5.6-treatment',
+        approvalPolicy: 'on-request',
+        sandboxPolicy: 'workspace-write',
+        networkPolicy: 'enabled',
+        extraArgs: ['--color=never'],
+        skillCount: 1,
+      },
+      {
+        prompt: 'Prompt beta',
+        model: 'gpt-5.6-treatment',
+        approvalPolicy: 'on-request',
+        sandboxPolicy: 'workspace-write',
+        networkPolicy: 'enabled',
+        extraArgs: ['--color=never'],
+        skillCount: 1,
+      },
+    ]);
+    expect(new Set(runs.map((run) => run.effectiveManifest.id)).size).toBe(4);
+    expect(await readFile(sentinel, 'utf8')).toBe('active checkout\n');
+    await expect(
+      readFile(join(path, 'matrix-output.txt'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects duplicate and out-of-bounds matrix plans before creating worktrees', async () => {
+    const { path, commit } = await repository();
+    const manifest = {
+      schemaVersion: '1.0.0',
+      id: createSessionId('eval', 'matrix-bounds'),
+      name: 'matrix bounds fixture',
+      sourceEvidence: {
+        eventIds: [],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: { baseCommit: commit },
+      task: { prompt: 'Base prompt', constraints: [], inferredFields: [] },
+      configuration: { skills: [], instructionHashes: [], inferredFields: [] },
+      success: {
+        assertions: [
+          { type: 'human_rating' as const, prompt: 'Review', minimum: 0 },
+        ],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const pair = [{ id: 'one' }, { id: 'two' }];
+    await expect(
+      runEvaluationMatrix({
+        manifest,
+        activeCheckout: path,
+        variants: [{ id: 'duplicate' }, { id: 'duplicate' }],
+      }),
+    ).rejects.toThrow('variant IDs must be unique');
+    await expect(
+      runEvaluationMatrix({
+        manifest,
+        activeCheckout: path,
+        variants: pair,
+        repetitions: MAX_EVALUATION_MATRIX_REPETITIONS + 1,
+      }),
+    ).rejects.toThrow('Matrix repetitions');
+    await expect(
+      runEvaluationMatrix({
+        manifest,
+        activeCheckout: path,
+        variants: Array.from(
+          { length: MAX_EVALUATION_MATRIX_VARIANTS + 1 },
+          (_, index) => ({ id: `variant-${index}` }),
+        ),
+      }),
+    ).rejects.toThrow('variant limit');
+    const totalVariants = Array.from(
+      { length: Math.ceil(MAX_EVALUATION_MATRIX_RUNS / 100) + 1 },
+      (_, index) => ({ id: `total-${index}` }),
+    );
+    await expect(
+      runEvaluationMatrix({
+        manifest,
+        activeCheckout: path,
+        variants: totalVariants,
+        repetitions: 100,
+      }),
+    ).rejects.toThrow('run limit');
   });
 });
 

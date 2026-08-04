@@ -38,6 +38,10 @@ const execFile = promisify(nodeExecFile);
 export const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 export const MAX_CAPTURE_EVENTS = 20_000;
+/** Safety bounds for sequential evaluation matrix execution. */
+export const MAX_EVALUATION_MATRIX_VARIANTS = 100;
+export const MAX_EVALUATION_MATRIX_REPETITIONS = 100;
+export const MAX_EVALUATION_MATRIX_RUNS = 1_000;
 
 /** Fail-closed policies used when a legacy manifest omits execution settings. */
 export const DEFAULT_EVAL_APPROVAL_POLICY = 'never' as const;
@@ -110,6 +114,38 @@ export interface RunEvaluationOptions {
   readonly codex?: CodexExecOptions;
 }
 
+/** A reviewed configuration override applied to one evaluation-matrix arm. */
+export interface EvaluationMatrixVariant {
+  readonly id: string;
+  readonly prompt?: string;
+  readonly model?: string;
+  readonly approvalPolicy?: NonNullable<
+    EvalExecutionConfiguration['approvalPolicy']
+  >;
+  readonly sandboxPolicy?: NonNullable<
+    EvalExecutionConfiguration['sandboxPolicy']
+  >;
+  readonly networkPolicy?: NonNullable<
+    EvalExecutionConfiguration['networkPolicy']
+  >;
+  readonly extraArgs?: readonly string[];
+  readonly skills?: readonly EvalManifest['configuration']['skills'][number][];
+}
+
+/** Inputs for a bounded matrix whose runs are deliberately executed in order. */
+export interface RunEvaluationMatrixOptions {
+  readonly manifest: EvalManifest | unknown;
+  readonly activeCheckout: string;
+  readonly variants: readonly EvaluationMatrixVariant[] | unknown;
+  readonly repetitions?: number;
+  readonly timeoutMs?: number;
+  readonly maxOutputBytes?: number;
+  readonly humanRatings?: Readonly<Record<number, number>>;
+  readonly execute?: RunEvaluationOptions['execute'];
+  readonly patchResolver?: RunEvaluationOptions['patchResolver'];
+  readonly codex?: CodexExecOptions;
+}
+
 export interface EvalRunResult extends EvalOutcome {
   readonly manifestId: string;
   readonly worktreeFingerprintHash: string;
@@ -120,6 +156,14 @@ export interface EvalRunResult extends EvalOutcome {
   /** Effective Codex argv and policy configuration, when Codex executed the run. */
   readonly execution?: ResolvedCodexExecution;
   readonly events: readonly TraceEvent[];
+}
+
+/** The evidence-bearing result for one variant and one (one-based) repetition. */
+export interface EvaluationMatrixRun {
+  readonly variantId: string;
+  readonly repetition: number;
+  readonly effectiveManifest: EvalManifest;
+  readonly result: EvalRunResult;
 }
 
 export interface CodexExecOptions {
@@ -295,6 +339,207 @@ export function resolveCodexExecution(
   return Object.freeze({
     argv: Object.freeze(argv),
     configuration: Object.freeze(configuration),
+  });
+}
+
+function record(value: unknown, field: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    throw new Error(`${field} must be an object.`);
+  return value as Record<string, unknown>;
+}
+
+function boundedString(value: unknown, field: string, max: number): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > max ||
+    value.includes('\0') ||
+    /[\r\n]/u.test(value)
+  )
+    throw new Error(`${field} must be a safe non-empty string.`);
+  return value;
+}
+
+function parseMatrixSkills(
+  value: unknown,
+): readonly EvalManifest['configuration']['skills'][number][] {
+  if (!Array.isArray(value) || value.length > 10_000)
+    throw new Error(
+      'variant.skills must contain at most 10,000 skill records.',
+    );
+  return Object.freeze(
+    value.map((entry, index) => {
+      const skill = record(entry, `variant.skills[${index}]`);
+      const keys = Object.keys(skill);
+      if (keys.some((key) => key !== 'name' && key !== 'sha256'))
+        throw new Error(`variant.skills[${index}] contains an unknown field.`);
+      const name = boundedString(
+        skill.name,
+        `variant.skills[${index}].name`,
+        512,
+      );
+      if (
+        typeof skill.sha256 !== 'string' ||
+        !/^[a-f0-9]{64}$/iu.test(skill.sha256)
+      )
+        throw new Error(
+          `variant.skills[${index}].sha256 must be a SHA-256 hash.`,
+        );
+      return Object.freeze({ name, sha256: skill.sha256.toLowerCase() });
+    }),
+  );
+}
+
+/** Parse a matrix arm before it can be merged into a reviewed manifest. */
+export function parseEvaluationMatrixVariant(
+  input: unknown,
+): EvaluationMatrixVariant {
+  const value = record(input, 'variant');
+  const allowed = new Set([
+    'id',
+    'prompt',
+    'model',
+    'approvalPolicy',
+    'sandboxPolicy',
+    'networkPolicy',
+    'extraArgs',
+    'skills',
+  ]);
+  if (Object.keys(value).some((key) => !allowed.has(key)))
+    throw new Error('variant contains an unknown field.');
+  const id = boundedString(value.id, 'variant.id', 256);
+  const prompt =
+    value.prompt === undefined
+      ? undefined
+      : boundedString(value.prompt, 'variant.prompt', 1_000_000);
+  const model =
+    value.model === undefined
+      ? undefined
+      : boundedString(value.model, 'variant.model', 512);
+  const approvalPolicy =
+    value.approvalPolicy === undefined
+      ? undefined
+      : EvalExecutionApprovalPolicySchema.parse(value.approvalPolicy);
+  const sandboxPolicy =
+    value.sandboxPolicy === undefined
+      ? undefined
+      : EvalExecutionSandboxPolicySchema.parse(value.sandboxPolicy);
+  const networkPolicy =
+    value.networkPolicy === undefined
+      ? undefined
+      : EvalExecutionNetworkPolicySchema.parse(value.networkPolicy);
+  let extraArgs: readonly string[] | undefined;
+  if (value.extraArgs !== undefined) {
+    if (!Array.isArray(value.extraArgs))
+      throw new Error('variant.extraArgs must be an array.');
+    validateEvalExecutionExtraArgs(value.extraArgs);
+    extraArgs = Object.freeze([...value.extraArgs]);
+  }
+  const skills =
+    value.skills === undefined ? undefined : parseMatrixSkills(value.skills);
+  return Object.freeze({
+    id,
+    ...(prompt === undefined ? {} : { prompt }),
+    ...(model === undefined ? {} : { model }),
+    ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+    ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+    ...(networkPolicy === undefined ? {} : { networkPolicy }),
+    ...(extraArgs === undefined ? {} : { extraArgs }),
+    ...(skills === undefined ? {} : { skills }),
+  });
+}
+
+/** Lightweight runtime schema for callers that prefer schema-style parsing. */
+export const EvaluationMatrixVariantSchema = Object.freeze({
+  parse: parseEvaluationMatrixVariant,
+});
+
+function parseEvaluationMatrixVariants(
+  variants: unknown,
+): readonly EvaluationMatrixVariant[] {
+  if (!Array.isArray(variants))
+    throw new Error('matrix variants must be an array.');
+  if (variants.length < 2)
+    throw new Error('An evaluation matrix requires at least two variants.');
+  if (variants.length > MAX_EVALUATION_MATRIX_VARIANTS)
+    throw new Error(
+      `Evaluation matrix exceeds the ${MAX_EVALUATION_MATRIX_VARIANTS}-variant limit.`,
+    );
+  const parsed = variants.map(parseEvaluationMatrixVariant);
+  const ids = new Set(parsed.map((variant) => variant.id));
+  if (ids.size !== parsed.length)
+    throw new Error('Evaluation matrix variant IDs must be unique.');
+  return Object.freeze(parsed);
+}
+
+function parseEvaluationMatrixRepetitions(value: unknown): number {
+  const repetitions = value === undefined ? 1 : value;
+  if (
+    typeof repetitions !== 'number' ||
+    !Number.isInteger(repetitions) ||
+    repetitions < 1 ||
+    repetitions > MAX_EVALUATION_MATRIX_REPETITIONS
+  )
+    throw new Error(
+      `Matrix repetitions must be an integer between 1 and ${MAX_EVALUATION_MATRIX_REPETITIONS}.`,
+    );
+  return repetitions;
+}
+
+function effectiveMatrixManifest(
+  manifest: EvalManifest,
+  variant: EvaluationMatrixVariant,
+  repetition: number,
+): EvalManifest {
+  const hasExecutionOverride =
+    variant.model !== undefined ||
+    variant.approvalPolicy !== undefined ||
+    variant.sandboxPolicy !== undefined ||
+    variant.networkPolicy !== undefined ||
+    variant.extraArgs !== undefined;
+  const execution = hasExecutionOverride
+    ? {
+        ...(manifest.configuration.execution ?? {}),
+        ...(variant.model === undefined ? {} : { model: variant.model }),
+        ...(variant.approvalPolicy === undefined
+          ? {}
+          : { approvalPolicy: variant.approvalPolicy }),
+        ...(variant.sandboxPolicy === undefined
+          ? {}
+          : { sandboxPolicy: variant.sandboxPolicy }),
+        ...(variant.networkPolicy === undefined
+          ? {}
+          : { networkPolicy: variant.networkPolicy }),
+        ...(variant.extraArgs === undefined
+          ? {}
+          : { extraArgs: variant.extraArgs }),
+      }
+    : manifest.configuration.execution;
+  return parseEvalManifest({
+    ...manifest,
+    id: createSessionId(
+      'vibetrace-eval-matrix',
+      `${manifest.id}:${variant.id}:${repetition}`,
+    ),
+    task: {
+      ...manifest.task,
+      ...(variant.prompt === undefined ? {} : { prompt: variant.prompt }),
+    },
+    configuration: {
+      ...manifest.configuration,
+      ...(variant.model === undefined ? {} : { model: variant.model }),
+      ...(variant.approvalPolicy === undefined
+        ? {}
+        : { approvalPolicy: variant.approvalPolicy }),
+      ...(variant.sandboxPolicy === undefined
+        ? {}
+        : { sandboxPolicy: variant.sandboxPolicy }),
+      ...(variant.networkPolicy === undefined
+        ? {}
+        : { networkPolicy: variant.networkPolicy }),
+      ...(variant.skills === undefined ? {} : { skills: variant.skills }),
+      ...(execution === undefined ? {} : { execution }),
+    },
   });
 }
 
@@ -961,4 +1206,51 @@ export async function runEvaluation(
   } finally {
     await handle.cleanup();
   }
+}
+
+/**
+ * Run a bounded comparison matrix sequentially, giving every arm a fresh
+ * detached worktree. Sequential execution prevents concurrent use of an
+ * active checkout's Git worktree metadata and keeps resource use predictable.
+ */
+export async function runEvaluationMatrix(
+  options: RunEvaluationMatrixOptions,
+): Promise<readonly EvaluationMatrixRun[]> {
+  const manifest = parseEvalManifest(options.manifest);
+  const variants = parseEvaluationMatrixVariants(options.variants);
+  const repetitions = parseEvaluationMatrixRepetitions(options.repetitions);
+  const totalRuns = variants.length * repetitions;
+  if (totalRuns > MAX_EVALUATION_MATRIX_RUNS)
+    throw new Error(
+      `Evaluation matrix exceeds the ${MAX_EVALUATION_MATRIX_RUNS}-run limit.`,
+    );
+  const runs: EvaluationMatrixRun[] = [];
+  for (const variant of variants) {
+    for (let repetition = 1; repetition <= repetitions; repetition += 1) {
+      const effectiveManifest = effectiveMatrixManifest(
+        manifest,
+        variant,
+        repetition,
+      );
+      const result = await runEvaluation({
+        manifest: effectiveManifest,
+        activeCheckout: options.activeCheckout,
+        timeoutMs: options.timeoutMs,
+        maxOutputBytes: options.maxOutputBytes,
+        humanRatings: options.humanRatings,
+        execute: options.execute,
+        patchResolver: options.patchResolver,
+        codex: options.codex,
+      });
+      runs.push(
+        Object.freeze({
+          variantId: variant.id,
+          repetition,
+          effectiveManifest,
+          result,
+        }),
+      );
+    }
+  }
+  return Object.freeze(runs);
 }

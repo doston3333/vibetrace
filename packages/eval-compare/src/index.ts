@@ -5,6 +5,7 @@ import type { StoredEvalRun } from '@vibetrace/storage';
 import { z } from 'zod';
 
 export const COMPARISON_DIMENSIONS = [
+  'prompt',
   'model',
   'reasoningEffort',
   'approvalPolicy',
@@ -17,22 +18,61 @@ export const COMPARISON_DIMENSIONS = [
 ] as const;
 export type ComparisonDimension = (typeof COMPARISON_DIMENSIONS)[number];
 
+const comparisonVariantSchema = z
+  .object({
+    id: z.string().regex(/^[A-Za-z0-9._-]{1,256}$/u),
+    prompt: z.string().min(1).max(1_000_000).optional(),
+    model: z.string().min(1).max(512).optional(),
+    approvalPolicy: z.enum(['untrusted', 'on-request', 'never']).optional(),
+    sandboxPolicy: z
+      .enum(['read-only', 'workspace-write', 'danger-full-access'])
+      .optional(),
+    networkPolicy: z.enum(['enabled', 'disabled']).optional(),
+    extraArgs: z.array(z.string().min(1).max(4_096)).max(64).optional(),
+    skills: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1).max(512),
+            sha256: z.string().regex(/^[a-f0-9]{64}$/iu),
+          })
+          .strict(),
+      )
+      .max(10_000)
+      .optional(),
+  })
+  .strict();
+
+export const ComparisonMatrixVariantSchema = comparisonVariantSchema;
+
 /** Reviewable matrix controls; unknown extension fields remain opaque metadata. */
 export const ComparisonMatrixConfigurationSchema = z
   .object({
     dimensions: z.array(z.enum(COMPARISON_DIMENSIONS)).max(16).optional(),
     repetitions: z.number().int().min(1).max(100).optional(),
     controlRunId: z.string().uuid().optional(),
+    variants: z.array(comparisonVariantSchema).min(2).max(100).optional(),
   })
   .passthrough()
   .superRefine((value, context) => {
-    if (value.dimensions === undefined) return;
-    const unique = new Set(value.dimensions);
-    if (unique.size !== value.dimensions.length)
+    if (value.dimensions !== undefined) {
+      const unique = new Set(value.dimensions);
+      if (unique.size !== value.dimensions.length)
+        context.addIssue({
+          code: 'custom',
+          path: ['dimensions'],
+          message: 'Comparison dimensions must be unique.',
+        });
+    }
+    if (
+      value.variants !== undefined &&
+      value.repetitions !== undefined &&
+      value.variants.length * value.repetitions > 1_000
+    )
       context.addIssue({
         code: 'custom',
-        path: ['dimensions'],
-        message: 'Comparison dimensions must be unique.',
+        path: ['repetitions'],
+        message: 'Comparison matrix exceeds the 1,000-run safety limit.',
       });
   });
 export type ComparisonMatrixConfiguration = z.infer<

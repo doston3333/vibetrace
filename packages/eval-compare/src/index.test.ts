@@ -92,5 +92,23 @@ describe('evaluation comparison', () => {
         repetitions: 2,
       }),
     ).toMatchObject({ dimensions: ['model', 'skillSet'], repetitions: 2 });
+    expect(
+      ComparisonMatrixConfigurationSchema.parse({
+        dimensions: ['prompt', 'repetition'],
+        repetitions: 2,
+        variants: [
+          { id: 'control', prompt: 'Use the baseline prompt.' },
+          { id: 'treatment', prompt: 'Use the revised prompt.' },
+        ],
+      }),
+    ).toMatchObject({ dimensions: ['prompt', 'repetition'] });
+    expect(
+      ComparisonMatrixConfigurationSchema.safeParse({
+        repetitions: 100,
+        variants: Array.from({ length: 11 }, (_, index) => ({
+          id: `variant-${index}`,
+        })),
+      }).success,
+    ).toBe(false);
   });
 });

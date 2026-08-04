@@ -1542,7 +1542,18 @@ export async function startDaemon(
       if (!id || !parsed.success)
         return reply.code(400).send({ code: 'INVALID_EVAL_RUN_UPDATE' });
       try {
-        storage.updateEvalRun(id, parsed.data as EvalRunUpdate);
+        const update: EvalRunUpdate = {
+          ...(parsed.data as EvalRunUpdate),
+          ...(parsed.data.metrics
+            ? {
+                metrics: {
+                  ...(storage.getEvalRun(id)?.metrics ?? {}),
+                  ...(parsed.data.metrics as JsonObject),
+                } as JsonObject,
+              }
+            : {}),
+        };
+        storage.updateEvalRun(id, update);
         return { run: storage.getEvalRun(id) };
       } catch {
         return reply.code(404).send({ code: 'NOT_FOUND' });

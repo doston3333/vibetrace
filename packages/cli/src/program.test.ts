@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createSessionId } from '@vibetrace/schema';
+import { parseEvalManifest } from '@vibetrace/eval-spec';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { cliVersion, createProgram } from './program.js';
@@ -542,5 +543,141 @@ describe('createProgram', () => {
       ]),
     ).rejects.toThrow('do not match');
     expect(calls.filter((url) => url.endsWith('/exports'))).toHaveLength(0);
+  });
+
+  it('executes and persists a bounded evaluation matrix with repetition evidence', async () => {
+    const state = await mkdtemp(join(tmpdir(), 'vibetrace-cli-matrix-'));
+    directories.push(state);
+    const manifest = {
+      schemaVersion: '1.0.0',
+      id: createSessionId('eval', 'matrix-cli'),
+      name: 'Matrix CLI case',
+      sourceEvidence: {
+        eventIds: [],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: { baseCommit: 'a'.repeat(40) },
+      task: { prompt: 'Base prompt', constraints: [], inferredFields: [] },
+      configuration: { skills: [], instructionHashes: [], inferredFields: [] },
+      success: {
+        assertions: [
+          { type: 'human_rating' as const, prompt: 'Review', minimum: 0 },
+        ],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const manifestPath = join(state, 'manifest.json');
+    const matrixPath = join(state, 'matrix.json');
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await writeFile(
+      matrixPath,
+      JSON.stringify({
+        name: 'Prompt variants',
+        repetitions: 2,
+        variants: [
+          { id: 'control', prompt: 'Prompt A' },
+          { id: 'treatment', prompt: 'Prompt B', model: 'gpt-5.6-codex' },
+        ],
+      }),
+    );
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    let runOrdinal = 0;
+    const outputs: string[] = [];
+    let matrixInput: unknown;
+    const program = createProgram({
+      stateDir: () => state,
+      spawn: () => undefined,
+      waitForReady: async () => ({
+        origin: 'http://127.0.0.1:45681',
+        instanceId: createSessionId('daemon', 'matrix-cli'),
+        token: 'm'.repeat(43),
+      }),
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        const value = String(url);
+        requests.push({ url: value, init });
+        if (value.endsWith('/eval/comparisons'))
+          return new Response(
+            JSON.stringify({
+              comparison: { id: createSessionId('comparison', 'cli') },
+            }),
+            { status: 201 },
+          );
+        if (value.includes('/eval/cases/') && value.endsWith('/runs')) {
+          runOrdinal += 1;
+          return new Response(
+            JSON.stringify({
+              run: { id: createSessionId('run', `matrix-${runOrdinal}`) },
+            }),
+            { status: 201 },
+          );
+        }
+        return new Response(JSON.stringify({ run: {} }), { status: 200 });
+      }) as typeof fetch,
+      runEvaluationMatrix: async (options) => {
+        matrixInput = options.variants;
+        const parsedManifest = parseEvalManifest(options.manifest);
+        return [
+          ['control', 1, 'Prompt A'],
+          ['control', 2, 'Prompt A'],
+          ['treatment', 1, 'Prompt B'],
+          ['treatment', 2, 'Prompt B'],
+        ].map(([variantId, repetition, prompt], index) => ({
+          variantId: String(variantId),
+          repetition: Number(repetition),
+          effectiveManifest: {
+            ...parsedManifest,
+            id: createSessionId('eval-matrix', `${variantId}-${repetition}`),
+            task: { ...parsedManifest.task, prompt: String(prompt) },
+          },
+          result: {
+            manifestId: createSessionId('eval-matrix-run', String(index)),
+            success: index === 3 ? false : true,
+            checks: [
+              {
+                index: 0,
+                type: 'human_rating' as const,
+                status: index === 3 ? ('failed' as const) : ('passed' as const),
+                detail: 'fixture',
+              },
+            ],
+            commandResults: [],
+            worktreeFingerprintHash: `${String(index).padStart(1, '0')}${'b'.repeat(63)}`,
+            jsonRecordCount: 0,
+            malformedJsonRecordCount: 0,
+            events: [],
+          },
+        }));
+      },
+      output: (line) => outputs.push(line),
+    });
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'eval',
+      'matrix',
+      manifestPath,
+      matrixPath,
+      '--cwd',
+      state,
+      '--json',
+    ]);
+    expect(matrixInput).toEqual([
+      { id: 'control', prompt: 'Prompt A' },
+      { id: 'treatment', prompt: 'Prompt B', model: 'gpt-5.6-codex' },
+    ]);
+    const comparisonRequest = requests.find((item) =>
+      item.url.endsWith('/eval/comparisons'),
+    );
+    expect(JSON.parse(String(comparisonRequest?.init?.body))).toMatchObject({
+      configuration: {
+        dimensions: ['prompt', 'model', 'repetition'],
+        repetitions: 2,
+      },
+    });
+    expect(
+      requests.filter((item) => item.url.endsWith('/results')),
+    ).toHaveLength(4);
+    expect(JSON.parse(outputs.at(-1) as string).runs).toHaveLength(4);
   });
 });

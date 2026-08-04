@@ -1378,6 +1378,18 @@ describe('daemon API', () => {
       estimatedCostMicros: 3,
       findingCount: 0,
     });
+    const mergedMetrics = await daemon.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/eval/runs/${evalRun.id}`,
+      headers,
+      payload: { metrics: { commandCount: 2 } },
+    });
+    expect(mergedMetrics.statusCode).toBe(200);
+    expect(storage.getEvalRun(evalRun.id)?.metrics).toMatchObject({
+      commandCount: 2,
+      toolCount: 1,
+      tokenCount: 20,
+    });
     const capturedAgain = await daemon.app.inject({
       method: 'POST',
       url: `/api/v1/eval/runs/${evalRun.id}/events`,

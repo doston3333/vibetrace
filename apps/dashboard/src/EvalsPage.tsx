@@ -180,6 +180,16 @@ export function EvalsPage() {
         {comparison.data ? (
           <div className="comparison-results">
             <h3>{comparison.data.comparison.name}</h3>
+            <p className="comparison-dimensions">
+              Dimensions:{' '}
+              {Array.isArray(
+                comparison.data.comparison.configuration.dimensions,
+              )
+                ? comparison.data.comparison.configuration.dimensions.join(
+                    ' · ',
+                  )
+                : 'not declared'}
+            </p>
             <dl>
               <div>
                 <dt>Runs</dt>
@@ -224,42 +234,75 @@ export function EvalsPage() {
             >
               <h4>Run matrix</h4>
               <div className="comparison-run-grid">
-                {comparison.data.runs.map((run) => (
-                  <article key={run.id}>
-                    <strong>{run.id.slice(0, 12)}…</strong>
-                    <span>{run.status}</span>
-                    <small>
-                      {run.outcome?.success === true
-                        ? 'passed'
-                        : run.outcome?.success === false
-                          ? 'failed'
-                          : 'pending'}
-                    </small>
-                    {run.metrics?.durationMs !== undefined ? (
-                      <small>{String(run.metrics.durationMs)} ms</small>
-                    ) : null}
-                    <small>
-                      Tools {metricText(run.metrics?.toolCount)} · Files{' '}
-                      {metricText(run.metrics?.diffFileCount)}
-                    </small>
-                    <small>
-                      Tokens {metricText(run.metrics?.tokenCount)} · Cost{' '}
-                      {metricText(run.metrics?.estimatedCostMicros)} μ$
-                    </small>
-                    <pre className="comparison-run-config">
-                      {JSON.stringify(run.configuration, null, 2)}
-                    </pre>
-                    {run.sourceSessionId ? (
-                      <a
-                        href={`/sessions/${encodeURIComponent(run.sourceSessionId)}`}
-                      >
-                        Open evidence session
-                      </a>
-                    ) : (
-                      <small>Session capture not attached</small>
-                    )}
-                  </article>
-                ))}
+                {comparison.data.runs.map((run) => {
+                  const result = comparison.data.results.find(
+                    (item) => item.evalRunId === run.id,
+                  )?.result;
+                  const checks = Array.isArray(run.outcome?.checks)
+                    ? run.outcome.checks
+                    : [];
+                  return (
+                    <article key={run.id}>
+                      <strong>{run.id.slice(0, 12)}…</strong>
+                      <span>{run.status}</span>
+                      {typeof result?.variantId === 'string' ? (
+                        <small>
+                          Variant {result.variantId} · repetition{' '}
+                          {typeof result.repetition === 'number'
+                            ? result.repetition
+                            : '—'}
+                        </small>
+                      ) : null}
+                      <small>
+                        {run.outcome?.success === true
+                          ? 'passed'
+                          : run.outcome?.success === false
+                            ? 'failed'
+                            : 'pending'}
+                      </small>
+                      {run.metrics?.durationMs !== undefined ? (
+                        <small>{String(run.metrics.durationMs)} ms</small>
+                      ) : null}
+                      <small>
+                        Tools {metricText(run.metrics?.toolCount)} · Files{' '}
+                        {metricText(run.metrics?.diffFileCount)} · Tests{' '}
+                        {metricText(run.metrics?.verificationCount)}
+                      </small>
+                      <small>
+                        Findings {metricText(run.metrics?.findingCount)} ·
+                        Tokens {metricText(run.metrics?.tokenCount)} · Cost{' '}
+                        {metricText(run.metrics?.estimatedCostMicros)} μ$
+                      </small>
+                      {checks.length > 0 ? (
+                        <small>
+                          Checks:{' '}
+                          {checks
+                            .map((check) =>
+                              check && typeof check === 'object'
+                                ? String(
+                                    (check as Record<string, unknown>).status ??
+                                      'unknown',
+                                  )
+                                : 'unknown',
+                            )
+                            .join(' · ')}
+                        </small>
+                      ) : null}
+                      <pre className="comparison-run-config">
+                        {JSON.stringify(run.configuration, null, 2)}
+                      </pre>
+                      {run.sourceSessionId ? (
+                        <a
+                          href={`/sessions/${encodeURIComponent(run.sourceSessionId)}`}
+                        >
+                          Open evidence session
+                        </a>
+                      ) : (
+                        <small>Session capture not attached</small>
+                      )}
+                    </article>
+                  );
+                })}
               </div>
             </div>
             {comparison.data.summary.firstDivergence ? (

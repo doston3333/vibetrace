@@ -80,6 +80,15 @@ cost, duration, and evidence-linked finding metrics. The dashboard renders
 those values beside each run and links back to the captured session for the
 full timeline and findings.
 
+The CLI can execute a reviewed matrix directly with
+`vibetrace eval matrix <manifest> <matrix.json>`. Matrix files contain a name,
+at least two validated variants, and optional repetitions. Variants may change
+the prompt, model, execution policies, bounded extra arguments, or reviewed
+skill hash set. The runner executes arms sequentially, creates a fresh detached
+worktree for every repetition, and records variant/repetition metadata in the
+comparison result. Safety limits are 100 variants, 100 repetitions, and 1,000
+total runs; no active checkout is reused as an execution worktree.
+
 ## Trust boundaries
 
 Eval manifests, prompts, tool output, and model output are untrusted data.

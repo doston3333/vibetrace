@@ -113,11 +113,32 @@ vibetrace import trace.vibetrace.age
 vibetrace eval create <session-id> --name "authorization regression"
 vibetrace eval validate eval-manifest.json --json
 vibetrace eval run eval-manifest.json --cwd /path/to/checkout --json
+# Matrix files are JSON with at least two variants and optional repetitions.
+vibetrace eval matrix eval-manifest.json eval-matrix.json --cwd /path/to/checkout --json
 vibetrace eval compare <comparison-id> --json
 vibetrace eval compare-divergence <comparison-id> <left-run-id> <right-run-id> left-events.json right-events.json --json
 ```
 
 Export prints the exact versioned manifest before hidden passphrase entry. The manifest hash is submitted with the export request, so a changed session requires a new preview. Portable bundles have no plaintext mode.
+
+Matrix execution is bounded to 100 variants, 100 repetitions, and 1,000 total
+runs. Each arm gets a fresh detached worktree and is persisted with its variant
+ID and one-based repetition:
+
+```json
+{
+  "name": "prompt and model variants",
+  "repetitions": 2,
+  "variants": [
+    { "id": "control", "prompt": "Use the captured task." },
+    {
+      "id": "treatment",
+      "prompt": "Use the clarified task.",
+      "model": "gpt-5.6-codex"
+    }
+  ]
+}
+```
 
 Remove only the exact manifest-owned handlers with:
 

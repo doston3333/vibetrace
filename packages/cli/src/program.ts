@@ -25,7 +25,16 @@ import {
   parseEvalManifest,
   type EvalManifest,
 } from '@vibetrace/eval-spec';
-import { runEvaluation, type EvalRunResult } from '@vibetrace/eval-runner';
+import {
+  MAX_EVALUATION_MATRIX_REPETITIONS,
+  MAX_EVALUATION_MATRIX_RUNS,
+  MAX_EVALUATION_MATRIX_VARIANTS,
+  parseEvaluationMatrixVariant,
+  runEvaluation,
+  runEvaluationMatrix,
+  type EvalRunResult,
+  type EvaluationMatrixRun,
+} from '@vibetrace/eval-runner';
 import { ExportProfileSchema, type ExportProfile } from '@vibetrace/bundle';
 import {
   readDescriptor,
@@ -61,6 +70,9 @@ export interface CliDependencies {
   readonly runEvaluation?: (
     options: Parameters<typeof runEvaluation>[0],
   ) => Promise<EvalRunResult>;
+  readonly runEvaluationMatrix?: (
+    options: Parameters<typeof runEvaluationMatrix>[0],
+  ) => Promise<readonly EvaluationMatrixRun[]>;
   readonly setExitCode?: (code: number) => void;
   readonly waitForReady?: (
     stateDir: string,
@@ -358,6 +370,83 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       );
     return parseEvalManifest(JSON.parse(await readFile(path, 'utf8')));
   };
+  const readMatrixFile = async (
+    file: string,
+  ): Promise<{
+    readonly name: string;
+    readonly variants: readonly ReturnType<
+      typeof parseEvaluationMatrixVariant
+    >[];
+    readonly repetitions: number;
+    readonly dimensions?: readonly string[];
+  }> => {
+    const path = resolve(file);
+    const metadata = await stat(path);
+    if (!metadata.isFile() || metadata.size > 2 * 1024 * 1024)
+      throw new Error(
+        'Evaluation matrix must be a regular file smaller than 2 MiB.',
+      );
+    const value: unknown = JSON.parse(await readFile(path, 'utf8'));
+    if (value === null || typeof value !== 'object' || Array.isArray(value))
+      throw new Error('Evaluation matrix must be a JSON object.');
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (
+      keys.some(
+        (key) =>
+          !['name', 'variants', 'repetitions', 'dimensions'].includes(key),
+      )
+    )
+      throw new Error(
+        'Evaluation matrix contains an unknown field; allowed fields are name, variants, repetitions, and dimensions.',
+      );
+    const name =
+      typeof record.name === 'string' && record.name.trim().length > 0
+        ? record.name.trim()
+        : 'Evaluation matrix';
+    if (name.length > 512 || /[\0\r\n]/u.test(name))
+      throw new Error('Evaluation matrix name is not safe.');
+    if (!Array.isArray(record.variants))
+      throw new Error('Evaluation matrix variants must be an array.');
+    if (
+      record.variants.length < 2 ||
+      record.variants.length > MAX_EVALUATION_MATRIX_VARIANTS
+    )
+      throw new Error(
+        `Evaluation matrix variants must contain between 2 and ${MAX_EVALUATION_MATRIX_VARIANTS} entries.`,
+      );
+    const variants = record.variants.map(parseEvaluationMatrixVariant);
+    if (new Set(variants.map((variant) => variant.id)).size !== variants.length)
+      throw new Error('Evaluation matrix variant IDs must be unique.');
+    const repetitions = record.repetitions ?? 1;
+    if (
+      typeof repetitions !== 'number' ||
+      !Number.isInteger(repetitions) ||
+      repetitions < 1 ||
+      repetitions > MAX_EVALUATION_MATRIX_REPETITIONS ||
+      variants.length * repetitions > MAX_EVALUATION_MATRIX_RUNS
+    )
+      throw new Error(
+        `Evaluation matrix repetitions must produce at most ${MAX_EVALUATION_MATRIX_RUNS} runs and stay between 1 and ${MAX_EVALUATION_MATRIX_REPETITIONS}.`,
+      );
+    let dimensions: readonly string[] | undefined;
+    if (record.dimensions !== undefined) {
+      if (
+        !Array.isArray(record.dimensions) ||
+        record.dimensions.some((item) => typeof item !== 'string')
+      )
+        throw new Error('Evaluation matrix dimensions must be strings.');
+      dimensions = [...new Set(record.dimensions as string[])];
+      if (dimensions.length > 16)
+        throw new Error('Evaluation matrix contains too many dimensions.');
+    }
+    return {
+      name,
+      variants,
+      repetitions,
+      ...(dimensions ? { dimensions } : {}),
+    };
+  };
   const sessionEvents = async (
     session: string,
   ): Promise<readonly unknown[]> => {
@@ -379,6 +468,68 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         throw new Error('Session exceeds the evaluation evidence limit.');
     } while (cursor);
     return events;
+  };
+  const persistEvaluationResult = async (input: {
+    readonly evalCaseId: string;
+    readonly configuration: Record<string, unknown>;
+    readonly result: EvalRunResult;
+  }): Promise<string> => {
+    const runStatus =
+      input.result.success === true
+        ? 'completed'
+        : input.result.success === null
+          ? 'pending_review'
+          : 'failed';
+    const stored = await api<{
+      run: { id: string; metrics?: Record<string, unknown> };
+    }>(`/eval/cases/${encodeURIComponent(input.evalCaseId)}/runs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        configuration: input.configuration,
+        worktreeFingerprintHash: input.result.worktreeFingerprintHash,
+        status: runStatus,
+        ...(input.result.sessionId
+          ? { sourceSessionId: input.result.sessionId }
+          : {}),
+      }),
+    });
+    let metrics: Record<string, unknown> = { ...(stored.run.metrics ?? {}) };
+    if (input.result.events.length > 0) {
+      const captured = await api<{
+        run: { metrics?: Record<string, unknown> };
+      }>(`/eval/runs/${stored.run.id}/events`, {
+        method: 'POST',
+        body: JSON.stringify({ events: input.result.events }),
+      });
+      metrics = { ...metrics, ...(captured.run.metrics ?? {}) };
+    }
+    metrics = {
+      ...metrics,
+      commandCount: input.result.commandResults.length,
+      durationMs: input.result.commandResults.reduce(
+        (total, command) => total + command.durationMs,
+        0,
+      ),
+      jsonRecordCount: input.result.jsonRecordCount,
+      malformedJsonRecordCount: input.result.malformedJsonRecordCount,
+    };
+    await api(`/eval/runs/${stored.run.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: runStatus,
+        outcome: {
+          success: input.result.success,
+          checks: input.result.checks,
+        },
+        metrics,
+      }),
+    });
+    if (input.result.output !== undefined)
+      await uploadBinary(
+        `/eval/runs/${stored.run.id}/output`,
+        Buffer.from(input.result.output, 'utf8'),
+      );
+    return stored.run.id;
   };
   const program = new Command()
     .name('vibetrace')
@@ -620,61 +771,153 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         const result = await (dependencies.runEvaluation ?? runEvaluation)(
           runOptions,
         );
-        if (options.persist) {
-          const runStatus =
-            result.success === true
-              ? 'completed'
-              : result.success === null
-                ? 'pending_review'
-                : 'failed';
-          const stored = await api<{ run: { id: string } }>(
-            `/eval/cases/${manifest.id}/runs`,
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                configuration: {
-                  ...manifest.configuration,
-                  ...(result.execution
-                    ? { effectiveExecution: result.execution }
-                    : {}),
-                },
-                worktreeFingerprintHash: result.worktreeFingerprintHash,
-                status: runStatus,
-              }),
+        if (options.persist)
+          await persistEvaluationResult({
+            evalCaseId: manifest.id,
+            configuration: {
+              ...manifest.configuration,
+              ...(result.execution
+                ? { effectiveExecution: result.execution }
+                : {}),
             },
-          );
-          if (result.events.length > 0)
-            await api(`/eval/runs/${stored.run.id}/events`, {
-              method: 'POST',
-              body: JSON.stringify({ events: result.events }),
-            });
-          await api(`/eval/runs/${stored.run.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({
-              status: runStatus,
-              outcome: {
-                success: result.success,
-                checks: result.checks,
-              },
-              metrics: {
-                commandCount: result.commandResults.length,
-                jsonRecordCount: result.jsonRecordCount,
-                malformedJsonRecordCount: result.malformedJsonRecordCount,
-              },
-            }),
+            result,
           });
-          if (result.output !== undefined)
-            await uploadBinary(
-              `/eval/runs/${stored.run.id}/output`,
-              Buffer.from(result.output, 'utf8'),
-            );
-        }
         output(
           options.json
             ? JSON.stringify(result)
             : `Evaluation ${result.success === true ? 'passed' : result.success === null ? 'needs review' : 'failed'}.`,
         );
         if (result.success === false) setExitCode(1);
+      },
+    );
+  evalCommand
+    .command('matrix <manifest> <matrix>')
+    .description(
+      'Run a bounded prompt/model/skill comparison matrix in isolated worktrees.',
+    )
+    .option('--cwd <path>', 'Active checkout to isolate.', process.cwd())
+    .option(
+      '--codex <path>',
+      'Codex executable path or command used for the runs (advanced).',
+    )
+    .option('--no-persist', 'Do not persist runs or create a comparison.')
+    .option('--json', 'Print stable run summaries as JSON.')
+    .action(
+      async (
+        manifestFile: string,
+        matrixFile: string,
+        options: {
+          cwd: string;
+          codex?: string;
+          persist: boolean;
+          json?: boolean;
+        },
+      ) => {
+        const manifest = await readManifestFile(manifestFile);
+        const matrix = await readMatrixFile(matrixFile);
+        const dimensions = new Set(matrix.dimensions ?? []);
+        for (const variant of matrix.variants) {
+          if (variant.prompt !== undefined) dimensions.add('prompt');
+          if (variant.model !== undefined) dimensions.add('model');
+          if (variant.approvalPolicy !== undefined)
+            dimensions.add('approvalPolicy');
+          if (variant.sandboxPolicy !== undefined)
+            dimensions.add('sandboxPolicy');
+          if (variant.networkPolicy !== undefined)
+            dimensions.add('networkPolicy');
+          if (variant.skills !== undefined) dimensions.add('skillSet');
+        }
+        if (matrix.repetitions > 1) dimensions.add('repetition');
+        const comparison = options.persist
+          ? await api<{ comparison: { id: string } }>('/eval/comparisons', {
+              method: 'POST',
+              body: JSON.stringify({
+                evalCaseId: manifest.id,
+                name: matrix.name,
+                configuration: {
+                  dimensions: [...dimensions],
+                  repetitions: matrix.repetitions,
+                  variants: matrix.variants,
+                },
+              }),
+            })
+          : undefined;
+        const runner = dependencies.runEvaluationMatrix ?? runEvaluationMatrix;
+        const matrixRuns = await runner({
+          manifest,
+          activeCheckout: resolve(options.cwd),
+          variants: matrix.variants,
+          repetitions: matrix.repetitions,
+          ...(manifest.repository.preTaskPatchBlobHash
+            ? {
+                patchResolver: async (blobHash: string) =>
+                  apiBinary(
+                    `/eval/cases/${encodeURIComponent(manifest.id)}/pre-task-patch?blob=${encodeURIComponent(blobHash)}`,
+                  ),
+              }
+            : {}),
+          ...(options.codex ? { codex: { executable: options.codex } } : {}),
+        });
+        const summaries: Array<Record<string, unknown>> = [];
+        for (const matrixRun of matrixRuns) {
+          const result = matrixRun.result;
+          const configuration: Record<string, unknown> = {
+            ...matrixRun.effectiveManifest.configuration,
+            matrixVariantId: matrixRun.variantId,
+            matrixRepetition: matrixRun.repetition,
+            ...(result.execution
+              ? { effectiveExecution: result.execution }
+              : {}),
+          };
+          const runId = options.persist
+            ? await persistEvaluationResult({
+                evalCaseId: manifest.id,
+                configuration,
+                result,
+              })
+            : undefined;
+          if (comparison && runId)
+            await api(`/eval/comparisons/${comparison.comparison.id}/results`, {
+              method: 'POST',
+              body: JSON.stringify({
+                evalRunId: runId,
+                ordinal: summaries.length,
+                result: {
+                  variantId: matrixRun.variantId,
+                  repetition: matrixRun.repetition,
+                  success: result.success,
+                  ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+                  checks: result.checks,
+                },
+              }),
+            });
+          summaries.push({
+            ...(runId ? { runId } : {}),
+            variantId: matrixRun.variantId,
+            repetition: matrixRun.repetition,
+            manifestId: matrixRun.effectiveManifest.id,
+            success: result.success,
+            checks: result.checks,
+            commandCount: result.commandResults.length,
+            durationMs: result.commandResults.reduce(
+              (total, command) => total + command.durationMs,
+              0,
+            ),
+            ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+          });
+        }
+        const response = {
+          ...(comparison ? { comparisonId: comparison.comparison.id } : {}),
+          name: matrix.name,
+          repetitions: matrix.repetitions,
+          runs: summaries,
+        };
+        output(
+          options.json
+            ? JSON.stringify(response)
+            : `${matrix.name}: ${summaries.length} run(s)${comparison ? ` persisted as ${comparison.comparison.id}` : ''}.`,
+        );
+        if (summaries.some((run) => run.success === false)) setExitCode(1);
       },
     );
   evalCommand
