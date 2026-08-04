@@ -47,6 +47,25 @@ budgets for 20,000-event timeline construction, deterministic analysis,
 branches. The 100 MB streaming-blob case has a bounded test timeout and avoids
 constructing a 100 MB input buffer.
 
+To produce native Codex evidence, authenticate the Codex CLI without putting a
+key in arguments, then run the isolated smoke harness. It packs and installs
+the exact local CLI tarball, creates a disposable Git checkout and Codex home,
+executes one read-only Codex session, verifies captured event provenance through
+the authenticated daemon API, and prints only metadata (never prompts or model
+output):
+
+```bash
+printf '%s\n' "$OPENAI_API_KEY" | CODEX_HOME="$TMPDIR/vibetrace-codex-home" codex login --with-api-key
+CODEX_HOME="$TMPDIR/vibetrace-codex-home" \
+  VIBETRACE_NATIVE_SMOKE_OUTPUT="$TMPDIR/vibetrace-native-smoke.json" \
+  pnpm native:smoke
+```
+
+The manual `Native Codex smoke` workflow runs this harness on Ubuntu, macOS,
+and Windows and uploads one metadata-only evidence artifact per runner. It
+requires the repository's `CODEX_OPENAI_API_KEY` secret and is intentionally
+separate from ordinary pull-request CI because it invokes a real model.
+
 The release workflow is complete only after the CI matrix passes and a native
 Codex smoke session has been recorded on macOS, Linux, and Windows. A local
 pass on one operating system is not evidence for the other two.

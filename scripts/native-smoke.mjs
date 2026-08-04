@@ -1,0 +1,379 @@
+import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import {
+  access,
+  chmod,
+  copyFile,
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { delimiter } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repositoryDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
+const cliDirectory = join(repositoryDirectory, 'packages', 'cli');
+const codexBinary = process.env.VIBETRACE_CODEX_BIN ?? 'codex';
+const temporary = await mkdtemp(join(tmpdir(), 'vibetrace-native-smoke-'));
+const packDirectory = join(temporary, 'pack output');
+const installPrefix = join(temporary, 'global install');
+const sourceHome = join(temporary, 'vibetrace-home');
+const codexHome = join(temporary, 'codex-home');
+const checkout = join(temporary, 'checkout');
+const reportPath = process.env.VIBETRACE_NATIVE_SMOKE_OUTPUT
+  ? resolve(process.env.VIBETRACE_NATIVE_SMOKE_OUTPUT)
+  : undefined;
+const storagePassphrase = `native-smoke-${randomBytes(24).toString('hex')}`;
+const keepTemporary = process.env.VIBETRACE_KEEP_NATIVE_SMOKE === '1';
+
+function run(command, args, options = {}) {
+  return new Promise((resolveRun, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repositoryDirectory,
+      env: options.env ?? process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: true,
+    });
+    const stdout = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    const maxOutputBytes = options.maxOutputBytes ?? 8 * 1024 * 1024;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      callback();
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(() => reject(new Error(`${options.label ?? command} timed out.`)));
+    }, options.timeoutMs ?? 180_000);
+    child.stdout.on('data', (chunk) => {
+      const buffer = Buffer.from(chunk);
+      stdoutBytes += buffer.byteLength;
+      if (stdoutBytes <= maxOutputBytes) stdout.push(buffer);
+      else {
+        child.kill();
+        finish(() =>
+          reject(
+            new Error(`${options.label ?? command} exceeded output limit.`),
+          ),
+        );
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes += Buffer.byteLength(chunk);
+      if (stderrBytes > maxOutputBytes) {
+        child.kill();
+        finish(() =>
+          reject(
+            new Error(`${options.label ?? command} exceeded error limit.`),
+          ),
+        );
+      }
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      finish(() =>
+        reject(new Error(`${options.label ?? command}: ${error.message}`)),
+      );
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      finish(() => {
+        if (code !== 0)
+          reject(
+            new Error(
+              `${options.label ?? command} failed (${signal ?? code ?? 'unknown'}).`,
+            ),
+          );
+        else
+          resolveRun({
+            stdout: Buffer.concat(stdout).toString('utf8'),
+            stdoutBytes,
+          });
+      });
+    });
+    child.stdin.end(options.input);
+  });
+}
+
+const windowsNpmCli = join(
+  dirname(process.execPath),
+  'node_modules',
+  'npm',
+  'bin',
+  'npm-cli.js',
+);
+const npm = (args, options = {}) =>
+  process.platform === 'win32'
+    ? run(process.execPath, [windowsNpmCli, ...args], options)
+    : run('npm', args, options);
+
+const git = (args, cwd) =>
+  run('git', ['-C', cwd, ...args], { cwd, label: 'git' });
+
+let installedCli;
+function cliCommand() {
+  if (process.platform !== 'win32') return installedCli;
+  return 'powershell.exe';
+}
+function cliArgs(args) {
+  if (process.platform !== 'win32') return args;
+  return [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    installedCli,
+    ...args,
+  ];
+}
+function cli(args, options = {}) {
+  return run(cliCommand(), cliArgs(args), {
+    ...options,
+    label: options.label ?? `vibetrace ${args.join(' ')}`,
+  });
+}
+
+async function waitForStatus(env, expected) {
+  const deadline = Date.now() + 15_000;
+  do {
+    const result = await cli(['status'], { env });
+    if (result.stdout.trim() === expected) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+  } while (Date.now() < deadline);
+  throw new Error(`VibeTrace daemon did not reach ${expected} state.`);
+}
+
+async function stop(env) {
+  try {
+    await cli(['stop'], { env, timeoutMs: 15_000 });
+    await waitForStatus(env, 'stopped');
+  } catch {
+    // Cleanup is best effort after a failed smoke step.
+  }
+}
+
+async function copyCodexAuth(env) {
+  const authHome = process.env.VIBETRACE_CODEX_AUTH_HOME;
+  if (authHome) {
+    const source = join(resolve(authHome), 'auth.json');
+    const metadata = await lstat(source);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size > 2 * 1024 * 1024
+    )
+      throw new Error(
+        'VIBETRACE_CODEX_AUTH_HOME/auth.json is not a safe bounded file.',
+      );
+    await copyFile(source, join(codexHome, 'auth.json'));
+    if (process.platform !== 'win32')
+      await chmod(join(codexHome, 'auth.json'), 0o600);
+    return 'copied-auth-file';
+  }
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (apiKey) {
+    await run(codexBinary, ['login', '--with-api-key'], {
+      env,
+      input: `${apiKey}\n`,
+      label: 'codex login',
+    });
+    return 'api-key-stdin';
+  }
+  const accessToken = process.env.CODEX_ACCESS_TOKEN;
+  if (accessToken) {
+    await run(codexBinary, ['login', '--with-access-token'], {
+      env,
+      input: `${accessToken}\n`,
+      label: 'codex login',
+    });
+    return 'access-token-stdin';
+  }
+  throw new Error(
+    'Native smoke needs VIBETRACE_CODEX_AUTH_HOME, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN.',
+  );
+}
+
+async function writeReport(report) {
+  const text = `${JSON.stringify(report, null, 2)}\n`;
+  if (reportPath) {
+    await mkdir(dirname(reportPath), { recursive: true, mode: 0o700 });
+    await writeFile(reportPath, text, { encoding: 'utf8', mode: 0o600 });
+  }
+  process.stdout.write(text);
+}
+
+let env;
+let daemonStarted = false;
+try {
+  await access(join(cliDirectory, 'dist', 'index.js'));
+  await mkdir(packDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(codexHome, { recursive: true, mode: 0o700 });
+  await mkdir(checkout, { recursive: true, mode: 0o700 });
+
+  const packResult = await npm(
+    ['pack', '--ignore-scripts', '--json', '--pack-destination', packDirectory],
+    { cwd: cliDirectory, label: 'npm pack' },
+  );
+  const metadata = JSON.parse(packResult.stdout)[0];
+  const tarball = join(packDirectory, metadata.filename);
+  await access(tarball);
+  await npm(['install', '--global', '--prefix', installPrefix, tarball], {
+    timeoutMs: 180_000,
+    label: 'npm install tarball',
+  });
+  const installedPackage =
+    process.platform === 'win32'
+      ? join(installPrefix, 'node_modules', '@vibetrace', 'cli')
+      : join(installPrefix, 'lib', 'node_modules', '@vibetrace', 'cli');
+  await access(join(installedPackage, 'dist', 'index.js'));
+  installedCli =
+    process.platform === 'win32'
+      ? join(installPrefix, 'vibetrace.ps1')
+      : join(installPrefix, 'bin', 'vibetrace');
+  await access(installedCli);
+
+  const pathEntry =
+    process.platform === 'win32' ? installPrefix : join(installPrefix, 'bin');
+  env = {
+    ...process.env,
+    CODEX_HOME: codexHome,
+    VIBETRACE_HOME: sourceHome,
+    PATH: [pathEntry, process.env.PATH ?? ''].filter(Boolean).join(delimiter),
+  };
+  const authMode = await copyCodexAuth(env);
+  const codexVersion = (
+    await run(codexBinary, ['--version'], { env, label: 'codex --version' })
+  ).stdout
+    .trim()
+    .split(/\r?\n/, 1)[0]
+    ?.slice(0, 128);
+
+  await git(['init', '-q'], checkout);
+  await git(['config', 'user.email', 'native-smoke@example.invalid'], checkout);
+  await git(['config', 'user.name', 'VibeTrace Native Smoke'], checkout);
+  await writeFile(join(checkout, 'README.md'), 'Native smoke fixture.\n');
+  await git(['add', 'README.md'], checkout);
+  await git(['commit', '-qm', 'native smoke baseline'], checkout);
+
+  await cli(['init', 'codex', '--dry-run'], { env });
+  await cli(['init', 'codex'], { env });
+
+  const prompt =
+    'Inspect README.md in this repository and respond with exactly SMOKE_OK. Do not modify files and do not use the network.';
+  const codexArgs = [
+    'exec',
+    '--ephemeral',
+    '--ignore-user-config',
+    '--ignore-rules',
+    '--sandbox',
+    'read-only',
+    '--ask-for-approval',
+    'never',
+    '--dangerously-bypass-hook-trust',
+    '--json',
+    '-C',
+    checkout,
+  ];
+  const model = process.env.VIBETRACE_CODEX_MODEL;
+  if (model) codexArgs.push('--model', model);
+  codexArgs.push(prompt);
+  const codexRun = await run(codexBinary, codexArgs, {
+    env,
+    timeoutMs: Number(process.env.VIBETRACE_NATIVE_SMOKE_TIMEOUT_MS ?? 300_000),
+    maxOutputBytes: 16 * 1024 * 1024,
+    label: 'codex native session',
+  });
+  const codexEventTypes = new Set();
+  for (const line of codexRun.stdout.split(/\r?\n/)) {
+    try {
+      const value = JSON.parse(line);
+      if (value && typeof value.type === 'string')
+        codexEventTypes.add(value.type);
+    } catch {
+      // Codex may emit human-readable diagnostics alongside JSONL.
+    }
+  }
+
+  await cli(['start', '--storage-passphrase-stdin'], {
+    env,
+    input: `${storagePassphrase}\n`,
+  });
+  daemonStarted = true;
+  await waitForStatus(env, 'running');
+  const list = JSON.parse(
+    (await cli(['sessions', 'list', '--json'], { env })).stdout,
+  );
+  const session = list.sessions?.find(
+    (candidate) =>
+      candidate.source === 'codex-hooks' && candidate.eventCount > 0,
+  );
+  if (!session)
+    throw new Error('Native Codex run did not produce a captured session.');
+
+  const descriptor = JSON.parse(
+    await readFile(join(sourceHome, 'daemon.json'), 'utf8'),
+  );
+  const token = (await readFile(join(sourceHome, 'auth-token'), 'utf8')).trim();
+  const eventsResponse = await fetch(
+    `${descriptor.origin}/api/v1/sessions/${encodeURIComponent(session.id)}/events?limit=2000`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  if (!eventsResponse.ok) throw new Error('Native smoke event query failed.');
+  const eventsBody = await eventsResponse.json();
+  const events = Array.isArray(eventsBody.events) ? eventsBody.events : [];
+  const adapters = new Set(
+    events
+      .map((item) => item?.event?.provenance?.adapter)
+      .filter((value) => typeof value === 'string'),
+  );
+  const sourceVersions = new Set(
+    events
+      .map((item) => item?.event?.provenance?.sourceVersion)
+      .filter((value) => typeof value === 'string'),
+  );
+  if (!adapters.has('codex-hooks') || sourceVersions.size === 0)
+    throw new Error('Native smoke events are missing Codex provenance.');
+
+  await writeReport({
+    schemaVersion: 1,
+    status: 'passed',
+    platform: process.platform,
+    architecture: process.arch,
+    nodeVersion: process.version,
+    codexVersion,
+    authMode,
+    sessionId: session.id,
+    eventCount: events.length,
+    eventTypes: [
+      ...new Set(events.map((item) => item?.event?.type).filter(Boolean)),
+    ].sort(),
+    codexOutputEventTypes: [...codexEventTypes].sort(),
+    adapters: [...adapters].sort(),
+    sourceVersions: [...sourceVersions].sort(),
+  });
+} catch (error) {
+  const message = error instanceof Error ? error.message : 'unknown error';
+  await writeReport({
+    schemaVersion: 1,
+    status: 'failed',
+    platform: process.platform,
+    architecture: process.arch,
+    nodeVersion: process.version,
+    error: message,
+  });
+  process.exitCode = 1;
+} finally {
+  if (daemonStarted && env) await stop(env);
+  if (!keepTemporary) await rm(temporary, { force: true, recursive: true });
+}

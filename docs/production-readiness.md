@@ -64,4 +64,7 @@ homes, daemon authentication and lifecycle, dashboard serving, encrypted
 export/import, a real clean-worktree eval run with effective policy assertions,
 and ownership-safe Codex hook uninstall. The remaining checklist items require
 fresh artifacts from the configured Ubuntu, macOS, and Windows CI runners and
-native Codex installations before publishing a release.
+native Codex installations before publishing a release. The manual
+`.github/workflows/native-smoke.yml` workflow runs
+`scripts/native-smoke.mjs`, which emits metadata-only provenance evidence and
+uploads one artifact per native runner.

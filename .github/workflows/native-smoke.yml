@@ -1,0 +1,52 @@
+name: Native Codex smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      codex_model:
+        description: Optional Codex model override for the smoke prompt
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-smoke:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 24
+          - os: macos-14
+            node: 24
+          - os: windows-latest
+            node: 24
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: npm install --global @openai/codex@0.144.3
+      - run: pnpm build
+      - name: Run native smoke
+        run: pnpm native:smoke
+        env:
+          OPENAI_API_KEY: ${{ secrets.CODEX_OPENAI_API_KEY }}
+          VIBETRACE_CODEX_MODEL: ${{ inputs.codex_model }}
+          VIBETRACE_NATIVE_SMOKE_OUTPUT: ${{ runner.temp }}/vibetrace-native-smoke.json
+      - name: Upload native smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-smoke-${{ matrix.os }}-node-${{ matrix.node }}
+          path: ${{ runner.temp }}/vibetrace-native-smoke.json
+          if-no-files-found: error
