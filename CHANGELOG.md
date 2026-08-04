@@ -12,4 +12,6 @@
   capture gaps.
 - Captured evaluation JSONL into canonical encrypted sessions and exposed
   side-by-side comparison run metadata and first divergence.
+- Added generated/runtime-loaded Codex app-server contract artifacts, native
+  hooks-plus-app-server smoke evidence, and packed AI contract verification.
 - Added public trace examples, adapter RFC, and the production-readiness index.
