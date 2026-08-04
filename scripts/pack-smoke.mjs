@@ -98,7 +98,11 @@ const cli = (args, options = {}) =>
     : run(installedCli, args, options);
 
 async function waitForStatus(env, expected) {
-  const deadline = Date.now() + 10_000;
+  // A freshly installed native runtime may need several seconds to load its
+  // SQLCipher/keyring bindings on a cold machine (especially Node 22/24 on
+  // macOS and Windows). Keep polling long enough to distinguish cold start
+  // latency from a genuinely failed daemon without weakening the smoke gate.
+  const deadline = Date.now() + 30_000;
   do {
     const result = await cli(['status'], { env });
     if (result.stdout.trim() === expected) return;
