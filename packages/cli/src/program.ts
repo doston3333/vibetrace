@@ -164,6 +164,7 @@ function safeApprovalText(value: unknown): string {
 
 function approvalRequestDetails(request: AppServerRpcMessage): {
   readonly command: string;
+  readonly path: string;
   readonly reason: string;
 } {
   const params = request.params ?? {};
@@ -179,8 +180,12 @@ function approvalRequestDetails(request: AppServerRpcMessage): {
   const reason = [params.reason, item.reason].find(
     (value): value is string => typeof value === 'string' && value.length > 0,
   );
+  const path = [params.path, item.path].find(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
   return {
     command: safeApprovalText(command) || 'Not provided',
+    path: safeApprovalText(path) || 'Not provided',
     reason: safeApprovalText(reason) || 'Not provided',
   };
 }
@@ -222,7 +227,7 @@ function approvalHandlerForPolicy(
     approval: async (request) => {
       const details = approvalRequestDetails(request);
       const answer = await prompt.question(
-        `\nCodex requests approval.\nCommand: ${details.command}\nReason: ${details.reason}\nAllow this request? [y/N] `,
+        `\nCodex requests approval.\nCommand: ${details.command}\nFile: ${details.path}\nReason: ${details.reason}\nAllow this request? [y/N] `,
       );
       return /^y(?:es)?$/iu.test(answer.trim())
         ? { decision: 'allow', reason: 'cli-prompt-confirmed' }

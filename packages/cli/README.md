@@ -14,8 +14,8 @@ vibetrace open
 
 For opt-in full-fidelity Codex Lab capture, use `--approval-policy prompt` to
 review each server approval request. The prompt policy shows bounded,
-control-character-sanitized command context and defaults to denial when no
-interactive terminal is available. Existing threads can be resumed or forked:
+control-character-sanitized command and file scope, and defaults to denial when
+no interactive terminal is available. Existing threads can be resumed or forked:
 
 ```bash
 vibetrace codex app-server --prompt "Inspect the repository" --approval-policy prompt
