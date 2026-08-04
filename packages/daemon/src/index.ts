@@ -79,12 +79,14 @@ export { restrictDirectoryToCurrentUser } from '@vibetrace/storage';
 
 export {
   SpoolSegmentSchema,
+  DEFAULT_SPOOL_RETENTION_POLICY,
   ensureSpool,
   hardenSpool,
   inspectSpool,
   spoolPaths,
   writeSegment,
   type SpoolHealth,
+  type SpoolPressureState,
   type SpoolRetentionPolicy,
   type SpoolPaths,
   type SpoolSegment,

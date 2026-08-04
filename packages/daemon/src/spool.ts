@@ -33,20 +33,24 @@ const MAX_SEGMENT_BYTES = 128 * 1024 * 1024;
 const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
 const MAX_INCOMING_BYTES = 512 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
+const MAX_QUARANTINE_BYTES = 256 * 1024 * 1024;
 const MAX_TOTAL_SPOOL_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_HEALTH_ENTRIES = 100_000;
 const TEMP_GRACE_MS = 60_000;
+const CAPACITY_LOCK_GRACE_MS = 15 * 60_000;
 
 /** Retention bounds for plaintext spool staging and post-commit archives. */
 export interface SpoolRetentionPolicy {
   readonly maxIncomingBytes: number;
   readonly maxArchiveBytes: number;
+  readonly maxQuarantineBytes: number;
   readonly maxTotalBytes: number;
 }
 
 export const DEFAULT_SPOOL_RETENTION_POLICY: SpoolRetentionPolicy = {
   maxIncomingBytes: MAX_INCOMING_BYTES,
   maxArchiveBytes: MAX_ARCHIVE_BYTES,
+  maxQuarantineBytes: MAX_QUARANTINE_BYTES,
   maxTotalBytes: MAX_TOTAL_SPOOL_BYTES,
 };
 
@@ -63,6 +67,33 @@ export interface SpoolHealth {
   readonly quarantineFiles: number;
   readonly reasons: readonly string[];
 }
+
+interface SpoolUsage {
+  readonly incomingBytes: number;
+  readonly archiveBytes: number;
+  readonly quarantineBytes: number;
+}
+
+interface SpoolUsageDelta {
+  readonly incomingBytes?: number;
+  readonly archiveBytes?: number;
+  readonly quarantineBytes?: number;
+}
+
+interface ReservationOutcome<T> {
+  readonly result: T;
+  readonly delta?: SpoolUsageDelta;
+  readonly reconcile?: boolean;
+}
+
+const spoolUsageSchema = z
+  .object({
+    version: z.literal(1),
+    incomingBytes: z.number().int().nonnegative(),
+    archiveBytes: z.number().int().nonnegative(),
+    quarantineBytes: z.number().int().nonnegative(),
+  })
+  .strict();
 
 const projectSchema = z
   .object({
@@ -260,6 +291,8 @@ function retentionPolicy(
     throw new Error('Incoming spool limit cannot exceed total spool limit.');
   if (values.maxArchiveBytes > values.maxTotalBytes)
     throw new Error('Archive spool limit cannot exceed total spool limit.');
+  if (values.maxQuarantineBytes > values.maxTotalBytes)
+    throw new Error('Quarantine spool limit cannot exceed total spool limit.');
   return values;
 }
 
@@ -284,6 +317,94 @@ async function directoryUsage(path: string): Promise<{
   return { bytes, files, truncated };
 }
 
+function usagePath(paths: SpoolPaths): string {
+  return join(paths.root, '.usage.json');
+}
+
+async function scanSpoolUsage(paths: SpoolPaths): Promise<SpoolUsage> {
+  const [incoming, archive, quarantine] = await Promise.all([
+    directoryUsage(paths.incoming),
+    directoryUsage(paths.archive),
+    directoryUsage(paths.quarantine),
+  ]);
+  return {
+    incomingBytes: incoming.bytes,
+    archiveBytes: archive.bytes,
+    quarantineBytes: quarantine.bytes,
+  };
+}
+
+async function writeUsageLedger(
+  paths: SpoolPaths,
+  usage: SpoolUsage,
+): Promise<void> {
+  const temporary = join(paths.root, `.usage.${randomUUID()}.tmp`);
+  const contents = `${JSON.stringify({ version: 1, ...usage })}\n`;
+  try {
+    const handle = await open(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(contents, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, usagePath(paths));
+    await syncDirectory(paths.root);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+
+async function readUsageLedger(paths: SpoolPaths): Promise<SpoolUsage> {
+  try {
+    const path = usagePath(paths);
+    const metadata = await lstat(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 4096)
+      throw new Error('Invalid spool usage ledger.');
+    const parsed = spoolUsageSchema.parse(
+      JSON.parse(await readFile(path, 'utf8')),
+    );
+    return parsed;
+  } catch {
+    const usage = await scanSpoolUsage(paths);
+    await writeUsageLedger(paths, usage);
+    return usage;
+  }
+}
+
+function totalUsage(usage: SpoolUsage): number {
+  return usage.incomingBytes + usage.archiveBytes + usage.quarantineBytes;
+}
+
+function applyUsageDelta(
+  usage: SpoolUsage,
+  delta: SpoolUsageDelta,
+): SpoolUsage {
+  return {
+    incomingBytes: Math.max(
+      0,
+      usage.incomingBytes + (delta.incomingBytes ?? 0),
+    ),
+    archiveBytes: Math.max(0, usage.archiveBytes + (delta.archiveBytes ?? 0)),
+    quarantineBytes: Math.max(
+      0,
+      usage.quarantineBytes + (delta.quarantineBytes ?? 0),
+    ),
+  };
+}
+
+function subtractUsageDelta(
+  left: SpoolUsageDelta,
+  right: SpoolUsageDelta,
+): SpoolUsageDelta {
+  return {
+    incomingBytes: (left.incomingBytes ?? 0) - (right.incomingBytes ?? 0),
+    archiveBytes: (left.archiveBytes ?? 0) - (right.archiveBytes ?? 0),
+    quarantineBytes: (left.quarantineBytes ?? 0) - (right.quarantineBytes ?? 0),
+  };
+}
+
 /** Report bounded spool usage for health checks and operator tooling. */
 export async function inspectSpool(
   paths: SpoolPaths,
@@ -301,6 +422,8 @@ export async function inspectSpool(
   if (incoming.bytes >= policy.maxIncomingBytes)
     reasons.push('incoming-capacity');
   if (archive.bytes > policy.maxArchiveBytes) reasons.push('archive-retention');
+  if (quarantine.bytes > policy.maxQuarantineBytes)
+    reasons.push('quarantine-retention');
   if (totalBytes >= policy.maxTotalBytes) reasons.push('total-capacity');
   if (incoming.truncated || archive.truncated || quarantine.truncated)
     reasons.push('entry-count-bound');
@@ -308,9 +431,11 @@ export async function inspectSpool(
   const state: SpoolPressureState =
     reasons.includes('total-capacity') || reasons.includes('incoming-capacity')
       ? 'blocked'
-      : reasons.length > 0 || totalBytes >= warningBytes
-        ? 'warning'
-        : 'ok';
+      : reasons.includes('quarantine-retention')
+        ? 'blocked'
+        : reasons.length > 0 || totalBytes >= warningBytes
+          ? 'warning'
+          : 'ok';
   return {
     state,
     incomingBytes: incoming.bytes,
@@ -324,19 +449,88 @@ export async function inspectSpool(
   };
 }
 
-async function assertIncomingCapacity(
-  paths: SpoolPaths,
+async function assertSpoolCapacity(
+  usage: SpoolUsage,
   additionalBytes: number,
   override?: Partial<SpoolRetentionPolicy>,
 ): Promise<void> {
   const policy = retentionPolicy(override);
-  const usage = await directoryUsage(paths.incoming);
-  if (usage.bytes + additionalBytes <= policy.maxIncomingBytes) return;
+  if (
+    usage.incomingBytes + additionalBytes <= policy.maxIncomingBytes &&
+    (additionalBytes === 0 ||
+      usage.quarantineBytes <= policy.maxQuarantineBytes) &&
+    totalUsage(usage) + additionalBytes <= policy.maxTotalBytes
+  )
+    return;
   const error = new Error(
-    'Spool incoming capacity is exhausted; the daemon must import pending events before capture resumes.',
+    'Spool capacity is exhausted; the daemon must import or prune pending events before capture resumes.',
   );
   Object.assign(error, { code: 'SPOOL_CAPACITY_EXCEEDED' });
   throw error;
+}
+
+async function withCapacityReservation<T>(
+  paths: SpoolPaths,
+  additionalBytes: number,
+  override: Partial<SpoolRetentionPolicy> | undefined,
+  operation: () => Promise<ReservationOutcome<T>>,
+): Promise<T> {
+  const lockPath = join(paths.root, '.capacity.lock');
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      handle = await open(lockPath, 'wx', 0o600);
+      await handle.writeFile(`${process.pid}\n`, 'utf8');
+      await handle.sync();
+      break;
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      handle = undefined;
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const metadata = await lstat(lockPath).catch(() => undefined);
+      if (metadata && Date.now() - metadata.mtimeMs > CAPACITY_LOCK_GRACE_MS) {
+        await rm(lockPath, { force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+  if (!handle) {
+    const error = new Error('Spool capacity reservation is busy.');
+    Object.assign(error, { code: 'SPOOL_CAPACITY_BUSY' });
+    throw error;
+  }
+  try {
+    const usage = await readUsageLedger(paths);
+    await assertSpoolCapacity(usage, additionalBytes, override);
+    const reservation = { incomingBytes: additionalBytes };
+    await writeUsageLedger(paths, applyUsageDelta(usage, reservation));
+    try {
+      const outcome = await operation();
+      const nextUsage = outcome.reconcile
+        ? await scanSpoolUsage(paths)
+        : applyUsageDelta(
+            applyUsageDelta(usage, reservation),
+            subtractUsageDelta(outcome.delta ?? {}, reservation),
+          );
+      await writeUsageLedger(paths, nextUsage);
+      return outcome.result;
+    } catch (error) {
+      await writeUsageLedger(paths, usage).catch(() => undefined);
+      throw error;
+    }
+  } finally {
+    await handle.close().catch(() => undefined);
+    await rm(lockPath, { force: true });
+    await syncDirectory(paths.root);
+  }
+}
+
+async function reconcileUsageLedger(paths: SpoolPaths): Promise<void> {
+  await withCapacityReservation(paths, 0, undefined, async () => ({
+    result: undefined,
+    reconcile: true,
+  }));
 }
 
 async function pruneArchive(
@@ -364,6 +558,63 @@ async function pruneArchive(
     total -= candidate.size;
   }
   await syncDirectory(paths.archive);
+}
+
+async function pruneQuarantine(
+  paths: SpoolPaths,
+  override?: Partial<SpoolRetentionPolicy>,
+): Promise<void> {
+  const policy = retentionPolicy(override);
+  const entries = await readdir(paths.quarantine);
+  const entrySet = new Set(entries);
+  const candidates: {
+    path: string;
+    sidecar?: string;
+    size: number;
+    mtimeMs: number;
+  }[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.quarantine') && !entry.endsWith('.reason')) continue;
+    if (
+      entry.endsWith('.reason') &&
+      entrySet.has(entry.slice(0, -'.reason'.length))
+    )
+      continue;
+    const path = join(paths.quarantine, entry);
+    const metadata = await lstat(path).catch(() => undefined);
+    if (!metadata?.isFile() || metadata.isSymbolicLink()) continue;
+    if (entry.endsWith('.reason')) {
+      candidates.push({ path, size: metadata.size, mtimeMs: metadata.mtimeMs });
+      continue;
+    }
+    const sidecar = `${path}.reason`;
+    const sidecarMetadata = await lstat(sidecar).catch(() => undefined);
+    candidates.push({
+      path,
+      ...(sidecarMetadata?.isFile() && !sidecarMetadata.isSymbolicLink()
+        ? { sidecar }
+        : {}),
+      size:
+        metadata.size +
+        (sidecarMetadata?.isFile() && !sidecarMetadata.isSymbolicLink()
+          ? sidecarMetadata.size
+          : 0),
+      mtimeMs: metadata.mtimeMs,
+    });
+  }
+  let total = candidates.reduce((sum, candidate) => sum + candidate.size, 0);
+  if (total <= policy.maxQuarantineBytes) return;
+  candidates.sort(
+    (left, right) =>
+      left.mtimeMs - right.mtimeMs || left.path.localeCompare(right.path),
+  );
+  for (const candidate of candidates) {
+    if (total <= policy.maxQuarantineBytes) break;
+    await rm(candidate.path, { force: true });
+    if (candidate.sidecar) await rm(candidate.sidecar, { force: true });
+    total -= candidate.size;
+  }
+  await syncDirectory(paths.quarantine);
 }
 
 /** Build state-scoped spool locations. */
@@ -429,26 +680,32 @@ export async function writeSegment(
   if (contentBytes > MAX_SEGMENT_BYTES)
     throw new Error('Spool segment exceeds the 128 MiB size limit.');
   await ensureSpool(paths);
-  await assertIncomingCapacity(paths, contentBytes, faults.retention);
-  const name = `${randomUUID()}.jsonl`;
-  const target = join(paths.incoming, name);
-  const temporary = join(paths.incoming, `.${name}.${randomUUID()}.tmp`);
-  try {
-    const handle = await open(temporary, 'wx', 0o600);
-    try {
-      await handle.writeFile(contents, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await faults.beforeRename?.(temporary);
-    await rename(temporary, target);
-    await syncDirectory(paths.incoming);
-    return target;
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
+  return withCapacityReservation(
+    paths,
+    contentBytes,
+    faults.retention,
+    async () => {
+      const name = `${randomUUID()}.jsonl`;
+      const target = join(paths.incoming, name);
+      const temporary = join(paths.incoming, `.${name}.${randomUUID()}.tmp`);
+      try {
+        const handle = await open(temporary, 'wx', 0o600);
+        try {
+          await handle.writeFile(contents, 'utf8');
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await faults.beforeRename?.(temporary);
+        await rename(temporary, target);
+        await syncDirectory(paths.incoming);
+        return { result: target, delta: { incomingBytes: contentBytes } };
+      } catch (error) {
+        await rm(temporary, { force: true });
+        throw error;
+      }
+    },
+  );
 }
 
 function imported(segment: SpoolSegment): ImportedEventInput {
@@ -483,18 +740,29 @@ async function quarantine(
   paths: SpoolPaths,
   file: string,
   reason: string,
+  override?: Partial<SpoolRetentionPolicy>,
 ): Promise<void> {
   const target = join(paths.quarantine, `${file}.${randomUUID()}.quarantine`);
-  try {
-    await rename(join(paths.incoming, file), target);
-  } catch {
-    return;
-  }
-  await writeFile(`${target}.reason`, `${reason}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
+  const source = join(paths.incoming, file);
+  const metadata = await lstat(source).catch(() => undefined);
+  if (!metadata?.isFile() || metadata.isSymbolicLink()) return;
+  await withCapacityReservation(paths, 0, override, async () => {
+    await rename(source, target);
+    const reasonPath = `${target}.reason`;
+    await writeFile(reasonPath, `${reason}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await syncDirectory(paths.quarantine);
+    const reasonMetadata = await lstat(reasonPath);
+    return {
+      result: undefined,
+      delta: {
+        incomingBytes: -metadata.size,
+        quarantineBytes: metadata.size + reasonMetadata.size,
+      },
+    };
   });
-  await syncDirectory(paths.quarantine);
 }
 
 /** Import every sealed segment present at call time, quarantining unsafe input individually. */
@@ -524,7 +792,7 @@ export async function importSegments(
       );
       const grace = options.temporaryGraceMs ?? TEMP_GRACE_MS;
       if (metadata && (options.now ?? Date.now)() - metadata.mtimeMs > grace) {
-        await quarantine(paths, entry, 'STALE_TEMPORARY');
+        await quarantine(paths, entry, 'STALE_TEMPORARY', options.retention);
         quarantined += 1;
       }
       continue;
@@ -561,7 +829,7 @@ export async function importSegments(
         throw new Error();
       }
     } catch {
-      await quarantine(paths, entry, reason);
+      await quarantine(paths, entry, reason, options.retention);
       quarantined += 1;
       continue;
     }
@@ -593,13 +861,23 @@ export async function importSegments(
       await options.afterArtifactBeforeArchive?.(path);
       await options.afterCommitBeforeArchive?.(path);
       const archived = join(paths.archive, entry);
-      await rename(path, archived);
-      await syncDirectory(paths.archive);
+      const sourceMetadata = await lstat(path);
+      await withCapacityReservation(paths, 0, options.retention, async () => {
+        await rename(path, archived);
+        await syncDirectory(paths.archive);
+        return {
+          result: undefined,
+          delta: {
+            incomingBytes: -sourceMetadata.size,
+            archiveBytes: sourceMetadata.size,
+          },
+        };
+      });
       importedCount += 1;
       options.onCommittedSession?.(input.event.sessionId);
     } catch (error) {
       if (error instanceof StorageImportConflictError) {
-        await quarantine(paths, entry, 'IMPORT_CONFLICT');
+        await quarantine(paths, entry, 'IMPORT_CONFLICT', options.retention);
         quarantined += 1;
         continue;
       }
@@ -607,7 +885,9 @@ export async function importSegments(
       throw error;
     }
   }
+  await pruneQuarantine(paths, options.retention);
   await pruneArchive(paths, options.retention);
+  await reconcileUsageLedger(paths);
   return {
     imported: importedCount,
     quarantined,
@@ -620,6 +900,7 @@ export const spoolLimits = {
   maxImportBytes: MAX_IMPORT_BYTES,
   maxIncomingBytes: MAX_INCOMING_BYTES,
   maxArchiveBytes: MAX_ARCHIVE_BYTES,
+  maxQuarantineBytes: MAX_QUARANTINE_BYTES,
   maxTotalBytes: MAX_TOTAL_SPOOL_BYTES,
   temporaryGraceMs: TEMP_GRACE_MS,
 } as const;

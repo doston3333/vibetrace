@@ -17,11 +17,13 @@ secret detector. Minimal, standard, and full profiles are enforced at the
 source boundary, including the immutable raw payload; unknown fields remain
 available only after sensitive values are replaced or omitted. The spool
 importer also caps one import pass at 512 MiB so a backlog cannot force an
-unbounded memory read. Incoming capture applies a 512 MiB backpressure cap;
+unbounded memory read. Incoming capture uses an atomic cross-process capacity
+reservation with a 512 MiB backpressure cap and a 2 GiB total spool bound;
 after a database commit, archived plaintext segments are pruned to a 1 GiB
-retention bound while encrypted storage remains the evidence authority. The
-authenticated health endpoint reports `ok`, `warning`, or `blocked` spool
-pressure and the reason an operator must act.
+retention bound and malformed quarantine data to 256 MiB while encrypted
+storage remains the evidence authority. The authenticated health endpoint
+reports `ok`, `warning`, or `blocked` spool pressure and the reason an
+operator must act.
 
 The supported hook baseline is Codex 0.144.3. Its generated hook schemas do not include the later documented `SessionEnd` event, so VibeTrace installs the forward-compatible handler but also performs bounded transcript enrichment from `Stop`. Missing, unsafe, oversized, malformed, mismatched, or unsupported rollout data becomes an explicit capture gap. Only exposed assistant `output_text` rows from the recognized rollout-v1 shape are normalized; encrypted reasoning records are not canonicalized.
 

@@ -397,6 +397,55 @@ describe('sealed spool', () => {
     storage.close();
   });
 
+  it('serializes concurrent capacity reservations instead of racing past the bound', async () => {
+    const { path, storage } = await state();
+    const spool = spoolPaths(path);
+    const contentBytes = Buffer.byteLength(`${JSON.stringify(segment())}\n`);
+    const retention = {
+      maxIncomingBytes: contentBytes * 2,
+      maxArchiveBytes: contentBytes * 2,
+      maxQuarantineBytes: contentBytes * 2,
+      maxTotalBytes: contentBytes * 2,
+    };
+    const results = await Promise.allSettled(
+      [1, 2, 3].map((sequence) =>
+        writeSegment(spool, segment(sequence), { retention }),
+      ),
+    );
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(2);
+    expect(
+      results.filter(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      )[0]?.reason,
+    ).toMatchObject({ code: 'SPOOL_CAPACITY_EXCEEDED' });
+    storage.close();
+  });
+
+  it('bounds quarantine payloads and reason sidecars after malformed input', async () => {
+    const { path, storage } = await state();
+    const spool = spoolPaths(path);
+    await ensureSpool(spool);
+    await writeFile(join(spool.incoming, 'bad-one.jsonl'), '{not-json}\n', {
+      mode: 0o600,
+    });
+    await writeFile(join(spool.incoming, 'bad-two.jsonl'), '{still-bad}\n', {
+      mode: 0o600,
+    });
+    await expect(
+      importSpool(storage, path, { retention: { maxQuarantineBytes: 1 } }),
+    ).resolves.toMatchObject({ quarantined: 2 });
+    expect(
+      (await readdir(spool.quarantine)).filter(
+        (name) => name.endsWith('.quarantine') || name.endsWith('.reason'),
+      ),
+    ).toHaveLength(0);
+    expect((await inspectSpool(spool)).quarantineBytes).toBe(0);
+    storage.close();
+  });
+
   it('cleans temporary files when the writer fails before rename', async () => {
     const { path, storage } = await state();
     const spool = spoolPaths(path);
