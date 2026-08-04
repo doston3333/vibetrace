@@ -2,7 +2,7 @@
 
 VibeTrace is a local-first, open-source forensic debugger and evaluation lab for AI coding sessions.
 
-The production foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, Codex lifecycle-hook and app-server capture, generic JSONL and opt-in OpenTelemetry adapters, a responsive forensic dashboard, evidence-linked deterministic and optional tool-free AI findings, annotations, isolated evaluation runs, deterministic comparison summaries, and previewed scrubbed bundles encrypted with standard age passphrase encryption.
+The production foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, Codex lifecycle-hook and app-server capture, a named Claude Code adapter, generic JSONL and opt-in OpenTelemetry adapters, a responsive forensic dashboard, evidence-linked deterministic and optional tool-free AI findings, annotations, isolated evaluation runs, deterministic comparison summaries, and previewed scrubbed bundles encrypted with standard age passphrase encryption.
 
 ## Documentation
 
