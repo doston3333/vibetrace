@@ -15,6 +15,8 @@ Run the full local verification suite:
 pnpm install --frozen-lockfile
 pnpm lint
 pnpm format:check
+pnpm schema:check
+pnpm release:config-check
 pnpm typecheck
 pnpm test
 pnpm build
