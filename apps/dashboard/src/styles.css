@@ -660,6 +660,109 @@ textarea::placeholder {
   padding-top: var(--space-lg);
 }
 
+.comparison-evidence {
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: var(--space-lg);
+  padding-top: var(--space-lg);
+}
+
+.comparison-evidence-heading {
+  align-items: start;
+  display: flex;
+  gap: var(--space-lg);
+  justify-content: space-between;
+}
+
+.comparison-evidence-heading p {
+  margin-top: var(--space-sm);
+}
+
+.comparison-run-selectors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.comparison-run-selectors label {
+  min-width: 10rem;
+}
+
+.comparison-evidence-grid {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.comparison-evidence-column {
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: var(--space-md);
+}
+
+.comparison-evidence-column > header {
+  align-items: center;
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: space-between;
+}
+
+.comparison-evidence-column > header strong,
+.comparison-evidence-column > header span {
+  font-family: var(--font-data);
+  font-size: 0.72rem;
+}
+
+.comparison-evidence-column > header a {
+  color: var(--blue-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.comparison-evidence-list {
+  display: grid;
+  gap: 1px;
+  list-style: none;
+  margin: 0;
+  max-height: 30rem;
+  overflow: auto;
+  padding: 0;
+}
+
+.comparison-evidence-list li {
+  background: var(--paper-bright);
+  display: grid;
+  gap: 0.2rem 0.5rem;
+  grid-template-columns: 2.2rem minmax(0, 1fr);
+  padding: 0.5rem;
+}
+
+.comparison-evidence-list li > span {
+  color: var(--ink-soft);
+  font-family: var(--font-data);
+  font-size: 0.68rem;
+  grid-row: span 2;
+}
+
+.comparison-evidence-list li > strong {
+  font-family: var(--font-data);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.comparison-evidence-list li > p {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.comparison-evidence-list li.is-divergence {
+  background: var(--amber-pale);
+  box-shadow: inset 0.2rem 0 var(--amber);
+}
+
 .comparison-results dl {
   display: grid;
   gap: var(--space-md);
@@ -1858,6 +1961,10 @@ textarea::placeholder {
 
   .diff-history em {
     grid-column: auto;
+  }
+
+  .comparison-evidence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

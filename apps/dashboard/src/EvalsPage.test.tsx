@@ -54,6 +54,7 @@ vi.mock('./api.js', () => ({
         {
           id: 'run-1',
           evalCaseId: 'case-1',
+          sourceSessionId: 'session-left',
           status: 'completed',
           configuration: {},
           createdAt: '2026-01-01T00:00:00.000Z',
@@ -66,20 +67,54 @@ vi.mock('./api.js', () => ({
             estimatedCostMicros: 7,
           },
         },
+        {
+          id: 'run-2',
+          evalCaseId: 'case-1',
+          sourceSessionId: 'session-right',
+          status: 'failed',
+          configuration: { model: 'fixture-right' },
+          createdAt: '2026-01-01T00:00:00.000Z',
+          outcome: { success: false },
+          metrics: { durationMs: 50 },
+        },
       ],
       results: [],
       summary: {
-        runCount: 1,
+        runCount: 2,
         passedCount: 1,
-        failedCount: 0,
+        failedCount: 1,
         pendingCount: 0,
-        successRate: 1,
+        successRate: 0.5,
         durationMs: { median: 42, p95: 42 },
         toolCount: { median: null, p95: null },
         diffFileCount: { median: null, p95: null },
         tokenCount: { median: null, p95: null },
         estimatedCostMicros: { median: null, p95: null },
+        firstDivergence: {
+          index: 0,
+          reason: 'Different command result',
+          leftEventId: 'event-left',
+          rightEventId: 'event-right',
+        },
       },
+    }),
+    events: async (sessionId: string) => ({
+      events: [
+        {
+          id: sessionId === 'session-left' ? 'event-left' : 'event-right',
+          rawEventId: 'raw-event',
+          sessionId,
+          sequence: 0,
+          timestamp: '2026-01-01T00:00:00.000Z',
+          type: 'command.completed',
+          event: {
+            payload: {
+              command: sessionId === 'session-left' ? 'pnpm test' : 'pnpm lint',
+            },
+            type: 'command.completed',
+          },
+        },
+      ],
     }),
   },
 }));
@@ -102,5 +137,9 @@ describe('evaluation lab', () => {
     expect(await screen.findByText('Run matrix')).toBeTruthy();
     expect(await screen.findByText(/Tools 3/)).toBeTruthy();
     expect(await screen.findByText(/Tokens 120/)).toBeTruthy();
+    expect(await screen.findByText('Side-by-side evidence')).toBeTruthy();
+    expect(document.body.textContent).toContain('Different command result');
+    expect(await screen.findByText('pnpm test')).toBeTruthy();
+    expect(await screen.findByText('pnpm lint')).toBeTruthy();
   });
 });

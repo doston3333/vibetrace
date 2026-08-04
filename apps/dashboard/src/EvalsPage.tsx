@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { useState } from 'react';
 
-import { api } from './api.js';
+import { api, type EvalRunSummary, type StoredEvent } from './api.js';
 
 export function EvalsPage() {
   const queryClient = useQueryClient();
@@ -27,6 +27,8 @@ export function EvalsPage() {
     },
   });
   const [comparisonId, setComparisonId] = useState('');
+  const [leftRunId, setLeftRunId] = useState('');
+  const [rightRunId, setRightRunId] = useState('');
   const comparison = useQuery({
     queryKey: ['eval-comparison', comparisonId],
     queryFn: () => api.evalComparison(comparisonId),
@@ -313,6 +315,22 @@ export function EvalsPage() {
                 })}
               </div>
             </div>
+            <ComparisonEvidence
+              runs={comparison.data.runs}
+              leftRunId={
+                comparison.data.runs.some((run) => run.id === leftRunId)
+                  ? leftRunId
+                  : (comparison.data.runs[0]?.id ?? '')
+              }
+              rightRunId={
+                comparison.data.runs.some((run) => run.id === rightRunId)
+                  ? rightRunId
+                  : (comparison.data.runs[1]?.id ?? '')
+              }
+              firstDivergence={comparison.data.summary.firstDivergence}
+              onLeftRunChange={setLeftRunId}
+              onRightRunChange={setRightRunId}
+            />
             {comparison.data.summary.firstDivergence ? (
               <p>
                 First divergence at event{' '}
@@ -331,6 +349,184 @@ export function EvalsPage() {
       </section>
     </main>
   );
+}
+
+interface ComparisonEvidenceProps {
+  readonly runs: readonly EvalRunSummary[];
+  readonly leftRunId: string;
+  readonly rightRunId: string;
+  readonly firstDivergence?: {
+    readonly index: number;
+    readonly reason: string;
+    readonly leftEventId?: string;
+    readonly rightEventId?: string;
+  };
+  readonly onLeftRunChange: (id: string) => void;
+  readonly onRightRunChange: (id: string) => void;
+}
+
+function ComparisonEvidence({
+  runs,
+  leftRunId,
+  rightRunId,
+  firstDivergence,
+  onLeftRunChange,
+  onRightRunChange,
+}: ComparisonEvidenceProps) {
+  const leftRun = runs.find((run) => run.id === leftRunId);
+  const rightRun = runs.find((run) => run.id === rightRunId);
+  const leftEvents = useComparisonEvents(leftRun);
+  const rightEvents = useComparisonEvents(rightRun);
+  if (!leftRun || !rightRun || leftRun.id === rightRun.id)
+    return (
+      <section className="comparison-evidence" aria-labelledby="evidence-title">
+        <h4 id="evidence-title">Side-by-side evidence</h4>
+        <p className="muted-copy">
+          Select two persisted runs with captured sessions to inspect their
+          paired evidence here.
+        </p>
+      </section>
+    );
+  return (
+    <section className="comparison-evidence" aria-labelledby="evidence-title">
+      <div className="comparison-evidence-heading">
+        <div>
+          <h4 id="evidence-title">Side-by-side evidence</h4>
+          <p className="muted-copy">
+            The first event page is loaded lazily from each encrypted session;
+            the marked row is the persisted divergence candidate.
+          </p>
+        </div>
+        <div className="comparison-run-selectors">
+          <label>
+            Left run
+            <select
+              value={leftRun.id}
+              onChange={(event) => onLeftRunChange(event.target.value)}
+            >
+              {runs.map((run) => (
+                <option value={run.id} key={`left-${run.id}`}>
+                  {run.id.slice(0, 12)}…
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Right run
+            <select
+              value={rightRun.id}
+              onChange={(event) => onRightRunChange(event.target.value)}
+            >
+              {runs.map((run) => (
+                <option value={run.id} key={`right-${run.id}`}>
+                  {run.id.slice(0, 12)}…
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
+      <div className="comparison-evidence-grid">
+        <EvidenceColumn
+          run={leftRun}
+          page={leftEvents}
+          eventId={firstDivergence?.leftEventId}
+          index={firstDivergence?.index}
+        />
+        <EvidenceColumn
+          run={rightRun}
+          page={rightEvents}
+          eventId={firstDivergence?.rightEventId}
+          index={firstDivergence?.index}
+        />
+      </div>
+    </section>
+  );
+}
+
+function useComparisonEvents(run: EvalRunSummary | undefined): {
+  readonly events: readonly StoredEvent[];
+  readonly isPending: boolean;
+  readonly isError: boolean;
+} {
+  const query = useQuery({
+    queryKey: ['comparison-events', run?.id],
+    queryFn: async () => {
+      if (!run?.sourceSessionId) return [] as readonly StoredEvent[];
+      const page = await api.events(run.sourceSessionId, {});
+      return page.events;
+    },
+    enabled: Boolean(run?.sourceSessionId),
+  });
+  return {
+    events: query.data ?? [],
+    isPending: query.isPending,
+    isError: query.isError,
+  };
+}
+
+function EvidenceColumn({
+  run,
+  page,
+  eventId,
+  index,
+}: {
+  readonly run: EvalRunSummary;
+  readonly page: ReturnType<typeof useComparisonEvents>;
+  readonly eventId?: string;
+  readonly index?: number;
+}) {
+  const fallbackId = index === undefined ? undefined : page.events[index]?.id;
+  const highlightedId = eventId ?? fallbackId;
+  return (
+    <article className="comparison-evidence-column">
+      <header>
+        <strong>{run.id.slice(0, 12)}…</strong>
+        {run.sourceSessionId ? (
+          <a href={`/sessions/${encodeURIComponent(run.sourceSessionId)}`}>
+            Open session evidence
+          </a>
+        ) : (
+          <span>No captured session</span>
+        )}
+      </header>
+      {page.isPending ? <p className="muted-copy">Loading evidence…</p> : null}
+      {page.isError ? (
+        <p className="page-error" role="alert">
+          Evidence could not be loaded.
+        </p>
+      ) : null}
+      {!page.isPending && !page.isError && page.events.length === 0 ? (
+        <p className="muted-copy">
+          No session events are attached to this run.
+        </p>
+      ) : null}
+      {page.events.length > 0 ? (
+        <ol className="comparison-evidence-list">
+          {page.events.slice(0, 200).map((item) => (
+            <li
+              key={item.id}
+              className={
+                item.id === highlightedId ? 'is-divergence' : undefined
+              }
+            >
+              <span>{item.sequence}</span>
+              <strong>{item.type}</strong>
+              <p>{eventPreview(item)}</p>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </article>
+  );
+}
+
+function eventPreview(item: StoredEvent): string {
+  const payload = item.event.payload as Record<string, unknown>;
+  const value = ['content', 'message', 'text', 'command', 'output']
+    .map((key) => payload[key])
+    .find((candidate): candidate is string => typeof candidate === 'string');
+  return (value ?? 'No text exposed').replace(/\s+/gu, ' ').slice(0, 240);
 }
 
 function metricText(value: unknown): string {
