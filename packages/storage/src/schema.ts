@@ -2,6 +2,7 @@ import {
   integer,
   real,
   sqliteTable,
+  primaryKey,
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
@@ -202,5 +203,99 @@ export const encryptionKeys = sqliteTable('encryption_keys', {
   createdAt: text('created_at').notNull(),
   retiredAt: text('retired_at'),
 });
+
+export const evalCases = sqliteTable(
+  'eval_cases',
+  {
+    id: text('id').primaryKey(),
+    sourceSessionId: text('source_session_id').references(() => sessions.id),
+    name: text('name').notNull(),
+    manifestBlobHash: text('manifest_blob_hash').notNull(),
+    manifestHash: text('manifest_hash').notNull(),
+    schemaVersion: text('schema_version').notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [uniqueIndex('eval_cases_manifest_hash').on(table.manifestHash)],
+);
+
+export const evalRuns = sqliteTable(
+  'eval_runs',
+  {
+    id: text('id').primaryKey(),
+    evalCaseId: text('eval_case_id')
+      .notNull()
+      .references(() => evalCases.id),
+    sourceSessionId: text('source_session_id').references(() => sessions.id),
+    configurationJson: text('configuration_json').notNull(),
+    configurationHash: text('configuration_hash').notNull(),
+    worktreeFingerprintHash: text('worktree_fingerprint_hash').notNull(),
+    status: text('status').notNull(),
+    outcomeJson: text('outcome_json'),
+    metricsJson: text('metrics_json'),
+    outputBlobHash: text('output_blob_hash'),
+    startedAt: text('started_at'),
+    endedAt: text('ended_at'),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('eval_runs_deterministic').on(
+      table.evalCaseId,
+      table.configurationHash,
+      table.worktreeFingerprintHash,
+    ),
+  ],
+);
+
+export const evalComparisons = sqliteTable('eval_comparisons', {
+  id: text('id').primaryKey(),
+  evalCaseId: text('eval_case_id')
+    .notNull()
+    .references(() => evalCases.id),
+  name: text('name').notNull(),
+  configurationJson: text('configuration_json').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const evalComparisonResults = sqliteTable(
+  'eval_comparison_results',
+  {
+    comparisonId: text('comparison_id')
+      .notNull()
+      .references(() => evalComparisons.id),
+    evalRunId: text('eval_run_id')
+      .notNull()
+      .references(() => evalRuns.id),
+    ordinal: integer('ordinal').notNull(),
+    resultJson: text('result_json').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.comparisonId, table.evalRunId] })],
+);
+
+export const captureProfiles = sqliteTable(
+  'capture_profiles',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    mode: text('mode').notNull(),
+    settingsJson: text('settings_json').notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [uniqueIndex('capture_profiles_name').on(table.name)],
+);
+
+export const retentionPolicies = sqliteTable(
+  'retention_policies',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    retentionDays: integer('retention_days').notNull(),
+    maxSessions: integer('max_sessions'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [uniqueIndex('retention_policies_name').on(table.name)],
+);
 
 /** FTS, raw-event immutability triggers, and schema_migrations remain committed raw SQL. */

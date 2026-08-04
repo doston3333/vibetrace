@@ -2,7 +2,7 @@
 
 VibeTrace reports capture completeness as data, not as an assumption. A session includes explicit `capture.gap` events whenever a required or useful observable signal is unavailable.
 
-## MVP mode: Codex hooks
+## Standard mode: Codex hooks
 
 The MVP supports Codex lifecycle hooks first. The hook collector accepts source-exposed lifecycle, prompt, tool, permission, compaction, subagent, stop, and session-end data when Codex provides it. It appends each received event to an atomic local JSONL spool segment and does no analysis in the hook process.
 
@@ -27,9 +27,22 @@ Installation uses `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) and preser
 
 The label never substitutes for the gap events that explain missing data.
 
-## Explicit exclusions
+## Opt-in modes
 
-The MVP does not include Codex Lab/app-server capture, batch Eval replay, OpenTelemetry ingestion, additional agent adapters, or AI-assisted analysis. These are future product-plan concepts, not present capabilities. The approved MVP architecture is summarized in [overview](overview.md).
+VibeTrace also ships bounded opt-in adapters:
+
+- `codex-app-server` uses the documented stdio JSONL handshake and captures
+  rich lifecycle, messages, plans, exposed reasoning, commands, file changes,
+  approvals, compaction, usage, and unsupported-event gaps.
+- `generic-jsonl-agent` validates a source-neutral JSONL envelope while
+  preserving unknown fields in raw payloads.
+- `opentelemetry` accepts approved usage or explicitly tagged VibeTrace events;
+  prompt bodies remain excluded unless the daemon is explicitly configured to
+  allow them.
+
+Batch eval execution uses the separate [evaluation architecture](evaluation.md)
+and never runs in the active checkout. Optional AI synthesis is a read-only,
+tool-free boundary described there.
 
 ## Gap requirements
 

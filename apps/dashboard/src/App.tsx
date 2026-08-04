@@ -19,7 +19,9 @@ import {
 import { Inspector } from './Inspector.js';
 import {
   AnnotationsPanel,
+  CausalGraph,
   CoveragePanel,
+  ContextMap,
   DiffHistory,
   FindingsPanel,
   SessionOverview,
@@ -48,6 +50,9 @@ export function AppShell() {
           <strong>TRACE</strong>
         </Link>
         <p>Local evidence recorder · deterministic analysis</p>
+        <Link className="masthead-link" to="/evals">
+          Evaluation lab
+        </Link>
         <div className="local-status">
           <span aria-hidden="true" />
           Encrypted locally
@@ -59,7 +64,13 @@ export function AppShell() {
 }
 
 type WorkbenchView =
-  'timeline' | 'diffs' | 'coverage' | 'findings' | 'annotations';
+  | 'timeline'
+  | 'diffs'
+  | 'coverage'
+  | 'context'
+  | 'causal'
+  | 'findings'
+  | 'annotations';
 
 export interface ForensicWorkbenchProps {
   readonly session: SessionSummary;
@@ -130,6 +141,8 @@ export function ForensicWorkbench({
             ['timeline', 'Timeline'],
             ['diffs', 'Diff history'],
             ['coverage', 'Coverage'],
+            ['context', 'Context map'],
+            ['causal', 'Causal graph'],
             ['findings', `Findings ${findings.length}`],
             ['annotations', `Annotations ${annotations.length}`],
           ] as const
@@ -222,6 +235,16 @@ export function ForensicWorkbench({
       {view === 'coverage' ? (
         <CoveragePanel coverage={coverage} onSelect={selectEvidence} />
       ) : null}
+      {view === 'context' ? (
+        <ContextMap events={events} onSelect={selectEvidence} />
+      ) : null}
+      {view === 'causal' ? (
+        <CausalGraph
+          events={events}
+          findings={findings}
+          onSelect={selectEvidence}
+        />
+      ) : null}
       {view === 'findings' ? (
         <FindingsPanel
           findings={findings}
@@ -302,6 +325,15 @@ export function SessionPage() {
   useEffect(() => {
     if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+  useEffect(() => {
+    const stream = new EventSource(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/events/stream`,
+    );
+    stream.onmessage = () => {
+      void queryClient.invalidateQueries({ queryKey: ['events', sessionId] });
+    };
+    return () => stream.close();
+  }, [queryClient, sessionId]);
 
   if (
     session.isPending ||

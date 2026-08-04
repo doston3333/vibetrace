@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { createSessionId } from '@vibetrace/schema';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { cliVersion, createProgram } from './program.js';
@@ -103,6 +104,140 @@ describe('createProgram', () => {
     expect(opened[0]).not.toContain(token);
     expect(opened[0]).not.toContain('b'.repeat(43));
     expect(outputs).toContain('running');
+  });
+
+  it('exposes opt-in full-fidelity app-server capture without shell interpolation', async () => {
+    const state = await mkdtemp(join(tmpdir(), 'vibetrace-cli-app-server-'));
+    directories.push(state);
+    const calls: Array<{ cwd: string; prompt: string; executable?: string }> =
+      [];
+    const outputs: string[] = [];
+    const program = createProgram({
+      stateDir: () => state,
+      runAppServerSession: async (options) => {
+        calls.push({
+          cwd: options.cwd,
+          prompt: options.prompt,
+          executable: options.executable,
+        });
+        return { events: [], raw: [], gaps: [] };
+      },
+      output: (line) => outputs.push(line),
+    });
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'codex',
+      'app-server',
+      '--prompt',
+      'Inspect the repository.',
+      '--cwd',
+      state,
+    ]);
+    expect(calls).toEqual([
+      { cwd: state, prompt: 'Inspect the repository.', executable: undefined },
+    ]);
+    expect(outputs).toContain(
+      JSON.stringify({
+        adapter: 'codex-app-server',
+        eventCount: 0,
+        gapCount: 0,
+      }),
+    );
+  });
+
+  it('validates manifests and persists human review as pending_review status', async () => {
+    const state = await mkdtemp(join(tmpdir(), 'vibetrace-cli-eval-'));
+    directories.push(state);
+    const manifestPath = join(state, 'manifest.json');
+    const manifest = {
+      schemaVersion: '1.0.0',
+      id: createSessionId('eval', 'cli-case'),
+      name: 'CLI evaluation case',
+      sourceEvidence: {
+        eventIds: [],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: { baseCommit: 'a'.repeat(40) },
+      task: {
+        prompt: 'Review the fixture.',
+        constraints: [],
+        inferredFields: [],
+      },
+      configuration: { skills: [], instructionHashes: [], inferredFields: [] },
+      success: {
+        assertions: [
+          { type: 'human_rating' as const, prompt: 'Review', minimum: 80 },
+        ],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const outputs: string[] = [];
+    const program = createProgram({
+      stateDir: () => state,
+      spawn: () => undefined,
+      waitForReady: async () => ({
+        origin: 'http://127.0.0.1:45680',
+        instanceId: createSessionId('daemon', 'cli-eval'),
+        token: 'f'.repeat(43),
+      }),
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        requests.push({ url: String(url), init });
+        if (String(url).endsWith(`/eval/cases/${manifest.id}/runs`))
+          return new Response(
+            JSON.stringify({ run: { id: createSessionId('run', 'cli') } }),
+            { status: 201 },
+          );
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+      runEvaluation: async () => ({
+        manifestId: manifest.id,
+        success: null,
+        checks: [
+          {
+            index: 0,
+            type: 'human_rating' as const,
+            status: 'pending' as const,
+            detail: 'Human review is required.',
+          },
+        ],
+        commandResults: [],
+        worktreeFingerprintHash: 'b'.repeat(64),
+        jsonRecordCount: 0,
+        malformedJsonRecordCount: 0,
+      }),
+      output: (line) => outputs.push(line),
+    });
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'eval',
+      'validate',
+      manifestPath,
+    ]);
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'eval',
+      'run',
+      manifestPath,
+      '--cwd',
+      state,
+    ]);
+    const runCreate = requests.find(
+      (request) =>
+        request.url.includes('/eval/cases/') && request.url.endsWith('/runs'),
+    );
+    expect(JSON.parse(String(runCreate?.init?.body))).toMatchObject({
+      status: 'pending_review',
+    });
+    expect(outputs).toContain(
+      `Valid evaluation manifest ${manifest.id} (CLI evaluation case).`,
+    );
+    expect(outputs).toContain('Evaluation needs review.');
   });
 
   it('passes a headless storage passphrase only over daemon standard input', async () => {

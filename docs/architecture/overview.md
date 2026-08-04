@@ -1,16 +1,16 @@
-# MVP architecture overview
+# Architecture overview
 
-VibeTrace's approved MVP is a local-first foundation for capturing observable Codex activity. This document records the target architecture; it does not claim that the services, storage, or capture adapter are implemented in VT-001.
+VibeTrace is a local-first foundation for capturing observable coding-agent activity, reconstructing sessions, diagnosing evidence, and running isolated evaluations. The implementation is intentionally split into source adapters, an append-only spool, an encrypted daemon, deterministic analysis, and a browser dashboard.
 
 ## Scope
 
-The MVP consists of a Codex hook adapter, a local daemon, encrypted local storage, and a browser dashboard. It records only source-exposed data and represents unavailable data as explicit capture gaps. It does not inspect private reasoning or execute imported trace content.
+The default experience consists of the Codex hook adapter, a local daemon, encrypted local storage, and a browser dashboard. Opt-in app-server, generic JSONL, and OpenTelemetry adapters feed the same canonical model. It records only source-exposed data, represents unavailable data as explicit capture gaps, and never treats private reasoning as observable. Imported eval content executes only in a detached worktree.
 
 ```text
-Codex lifecycle hooks
+Codex hooks / app-server / generic JSONL / opt-in OTel
         │
         ▼
-atomic per-event JSONL spool segments
+source adapters → atomic per-event JSONL spool segments
         │
         ▼
 local importer ──► immutable raw events
@@ -34,9 +34,9 @@ Codex hooks are intentionally small: each source event is serialized into an ato
 
 Raw source events are immutable. Normalization creates a separately stored, versioned canonical event record that points back to raw provenance. Large payloads live in encrypted blobs, not ordinary event-query rows. See [event schema](event-schema.md) and [privacy](privacy.md).
 
-## MVP boundaries
+## Capability boundaries
 
-Codex lifecycle hooks are the only capture integration in the MVP. The MVP excludes Eval replay, Lab/app-server capture, OpenTelemetry ingestion, and AI-assisted analysis. It starts with deterministic, evidence-linked analysis only after the capture foundation is trustworthy.
+Codex lifecycle hooks are the standard capture mode. App-server capture, generic JSONL, OpenTelemetry, isolated eval execution, comparison matrices, and AI-assisted synthesis are opt-in capabilities. AI synthesis is provider-neutral, bounded, and tool-free; deterministic findings remain the primary analysis layer.
 
 Every field or source activity the adapter cannot observe must become a `capture.gap` event with an explicit reason. See [capture modes](capture-modes.md).
 

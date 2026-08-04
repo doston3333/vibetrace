@@ -1,8 +1,9 @@
 # Release gate
 
-VibeTrace publishes the strict MVP as the `@vibetrace/cli` npm package. The
-package contains the command-line entry point, loopback daemon, and compiled
-dashboard assets. The SQLCipher-compatible database and OS keyring bindings
+VibeTrace publishes the production local-first CLI as the `@vibetrace/cli`
+npm package. The package contains the command-line entry point, loopback
+daemon, compiled dashboard assets, source adapters, isolated eval runner, and
+comparison tooling. The SQLCipher-compatible database and OS keyring bindings
 remain platform-native npm dependencies.
 
 ## Supported matrix
@@ -36,8 +37,9 @@ pnpm pack:smoke
 `pnpm pack:smoke` builds and packs the exact npm artifact, installs it into a
 temporary global prefix, and exercises initialization, hook collection,
 daemon authentication and lifecycle, dashboard serving, encrypted export and
-import, and ownership-safe hook uninstall. It uses isolated VibeTrace and
-Codex homes and removes them afterward.
+import, eval manifest validation, isolated run boundaries, and ownership-safe
+hook uninstall. It uses isolated VibeTrace and Codex homes and removes them
+afterward.
 
 `pnpm test:performance` combines scale fixtures with explicit elapsed-time
 budgets for 20,000-event timeline construction, deterministic analysis,

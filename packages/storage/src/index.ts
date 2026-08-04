@@ -169,6 +169,77 @@ export interface AnnotationInput {
   readonly label?: string;
   readonly note?: string;
 }
+export interface EvalCaseInput {
+  readonly id: string;
+  readonly name: string;
+  readonly manifestBlobHash: string;
+  readonly manifestHash: string;
+  readonly schemaVersion: string;
+  readonly sourceSessionId?: string;
+}
+
+export interface StoredEvalCase extends EvalCaseInput {
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface EvalRunInput {
+  readonly id: string;
+  readonly evalCaseId: string;
+  readonly configuration: JsonObject;
+  readonly configurationHash: string;
+  readonly worktreeFingerprintHash: string;
+  readonly status: EvalRunStatus;
+  readonly sourceSessionId?: string;
+  readonly outputBlobHash?: string;
+}
+
+export interface EvalRunUpdate {
+  readonly status?: EvalRunStatus;
+  readonly outcome?: JsonObject;
+  readonly metrics?: JsonObject;
+  readonly outputBlobHash?: string;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+}
+
+export const EVAL_RUN_STATUSES = [
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'pending_review',
+  'cancelled',
+] as const;
+export type EvalRunStatus = (typeof EVAL_RUN_STATUSES)[number];
+
+export interface StoredEvalRun extends EvalRunInput {
+  readonly outcome?: JsonObject;
+  readonly metrics?: JsonObject;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly createdAt: string;
+}
+
+export interface EvalComparisonInput {
+  readonly id: string;
+  readonly evalCaseId: string;
+  readonly name: string;
+  readonly configuration: JsonObject;
+}
+
+export interface StoredEvalComparison extends EvalComparisonInput {
+  readonly createdAt: string;
+}
+
+export interface EvalComparisonResultInput {
+  readonly comparisonId: string;
+  readonly evalRunId: string;
+  readonly ordinal: number;
+  readonly result: JsonObject;
+}
+
+export type StoredEvalComparisonResult = EvalComparisonResultInput;
 
 /** A project and session envelope persisted atomically with one imported event. */
 export interface ImportedEventInput {
@@ -223,6 +294,28 @@ export interface StoredRedactionProfile extends RedactionProfileInput {
   readonly createdAt: string;
 }
 
+export type CaptureProfileMode = 'minimal' | 'standard' | 'full';
+export interface CaptureProfileInput {
+  readonly id: string;
+  readonly name: string;
+  readonly mode: CaptureProfileMode;
+  readonly settings: JsonObject;
+}
+export interface StoredCaptureProfile extends CaptureProfileInput {
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+export interface RetentionPolicyInput {
+  readonly id: string;
+  readonly name: string;
+  readonly retentionDays: number;
+  readonly maxSessions?: number;
+}
+export interface StoredRetentionPolicy extends RetentionPolicyInput {
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 /** A deterministic imported identity conflict, safe for spool quarantine. */
 export class StorageImportConflictError extends Error {
   constructor() {
@@ -237,6 +330,14 @@ type Row = Record<string, unknown>;
 function assertText(value: unknown, field: string): asserts value is string {
   if (typeof value !== 'string' || value.length === 0)
     throw new Error(`${field} must be a non-empty string.`);
+}
+
+function assertEvalRunStatus(
+  value: string,
+  field: string,
+): asserts value is EvalRunStatus {
+  if (!(EVAL_RUN_STATUSES as readonly string[]).includes(value))
+    throw new Error(`${field} is not a supported evaluation run status.`);
 }
 
 function assertIso(value: string, field: string): void {
@@ -301,6 +402,87 @@ function storedSession(row: Row): StoredSession {
       : {}),
   };
 }
+
+function storedEvalCase(row: Row): StoredEvalCase {
+  return {
+    id: String(row.id),
+    ...(row.source_session_id
+      ? { sourceSessionId: String(row.source_session_id) }
+      : {}),
+    name: String(row.name),
+    manifestBlobHash: String(row.manifest_blob_hash),
+    manifestHash: String(row.manifest_hash),
+    schemaVersion: String(row.schema_version),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function storedEvalRun(row: Row): StoredEvalRun {
+  const runStatus = String(row.status);
+  assertEvalRunStatus(runStatus, 'evalRun.status');
+  return {
+    id: String(row.id),
+    evalCaseId: String(row.eval_case_id),
+    ...(row.source_session_id
+      ? { sourceSessionId: String(row.source_session_id) }
+      : {}),
+    configuration: fromJson<JsonObject>(row.configuration_json),
+    configurationHash: String(row.configuration_hash),
+    worktreeFingerprintHash: String(row.worktree_fingerprint_hash),
+    status: runStatus,
+    ...(row.outcome_json
+      ? { outcome: fromJson<JsonObject>(row.outcome_json) }
+      : {}),
+    ...(row.metrics_json
+      ? { metrics: fromJson<JsonObject>(row.metrics_json) }
+      : {}),
+    ...(row.output_blob_hash
+      ? { outputBlobHash: String(row.output_blob_hash) }
+      : {}),
+    ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
+    ...(row.ended_at ? { endedAt: String(row.ended_at) } : {}),
+    createdAt: String(row.created_at),
+  };
+}
+
+function storedEvalComparison(row: Row): StoredEvalComparison {
+  return {
+    id: String(row.id),
+    evalCaseId: String(row.eval_case_id),
+    name: String(row.name),
+    configuration: fromJson<JsonObject>(row.configuration_json),
+    createdAt: String(row.created_at),
+  };
+}
+
+function storedCaptureProfile(row: Row): StoredCaptureProfile {
+  const mode = String(row.mode);
+  if (mode !== 'minimal' && mode !== 'standard' && mode !== 'full')
+    throw new Error('Stored capture profile has an invalid mode.');
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    mode,
+    settings: fromJson<JsonObject>(row.settings_json),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function storedRetentionPolicy(row: Row): StoredRetentionPolicy {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    retentionDays: Number(row.retention_days),
+    ...(row.max_sessions === null || row.max_sessions === undefined
+      ? {}
+      : { maxSessions: Number(row.max_sessions) }),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value !== null && typeof value === 'object') {
@@ -1398,6 +1580,129 @@ export class Storage {
     );
   }
 
+  createCaptureProfile(input: CaptureProfileInput): void {
+    assertText(input.id, 'captureProfile.id');
+    assertText(input.name, 'captureProfile.name');
+    if (!['minimal', 'standard', 'full'].includes(input.mode))
+      throw new Error('captureProfile.mode is invalid.');
+    const now = this.#clock.now().toISOString();
+    this.#database
+      .prepare(
+        `INSERT INTO capture_profiles
+           (id, name, mode, settings_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(input.id, input.name, input.mode, json(input.settings), now, now);
+  }
+
+  getCaptureProfile(idOrName: string): StoredCaptureProfile | undefined {
+    assertText(idOrName, 'captureProfile.idOrName');
+    const row = this.#database
+      .prepare(
+        `SELECT id, name, mode, settings_json, created_at, updated_at
+           FROM capture_profiles WHERE id = ? OR name = ? LIMIT 1`,
+      )
+      .get(idOrName, idOrName) as Row | undefined;
+    return row ? storedCaptureProfile(row) : undefined;
+  }
+
+  listCaptureProfiles(): readonly StoredCaptureProfile[] {
+    return (
+      this.#database
+        .prepare(
+          `SELECT id, name, mode, settings_json, created_at, updated_at
+             FROM capture_profiles ORDER BY name ASC, id ASC`,
+        )
+        .all() as Row[]
+    ).map(storedCaptureProfile);
+  }
+
+  createRetentionPolicy(input: RetentionPolicyInput): void {
+    assertText(input.id, 'retentionPolicy.id');
+    assertText(input.name, 'retentionPolicy.name');
+    if (!Number.isInteger(input.retentionDays) || input.retentionDays < 1)
+      throw new Error('retentionPolicy.retentionDays must be positive.');
+    if (
+      input.maxSessions !== undefined &&
+      (!Number.isInteger(input.maxSessions) || input.maxSessions < 1)
+    )
+      throw new Error('retentionPolicy.maxSessions must be positive.');
+    const now = this.#clock.now().toISOString();
+    this.#database
+      .prepare(
+        `INSERT INTO retention_policies
+           (id, name, retention_days, max_sessions, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.id,
+        input.name,
+        input.retentionDays,
+        input.maxSessions ?? null,
+        now,
+        now,
+      );
+  }
+
+  listRetentionPolicies(): readonly StoredRetentionPolicy[] {
+    return (
+      this.#database
+        .prepare(
+          `SELECT id, name, retention_days, max_sessions, created_at, updated_at
+             FROM retention_policies ORDER BY name ASC, id ASC`,
+        )
+        .all() as Row[]
+    ).map(storedRetentionPolicy);
+  }
+
+  /** Count visible sessions eligible for a retention policy without mutating them. */
+  countRetentionEligible(before: string, maxSessions?: number): number {
+    assertIso(before, 'retention.before');
+    if (
+      maxSessions !== undefined &&
+      (!Number.isInteger(maxSessions) || maxSessions < 1)
+    )
+      throw new Error('retention.maxSessions must be positive.');
+    const row = this.#database
+      .prepare(
+        `SELECT count(*) AS count FROM (
+           SELECT id FROM sessions WHERE deleted_at IS NULL AND started_at < ?
+           ORDER BY started_at ASC, id ASC${maxSessions === undefined ? '' : ' LIMIT ?'}
+         )`,
+      )
+      .get(
+        ...(maxSessions === undefined ? [before] : [before, maxSessions]),
+      ) as { count: number };
+    return Number(row.count);
+  }
+
+  /** Apply retention as reversible session tombstones; raw evidence remains encrypted on disk. */
+  applyRetention(before: string, maxSessions?: number): number {
+    assertIso(before, 'retention.before');
+    if (
+      maxSessions !== undefined &&
+      (!Number.isInteger(maxSessions) || maxSessions < 1)
+    )
+      throw new Error('retention.maxSessions must be positive.');
+    const rows = this.#database
+      .prepare(
+        `SELECT id FROM sessions WHERE deleted_at IS NULL AND started_at < ?
+           ORDER BY started_at ASC, id ASC${maxSessions === undefined ? '' : ' LIMIT ?'}`,
+      )
+      .all(
+        ...(maxSessions === undefined ? [before] : [before, maxSessions]),
+      ) as {
+      id: string;
+    }[];
+    const mark = this.#database.prepare(
+      'UPDATE sessions SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL',
+    );
+    const now = this.#clock.now().toISOString();
+    return this.#database.transaction(() =>
+      rows.reduce((count, row) => count + mark.run(now, row.id).changes, 0),
+    )();
+  }
+
   /** Store an export-only redaction profile without touching raw originals. */
   createRedactionProfile(input: RedactionProfileInput): void {
     assertText(input.id, 'redactionProfile.id');
@@ -1467,6 +1772,304 @@ export class Storage {
         info.byteLength,
         this.#clock.now().toISOString(),
       );
+  }
+
+  /** Create an encrypted-manifest eval case. Blob references are validated without exposing paths. */
+  createEvalCase(input: EvalCaseInput): string {
+    assertText(input.id, 'evalCase.id');
+    assertText(input.name, 'evalCase.name');
+    assertText(input.manifestBlobHash, 'evalCase.manifestBlobHash');
+    assertText(input.manifestHash, 'evalCase.manifestHash');
+    assertText(input.schemaVersion, 'evalCase.schemaVersion');
+    if (!/^[a-f0-9]{64}$/.test(input.manifestBlobHash))
+      throw new Error('Invalid eval manifest blob hash.');
+    if (!/^[a-f0-9]{64}$/.test(input.manifestHash))
+      throw new Error('Invalid eval manifest hash.');
+    if (
+      !this.#database
+        .prepare('SELECT 1 FROM blob_objects WHERE address = ?')
+        .get(input.manifestBlobHash)
+    )
+      throw new Error('Eval manifest blob is unavailable.');
+    const now = this.#clock.now().toISOString();
+    this.#database
+      .prepare(
+        `INSERT INTO eval_cases
+           (id, source_session_id, name, manifest_blob_hash, manifest_hash,
+            schema_version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(manifest_hash) DO NOTHING`,
+      )
+      .run(
+        input.id,
+        input.sourceSessionId ?? null,
+        input.name,
+        input.manifestBlobHash,
+        input.manifestHash,
+        input.schemaVersion,
+        now,
+        now,
+      );
+    const row = this.#database
+      .prepare('SELECT id FROM eval_cases WHERE manifest_hash = ?')
+      .get(input.manifestHash) as { id: string } | undefined;
+    if (!row) throw new Error('Eval case was not stored.');
+    return row.id;
+  }
+
+  getEvalCase(id: string): StoredEvalCase | undefined {
+    assertText(id, 'evalCase.id');
+    const row = this.#database
+      .prepare(
+        `SELECT id, source_session_id, name, manifest_blob_hash,
+                manifest_hash, schema_version, created_at, updated_at
+           FROM eval_cases WHERE id = ?`,
+      )
+      .get(id) as Row | undefined;
+    return row ? storedEvalCase(row) : undefined;
+  }
+
+  listEvalCases(limit = 500): readonly StoredEvalCase[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10_000)
+      throw new Error('eval case limit must be between 1 and 10000.');
+    return (
+      this.#database
+        .prepare(
+          `SELECT id, source_session_id, name, manifest_blob_hash,
+                  manifest_hash, schema_version, created_at, updated_at
+             FROM eval_cases ORDER BY created_at DESC, id ASC LIMIT ?`,
+        )
+        .all(limit) as Row[]
+    ).map(storedEvalCase);
+  }
+
+  /** Idempotently create a deterministic run keyed by case/configuration/worktree fingerprint. */
+  upsertEvalRun(input: EvalRunInput): string {
+    assertText(input.id, 'evalRun.id');
+    assertText(input.evalCaseId, 'evalRun.evalCaseId');
+    assertText(input.configurationHash, 'evalRun.configurationHash');
+    assertText(
+      input.worktreeFingerprintHash,
+      'evalRun.worktreeFingerprintHash',
+    );
+    assertText(input.status, 'evalRun.status');
+    assertEvalRunStatus(input.status, 'evalRun.status');
+    if (!/^[a-f0-9]{64}$/.test(input.configurationHash))
+      throw new Error('Invalid eval configuration hash.');
+    if (!/^[a-f0-9]{64}$/.test(input.worktreeFingerprintHash))
+      throw new Error('Invalid eval worktree fingerprint hash.');
+    if (hash(input.configuration) !== input.configurationHash)
+      throw new Error('Eval configuration hash does not match configuration.');
+    if (input.outputBlobHash && !/^[a-f0-9]{64}$/.test(input.outputBlobHash))
+      throw new Error('Invalid eval output blob hash.');
+    if (
+      input.outputBlobHash &&
+      !this.#database
+        .prepare('SELECT 1 FROM blob_objects WHERE address = ?')
+        .get(input.outputBlobHash)
+    )
+      throw new Error('Eval output blob is unavailable.');
+    this.#database
+      .prepare(
+        `INSERT INTO eval_runs
+           (id, eval_case_id, source_session_id, configuration_json,
+            configuration_hash, worktree_fingerprint_hash, status,
+            output_blob_hash, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(eval_case_id, configuration_hash, worktree_fingerprint_hash)
+         DO NOTHING`,
+      )
+      .run(
+        input.id,
+        input.evalCaseId,
+        input.sourceSessionId ?? null,
+        json(input.configuration),
+        input.configurationHash,
+        input.worktreeFingerprintHash,
+        input.status,
+        input.outputBlobHash ?? null,
+        this.#clock.now().toISOString(),
+      );
+    const row = this.#database
+      .prepare(
+        `SELECT id FROM eval_runs
+          WHERE eval_case_id = ? AND configuration_hash = ?
+            AND worktree_fingerprint_hash = ?`,
+      )
+      .get(
+        input.evalCaseId,
+        input.configurationHash,
+        input.worktreeFingerprintHash,
+      ) as { id: string } | undefined;
+    if (!row) throw new Error('Eval run was not stored.');
+    return row.id;
+  }
+
+  getEvalRun(id: string): StoredEvalRun | undefined {
+    assertText(id, 'evalRun.id');
+    const row = this.#database
+      .prepare(
+        `SELECT id, eval_case_id, source_session_id, configuration_json,
+                configuration_hash, worktree_fingerprint_hash, status,
+                outcome_json, metrics_json, output_blob_hash, started_at,
+                ended_at, created_at
+           FROM eval_runs WHERE id = ?`,
+      )
+      .get(id) as Row | undefined;
+    return row ? storedEvalRun(row) : undefined;
+  }
+
+  listEvalRuns(evalCaseId: string, limit = 500): readonly StoredEvalRun[] {
+    assertText(evalCaseId, 'evalRun.evalCaseId');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10_000)
+      throw new Error('eval run limit must be between 1 and 10000.');
+    return (
+      this.#database
+        .prepare(
+          `SELECT id, eval_case_id, source_session_id, configuration_json,
+                  configuration_hash, worktree_fingerprint_hash, status,
+                  outcome_json, metrics_json, output_blob_hash, started_at,
+                  ended_at, created_at
+             FROM eval_runs WHERE eval_case_id = ?
+             ORDER BY created_at ASC, id ASC LIMIT ?`,
+        )
+        .all(evalCaseId, limit) as Row[]
+    ).map(storedEvalRun);
+  }
+
+  updateEvalRun(id: string, update: EvalRunUpdate): void {
+    assertText(id, 'evalRun.id');
+    if (update.status !== undefined) {
+      assertText(update.status, 'evalRun.status');
+      assertEvalRunStatus(update.status, 'evalRun.status');
+    }
+    if (update.startedAt !== undefined)
+      assertIso(update.startedAt, 'evalRun.startedAt');
+    if (update.endedAt !== undefined)
+      assertIso(update.endedAt, 'evalRun.endedAt');
+    if (update.outputBlobHash !== undefined) {
+      if (!/^[a-f0-9]{64}$/.test(update.outputBlobHash))
+        throw new Error('Invalid eval output blob hash.');
+      if (
+        !this.#database
+          .prepare('SELECT 1 FROM blob_objects WHERE address = ?')
+          .get(update.outputBlobHash)
+      )
+        throw new Error('Eval output blob is unavailable.');
+    }
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    if (update.status !== undefined) {
+      fields.push('status = ?');
+      values.push(update.status);
+    }
+    if (update.outcome !== undefined) {
+      fields.push('outcome_json = ?');
+      values.push(json(update.outcome));
+    }
+    if (update.metrics !== undefined) {
+      fields.push('metrics_json = ?');
+      values.push(json(update.metrics));
+    }
+    if (update.outputBlobHash !== undefined) {
+      fields.push('output_blob_hash = ?');
+      values.push(update.outputBlobHash);
+    }
+    if (update.startedAt !== undefined) {
+      fields.push('started_at = ?');
+      values.push(update.startedAt);
+    }
+    if (update.endedAt !== undefined) {
+      fields.push('ended_at = ?');
+      values.push(update.endedAt);
+    }
+    if (fields.length === 0) return;
+    values.push(id);
+    const result = this.#database
+      .prepare(`UPDATE eval_runs SET ${fields.join(', ')} WHERE id = ?`)
+      .run(...values);
+    if (result.changes === 0) throw new Error('Eval run was not found.');
+  }
+
+  createEvalComparison(input: EvalComparisonInput): string {
+    assertText(input.id, 'evalComparison.id');
+    assertText(input.evalCaseId, 'evalComparison.evalCaseId');
+    assertText(input.name, 'evalComparison.name');
+    this.#database
+      .prepare(
+        `INSERT INTO eval_comparisons
+           (id, eval_case_id, name, configuration_json, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.id,
+        input.evalCaseId,
+        input.name,
+        json(input.configuration),
+        this.#clock.now().toISOString(),
+      );
+    return input.id;
+  }
+
+  getEvalComparison(id: string): StoredEvalComparison | undefined {
+    assertText(id, 'evalComparison.id');
+    const row = this.#database
+      .prepare(
+        `SELECT id, eval_case_id, name, configuration_json, created_at
+           FROM eval_comparisons WHERE id = ?`,
+      )
+      .get(id) as Row | undefined;
+    return row ? storedEvalComparison(row) : undefined;
+  }
+
+  upsertEvalComparisonResult(input: EvalComparisonResultInput): void {
+    assertText(input.comparisonId, 'evalComparisonResult.comparisonId');
+    assertText(input.evalRunId, 'evalComparisonResult.evalRunId');
+    if (!Number.isInteger(input.ordinal) || input.ordinal < 0)
+      throw new Error('evalComparisonResult.ordinal must be non-negative.');
+    const compatible = this.#database
+      .prepare(
+        `SELECT 1 FROM eval_comparisons c JOIN eval_runs r
+            ON r.eval_case_id = c.eval_case_id
+          WHERE c.id = ? AND r.id = ?`,
+      )
+      .get(input.comparisonId, input.evalRunId);
+    if (!compatible)
+      throw new Error('Eval comparison and run belong to different cases.');
+    this.#database
+      .prepare(
+        `INSERT INTO eval_comparison_results
+           (comparison_id, eval_run_id, ordinal, result_json)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(comparison_id, eval_run_id)
+         DO UPDATE SET ordinal = excluded.ordinal, result_json = excluded.result_json`,
+      )
+      .run(
+        input.comparisonId,
+        input.evalRunId,
+        input.ordinal,
+        json(input.result),
+      );
+  }
+
+  listEvalComparisonResults(
+    comparisonId: string,
+  ): readonly StoredEvalComparisonResult[] {
+    assertText(comparisonId, 'evalComparisonResult.comparisonId');
+    return (
+      this.#database
+        .prepare(
+          `SELECT comparison_id, eval_run_id, ordinal, result_json
+             FROM eval_comparison_results
+            WHERE comparison_id = ? ORDER BY ordinal ASC, eval_run_id ASC`,
+        )
+        .all(comparisonId) as Row[]
+    ).map((row) => ({
+      comparisonId: String(row.comparison_id),
+      evalRunId: String(row.eval_run_id),
+      ordinal: Number(row.ordinal),
+      result: fromJson<JsonObject>(row.result_json),
+    }));
   }
 
   /** Create a new active blob-key generation. Existing addresses remain stable. */

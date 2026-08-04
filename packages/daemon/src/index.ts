@@ -16,6 +16,7 @@ import {
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
 
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -31,11 +32,31 @@ import {
   type ImportBundleOptions,
 } from '@vibetrace/bundle';
 import { analyzeAndPersist } from '@vibetrace/diagnostics';
+import { captureOtelJson } from '@vibetrace/adapter-otel';
+import { AiHypothesisSchema } from '@vibetrace/analyzer-ai';
 import {
+  firstDivergence,
+  summarizeRuns,
+  type FirstDivergence,
+} from '@vibetrace/eval-compare';
+import {
+  hashEvalJson,
+  parseEvalManifest,
+  type EvalManifest,
+} from '@vibetrace/eval-spec';
+import {
+  EVAL_RUN_STATUSES,
   Storage,
+  type EvalRunUpdate,
   restrictDirectoryToCurrentUser,
   type StoredNormalizedEvent,
 } from '@vibetrace/storage';
+import {
+  createUuidV5,
+  TraceEventSchema,
+  type JsonObject,
+  type TraceEvent,
+} from '@vibetrace/schema';
 import { z } from 'zod';
 
 import {
@@ -102,6 +123,9 @@ const eventSearchQuerySchema = z
     limit: z.coerce.number().int().min(1).max(1_000).default(200),
   })
   .strict();
+const eventStreamQuerySchema = eventListQuerySchema
+  .extend({ once: z.coerce.boolean().default(false) })
+  .strict();
 const annotationListQuerySchema = z
   .object({
     targetType: z.string().min(1).max(64).optional(),
@@ -142,6 +166,108 @@ const bundleImportSchema = z
     passphrase: bundlePassphraseSchema,
   })
   .strict();
+const evalManifestCreateSchema = z.object({ manifest: z.unknown() }).strict();
+const evalRunCreateSchema = z
+  .object({
+    id: z.string().uuid().optional(),
+    configuration: z.record(z.string(), z.unknown()),
+    worktreeFingerprintHash: z.string().regex(/^[a-f0-9]{64}$/),
+    status: z.enum(EVAL_RUN_STATUSES).default('queued'),
+    sourceSessionId: z.string().uuid().optional(),
+  })
+  .strict();
+const evalRunUpdateSchema = z
+  .object({
+    status: z.enum(EVAL_RUN_STATUSES).optional(),
+    outcome: z.record(z.string(), z.unknown()).optional(),
+    metrics: z.record(z.string(), z.unknown()).optional(),
+    outputBlobHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    startedAt: z.string().datetime().optional(),
+    endedAt: z.string().datetime().optional(),
+  })
+  .strict();
+const evalComparisonCreateSchema = z
+  .object({
+    id: z.string().uuid().optional(),
+    evalCaseId: z.string().uuid(),
+    name: z.string().min(1).max(512),
+    configuration: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+const evalComparisonResultSchema = z
+  .object({
+    evalRunId: z.string().uuid(),
+    ordinal: z.number().int().nonnegative(),
+    result: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+const evalComparisonDivergenceSchema = z
+  .object({
+    leftRunId: z.string().uuid(),
+    rightRunId: z.string().uuid(),
+    leftEvents: z.array(z.unknown()).max(20_000),
+    rightEvents: z.array(z.unknown()).max(20_000),
+  })
+  .strict()
+  .refine((value) => value.leftRunId !== value.rightRunId, {
+    message: 'Compared runs must be different.',
+  });
+const comparableEventSchema = z
+  .object({
+    id: z.string().min(1),
+    sequence: z.number().int().nonnegative(),
+    type: z.string().min(1),
+    source: z.string().min(1),
+    status: z.string().optional(),
+    toolName: z.string().optional(),
+    payload: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+const persistedDivergenceSchema = z
+  .object({
+    index: z.number().int().nonnegative(),
+    reason: z.enum([
+      'missing-left',
+      'missing-right',
+      'type',
+      'source',
+      'status',
+      'tool',
+      'payload',
+    ]),
+    leftEventId: z.string().optional(),
+    rightEventId: z.string().optional(),
+    left: comparableEventSchema.optional(),
+    right: comparableEventSchema.optional(),
+  })
+  .strict();
+const captureProfileSchema = z
+  .object({
+    id: z.string().min(1).max(128).optional(),
+    name: z.string().min(1).max(256),
+    mode: z.enum(['minimal', 'standard', 'full']),
+    settings: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+const retentionPolicySchema = z
+  .object({
+    id: z.string().min(1).max(128).optional(),
+    name: z.string().min(1).max(256),
+    retentionDays: z.number().int().min(1).max(36_500),
+    maxSessions: z.number().int().min(1).max(1_000_000).optional(),
+    apply: z.boolean().default(false),
+  })
+  .strict();
+const aiFindingSubmissionSchema = z
+  .object({
+    analyzerVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+    promptDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    hypotheses: z.array(AiHypothesisSchema).max(1_000),
+  })
+  .strict();
 const SAFE_ARTIFACT_MEDIA_TYPES = new Set([
   'application/json',
   'text/csv',
@@ -174,6 +300,10 @@ export interface DaemonOptions {
   readonly dashboardDir?: string;
   readonly spoolFaults?: SpoolImportOptions;
   readonly bundleOperations?: BundleOperations;
+  readonly otel?: {
+    readonly enabled: boolean;
+    readonly allowPromptContent?: boolean;
+  };
 }
 
 /** Test seam around CPU-heavy encryption while preserving route validation. */
@@ -272,6 +402,59 @@ function bundleFailure(error: unknown): {
   if (message.includes('collision'))
     return { status: 409, code: 'BUNDLE_ID_COLLISION' };
   return { status: 400, code: 'INVALID_BUNDLE_OR_PASSPHRASE' };
+}
+
+/** Read a decrypted blob only when a route has an explicit bounded size contract. */
+async function readBoundedBlob(
+  stream: Readable,
+  maxBytes: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let byteLength = 0;
+  try {
+    for await (const chunk of stream) {
+      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      byteLength += value.byteLength;
+      if (byteLength > maxBytes) {
+        stream.destroy();
+        throw new Error('Blob exceeds the route size limit.');
+      }
+      chunks.push(value);
+    }
+  } finally {
+    stream.destroy();
+  }
+  return Buffer.concat(chunks, byteLength);
+}
+
+const MAX_COMPARISON_EVENT_BYTES = 32 * 1024 * 1024;
+
+function parseComparisonEvents(
+  values: readonly unknown[],
+): readonly TraceEvent[] | undefined {
+  let byteLength = 0;
+  const events: TraceEvent[] = [];
+  for (const value of values) {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) return undefined;
+    byteLength += Buffer.byteLength(serialized, 'utf8');
+    if (byteLength > MAX_COMPARISON_EVENT_BYTES) return undefined;
+    const parsed = TraceEventSchema.safeParse(value);
+    if (!parsed.success) return undefined;
+    events.push(parsed.data);
+  }
+  return events;
+}
+
+function comparisonDivergence(
+  results: readonly { readonly result: JsonObject }[],
+): FirstDivergence | undefined {
+  for (const item of results) {
+    const candidate = item.result.firstDivergence;
+    const parsed = persistedDivergenceSchema.safeParse(candidate);
+    if (parsed.success) return parsed.data as unknown as FirstDivergence;
+  }
+  return undefined;
 }
 
 /** Derive evidence-only coverage; absence is never inferred as a successful capture. */
@@ -535,6 +718,11 @@ export async function startDaemon(
     const token = await loadOrCreateToken(stateDir);
     await hardenSpool(spoolPaths(stateDir));
     app = fastify({ logger: false, bodyLimit: 1_048_576 });
+    app.addContentTypeParser(
+      'application/octet-stream',
+      { parseAs: 'buffer', bodyLimit: 16 * 1024 * 1024 },
+      (_request, body, done) => done(null, body),
+    );
     await app.register(cookie);
     let dashboardAvailable = false;
     {
@@ -720,6 +908,115 @@ export async function startDaemon(
       });
       return { ok: true };
     });
+    if (options.otel?.enabled) {
+      app.post('/api/v1/otel/v1/logs', async (request, reply) => {
+        const header = request.headers['x-vibetrace-source-session'];
+        const sourceSessionId =
+          typeof header === 'string' && /^[A-Za-z0-9._:-]{1,512}$/.test(header)
+            ? header
+            : undefined;
+        if (!sourceSessionId)
+          return reply
+            .code(400)
+            .send({ code: 'SOURCE_SESSION_HEADER_REQUIRED' });
+        try {
+          const mapped = captureOtelJson({
+            body: request.body,
+            context: {
+              sourceSessionId,
+              allowPromptContent: options.otel?.allowPromptContent === true,
+            },
+          });
+          for (const item of mapped)
+            storage.importEvent({
+              project: { id: 'otel', displayName: 'OpenTelemetry' },
+              session: {
+                id: item.event.sessionId,
+                projectId: 'otel',
+                source: 'opentelemetry',
+                sourceSessionId,
+                startedAt: item.event.timestamp,
+                status: 'active',
+                captureMode: 'partial',
+              },
+              raw: item.raw,
+              event: item.event,
+              normalizerId: `${item.raw.adapter}/${item.raw.adapterVersion}`,
+            });
+          return {
+            accepted: mapped.length,
+            gaps: mapped.filter((item) => item.event.type === 'capture.gap')
+              .length,
+          };
+        } catch {
+          return reply.code(400).send({ code: 'INVALID_OTEL_PAYLOAD' });
+        }
+      });
+    }
+    app.get('/api/v1/privacy/capture-profiles', async () => ({
+      profiles: storage.listCaptureProfiles(),
+    }));
+    app.post('/api/v1/privacy/capture-profiles', async (request, reply) => {
+      const parsed = captureProfileSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_CAPTURE_PROFILE' });
+      try {
+        storage.createCaptureProfile({
+          id: parsed.data.id ?? randomUUID(),
+          name: parsed.data.name,
+          mode: parsed.data.mode,
+          settings: parsed.data.settings as JsonObject,
+        });
+        return reply.code(201).send({
+          profile: storage.getCaptureProfile(
+            parsed.data.id ?? parsed.data.name,
+          ),
+        });
+      } catch {
+        return reply.code(409).send({ code: 'CAPTURE_PROFILE_CONFLICT' });
+      }
+    });
+    app.get('/api/v1/privacy/retention', async () => ({
+      policies: storage.listRetentionPolicies(),
+    }));
+    app.post('/api/v1/privacy/retention', async (request, reply) => {
+      const parsed = retentionPolicySchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_RETENTION_POLICY' });
+      try {
+        const id = parsed.data.id ?? randomUUID();
+        storage.createRetentionPolicy({
+          id,
+          name: parsed.data.name,
+          retentionDays: parsed.data.retentionDays,
+          ...(parsed.data.maxSessions === undefined
+            ? {}
+            : { maxSessions: parsed.data.maxSessions }),
+        });
+        const before = new Date(
+          clock.now().getTime() - parsed.data.retentionDays * 86_400_000,
+        ).toISOString();
+        const eligible = storage.countRetentionEligible(
+          before,
+          parsed.data.maxSessions,
+        );
+        const removed = parsed.data.apply
+          ? storage.applyRetention(before, parsed.data.maxSessions)
+          : 0;
+        return reply.code(201).send({
+          policy: storage
+            .listRetentionPolicies()
+            .find((item) => item.id === id),
+          preview: {
+            before,
+            eligibleSessions: eligible,
+            appliedSessions: removed,
+          },
+        });
+      } catch {
+        return reply.code(409).send({ code: 'RETENTION_POLICY_CONFLICT' });
+      }
+    });
     const sessionId = (request: { params: unknown }): string | undefined => {
       const parsed = z
         .object({ id: sessionIdSchema })
@@ -755,6 +1052,305 @@ export async function startDaemon(
         ? reply.code(204).send()
         : reply.code(404).send({ code: 'NOT_FOUND' });
     });
+    const evalCaseId = (request: { params: unknown }): string | undefined => {
+      const parsed = z
+        .object({ id: z.string().uuid() })
+        .strict()
+        .safeParse(request.params);
+      return parsed.success ? parsed.data.id : undefined;
+    };
+    const evalRunId = (request: { params: unknown }): string | undefined => {
+      const parsed = z
+        .object({ id: z.string().uuid() })
+        .strict()
+        .safeParse(request.params);
+      return parsed.success ? parsed.data.id : undefined;
+    };
+    const evalComparisonId = (request: {
+      params: unknown;
+    }): string | undefined => {
+      const parsed = z
+        .object({ id: z.string().uuid() })
+        .strict()
+        .safeParse(request.params);
+      return parsed.success ? parsed.data.id : undefined;
+    };
+    const loadEvalManifest = async (id: string): Promise<EvalManifest> => {
+      const stored = storage.getEvalCase(id);
+      if (!stored) throw new Error('Evaluation case was not found.');
+      const stream = await storage.blobs.open(stored.manifestBlobHash);
+      const bytes = await readBoundedBlob(stream, 2 * 1024 * 1024);
+      const manifest = parseEvalManifest(JSON.parse(bytes.toString('utf8')));
+      if (hashEvalJson(manifest) !== stored.manifestHash)
+        throw new Error('Evaluation manifest integrity check failed.');
+      return manifest;
+    };
+    app.get('/api/v1/eval/cases', async (request, reply) => {
+      const parsed = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(10_000).default(500),
+        })
+        .strict()
+        .safeParse(request.query);
+      return parsed.success
+        ? { cases: storage.listEvalCases(parsed.data.limit) }
+        : reply.code(400).send({ code: 'INVALID_QUERY' });
+    });
+    app.post('/api/v1/eval/cases', async (request, reply) => {
+      const parsed = evalManifestCreateSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_EVAL_MANIFEST' });
+      let manifest: EvalManifest;
+      try {
+        manifest = parseEvalManifest(parsed.data.manifest);
+      } catch {
+        return reply.code(400).send({ code: 'INVALID_EVAL_MANIFEST' });
+      }
+      try {
+        const blob = await storage.blobs.put(
+          Readable.from([Buffer.from(JSON.stringify(manifest), 'utf8')]),
+        );
+        storage.recordBlob(blob);
+        const id = storage.createEvalCase({
+          id: manifest.id,
+          name: manifest.name,
+          manifestBlobHash: blob.address,
+          manifestHash: hashEvalJson(manifest),
+          schemaVersion: manifest.schemaVersion,
+          ...(manifest.sourceSessionId
+            ? { sourceSessionId: manifest.sourceSessionId }
+            : {}),
+        });
+        return reply.code(201).send({ case: storage.getEvalCase(id) });
+      } catch {
+        return reply.code(409).send({ code: 'EVAL_CASE_CONFLICT' });
+      }
+    });
+    app.get('/api/v1/eval/cases/:id', async (request, reply) => {
+      const id = evalCaseId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_EVAL_CASE_ID' });
+      const value = storage.getEvalCase(id);
+      return value
+        ? { case: value }
+        : reply.code(404).send({ code: 'NOT_FOUND' });
+    });
+    app.get('/api/v1/eval/cases/:id/manifest', async (request, reply) => {
+      const id = evalCaseId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_EVAL_CASE_ID' });
+      if (!storage.getEvalCase(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      try {
+        return { manifest: await loadEvalManifest(id) };
+      } catch {
+        return reply
+          .code(409)
+          .send({ code: 'EVAL_MANIFEST_INTEGRITY_FAILURE' });
+      }
+    });
+    app.get('/api/v1/eval/cases/:id/pre-task-patch', async (request, reply) => {
+      const id = evalCaseId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_EVAL_CASE_ID' });
+      if (!storage.getEvalCase(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      let manifest: EvalManifest;
+      try {
+        manifest = await loadEvalManifest(id);
+      } catch {
+        return reply
+          .code(409)
+          .send({ code: 'EVAL_MANIFEST_INTEGRITY_FAILURE' });
+      }
+      const patchHash = manifest.repository.preTaskPatchBlobHash;
+      if (!patchHash)
+        return reply.code(404).send({ code: 'PRE_TASK_PATCH_NOT_FOUND' });
+      try {
+        const patch = await readBoundedBlob(
+          await storage.blobs.open(patchHash),
+          16 * 1024 * 1024,
+        );
+        const expected = manifest.repository.preTaskPatchSha256;
+        if (
+          !expected ||
+          createHash('sha256').update(patch).digest('hex') !== expected
+        )
+          return reply
+            .code(409)
+            .send({ code: 'PRE_TASK_PATCH_INTEGRITY_FAILURE' });
+        return reply
+          .header('cache-control', 'no-store')
+          .header(
+            'content-disposition',
+            'attachment; filename="pre-task.patch"',
+          )
+          .header('x-content-type-options', 'nosniff')
+          .type('application/octet-stream')
+          .send(patch);
+      } catch {
+        return reply.code(404).send({ code: 'PRE_TASK_PATCH_NOT_FOUND' });
+      }
+    });
+    app.post('/api/v1/eval/cases/:id/runs', async (request, reply) => {
+      const id = evalCaseId(request);
+      const parsed = evalRunCreateSchema.safeParse(request.body);
+      if (!id || !parsed.success)
+        return reply.code(400).send({ code: 'INVALID_EVAL_RUN' });
+      if (!storage.getEvalCase(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const configuration = parsed.data.configuration as JsonObject;
+      const runId = storage.upsertEvalRun({
+        id: parsed.data.id ?? randomUUID(),
+        evalCaseId: id,
+        configuration,
+        configurationHash: hashEvalJson(configuration),
+        worktreeFingerprintHash: parsed.data.worktreeFingerprintHash,
+        status: parsed.data.status,
+        ...(parsed.data.sourceSessionId
+          ? { sourceSessionId: parsed.data.sourceSessionId }
+          : {}),
+      });
+      return reply.code(201).send({ run: storage.getEvalRun(runId) });
+    });
+    app.get('/api/v1/eval/runs/:id', async (request, reply) => {
+      const id = evalRunId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_EVAL_RUN_ID' });
+      const run = storage.getEvalRun(id);
+      return run ? { run } : reply.code(404).send({ code: 'NOT_FOUND' });
+    });
+    app.patch('/api/v1/eval/runs/:id', async (request, reply) => {
+      const id = evalRunId(request);
+      const parsed = evalRunUpdateSchema.safeParse(request.body);
+      if (!id || !parsed.success)
+        return reply.code(400).send({ code: 'INVALID_EVAL_RUN_UPDATE' });
+      try {
+        storage.updateEvalRun(id, parsed.data as EvalRunUpdate);
+        return { run: storage.getEvalRun(id) };
+      } catch {
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      }
+    });
+    app.post('/api/v1/eval/runs/:id/output', async (request, reply) => {
+      const id = evalRunId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_EVAL_RUN_ID' });
+      if (!storage.getEvalRun(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const body = request.body;
+      if (!Buffer.isBuffer(body) || body.byteLength > 16 * 1024 * 1024)
+        return reply.code(400).send({ code: 'INVALID_EVAL_OUTPUT' });
+      try {
+        const blob = await storage.blobs.put(Readable.from([body]));
+        storage.recordBlob(blob);
+        storage.updateEvalRun(id, { outputBlobHash: blob.address });
+        return { run: storage.getEvalRun(id) };
+      } catch {
+        return reply.code(400).send({ code: 'INVALID_EVAL_OUTPUT' });
+      }
+    });
+    app.post('/api/v1/eval/comparisons', async (request, reply) => {
+      const parsed = evalComparisonCreateSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_EVAL_COMPARISON' });
+      if (!storage.getEvalCase(parsed.data.evalCaseId))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const configuration = parsed.data.configuration as JsonObject;
+      try {
+        const id = storage.createEvalComparison({
+          id: parsed.data.id ?? randomUUID(),
+          evalCaseId: parsed.data.evalCaseId,
+          name: parsed.data.name,
+          configuration,
+        });
+        return reply
+          .code(201)
+          .send({ comparison: storage.getEvalComparison(id) });
+      } catch {
+        return reply.code(409).send({ code: 'EVAL_COMPARISON_CONFLICT' });
+      }
+    });
+    app.get('/api/v1/eval/comparisons/:id', async (request, reply) => {
+      const id = evalComparisonId(request);
+      if (!id)
+        return reply.code(400).send({ code: 'INVALID_EVAL_COMPARISON_ID' });
+      const comparison = storage.getEvalComparison(id);
+      if (!comparison) return reply.code(404).send({ code: 'NOT_FOUND' });
+      const results = storage.listEvalComparisonResults(id);
+      const runs = results
+        .map((result) => storage.getEvalRun(result.evalRunId))
+        .filter((run): run is NonNullable<typeof run> => run !== undefined);
+      return {
+        comparison,
+        results,
+        summary: summarizeRuns(runs, comparisonDivergence(results)),
+      };
+    });
+    app.post('/api/v1/eval/comparisons/:id/results', async (request, reply) => {
+      const id = evalComparisonId(request);
+      const parsed = evalComparisonResultSchema.safeParse(request.body);
+      if (!id || !parsed.success)
+        return reply.code(400).send({ code: 'INVALID_EVAL_COMPARISON_RESULT' });
+      if (!storage.getEvalComparison(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      try {
+        storage.upsertEvalComparisonResult({
+          comparisonId: id,
+          evalRunId: parsed.data.evalRunId,
+          ordinal: parsed.data.ordinal,
+          result: parsed.data.result as JsonObject,
+        });
+        return {
+          results: storage.listEvalComparisonResults(id),
+        };
+      } catch {
+        return reply
+          .code(409)
+          .send({ code: 'EVAL_COMPARISON_RESULT_CONFLICT' });
+      }
+    });
+    app.post(
+      '/api/v1/eval/comparisons/:id/divergence',
+      async (request, reply) => {
+        const id = evalComparisonId(request);
+        const parsed = evalComparisonDivergenceSchema.safeParse(request.body);
+        if (!id || !parsed.success)
+          return reply.code(400).send({ code: 'INVALID_EVAL_DIVERGENCE' });
+        const comparison = storage.getEvalComparison(id);
+        if (!comparison) return reply.code(404).send({ code: 'NOT_FOUND' });
+        const results = storage.listEvalComparisonResults(id);
+        const linked = new Map(
+          results.map((result) => [result.evalRunId, result]),
+        );
+        const leftResult = linked.get(parsed.data.leftRunId);
+        const rightResult = linked.get(parsed.data.rightRunId);
+        if (!leftResult || !rightResult)
+          return reply.code(409).send({ code: 'EVAL_RUN_NOT_IN_COMPARISON' });
+        const leftEvents = parseComparisonEvents(parsed.data.leftEvents);
+        const rightEvents = parseComparisonEvents(parsed.data.rightEvents);
+        if (!leftEvents || !rightEvents)
+          return reply.code(400).send({ code: 'INVALID_EVAL_EVENT_STREAM' });
+        const divergence = firstDivergence(leftEvents, rightEvents);
+        const persisted = divergence
+          ? (JSON.parse(JSON.stringify(divergence)) as JsonObject)
+          : null;
+        storage.upsertEvalComparisonResult({
+          comparisonId: id,
+          evalRunId: parsed.data.leftRunId,
+          ordinal: leftResult.ordinal,
+          result: {
+            ...leftResult.result,
+            comparedWithRunId: parsed.data.rightRunId,
+            firstDivergence: persisted,
+          },
+        });
+        const updatedResults = storage.listEvalComparisonResults(id);
+        const runs = updatedResults
+          .map((result) => storage.getEvalRun(result.evalRunId))
+          .filter((run): run is NonNullable<typeof run> => run !== undefined);
+        return {
+          firstDivergence: divergence ?? null,
+          results: updatedResults,
+          summary: summarizeRuns(runs, comparisonDivergence(updatedResults)),
+        };
+      },
+    );
     app.get('/api/v1/sessions/:id/events', async (request, reply) => {
       const id = sessionId(request);
       if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
@@ -779,6 +1375,58 @@ export async function startDaemon(
             }
           : {}),
       };
+    });
+    app.get('/api/v1/sessions/:id/events/stream', async (request, reply) => {
+      const id = sessionId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
+      if (!storage.getSession(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const parsed = eventStreamQuerySchema.safeParse(request.query);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_QUERY' });
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+        'content-type': 'text/event-stream; charset=utf-8',
+        'x-content-type-options': 'nosniff',
+      });
+      let cursor =
+        parsed.data.afterSequence === undefined
+          ? undefined
+          : {
+              afterSequence: parsed.data.afterSequence,
+              afterId: parsed.data.afterId!,
+            };
+      let closed = false;
+      const finish = (): void => {
+        if (closed) return;
+        closed = true;
+        clearInterval(timer);
+        if (!reply.raw.writableEnded) reply.raw.end();
+      };
+      const poll = (): void => {
+        if (closed) return;
+        const events = storage.listEvents({
+          sessionId: id,
+          limit: parsed.data.limit,
+          ...(cursor ?? {}),
+        });
+        const last = events.at(-1);
+        for (const event of events) {
+          reply.raw.write(
+            `id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`,
+          );
+        }
+        if (last) cursor = { afterSequence: last.sequence, afterId: last.id };
+        reply.raw.write(`: heartbeat ${clock.now().toISOString()}\n\n`);
+        if (parsed.data.once) finish();
+      };
+      const timer = setInterval(poll, 1_000);
+      timer.unref();
+      request.raw.once('close', finish);
+      poll();
+      setTimeout(finish, 60_000).unref();
     });
     app.get('/api/v1/sessions/:id/events/search', async (request, reply) => {
       const id = sessionId(request);
@@ -872,6 +1520,64 @@ export async function startDaemon(
       if (events.length === 0)
         return reply.code(409).send({ code: 'SESSION_HAS_NO_EVENTS' });
       return { analysis: analyzeAndPersist(storage, id) };
+    });
+    app.post('/api/v1/sessions/:id/ai-findings', async (request, reply) => {
+      const id = sessionId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_SESSION_ID' });
+      if (!storage.getSession(id))
+        return reply.code(404).send({ code: 'NOT_FOUND' });
+      const parsed = aiFindingSubmissionSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_AI_FINDINGS' });
+      const events: StoredNormalizedEvent[] = [];
+      let cursor: { afterSequence: number; afterId: string } | undefined;
+      do {
+        const page = storage.listEvents({
+          sessionId: id,
+          limit: 10_000,
+          ...(cursor ?? {}),
+        });
+        events.push(...page);
+        const last = page.at(-1);
+        cursor =
+          page.length === 10_000 && last
+            ? { afterSequence: last.sequence, afterId: last.id }
+            : undefined;
+        if (events.length > 20_000)
+          return reply.code(413).send({ code: 'AI_EVIDENCE_LIMIT' });
+      } while (cursor);
+      const findings = parsed.data.hypotheses.map((hypothesis) => ({
+        id: createUuidV5([
+          'vibetrace/ai-finding/0.1',
+          id,
+          parsed.data.promptDigest,
+          hypothesis.id,
+        ]),
+        sessionId: id,
+        ruleId: 'ai-analyzer',
+        detectorVersion: parsed.data.analyzerVersion,
+        category: hypothesis.category,
+        severity: hypothesis.confidence >= 0.8 ? 'high' : 'medium',
+        confidence: hypothesis.confidence,
+        title: hypothesis.title,
+        explanation: hypothesis.explanation,
+        recommendation: hypothesis.recommendation,
+        evidenceEventIds: hypothesis.evidenceEventIds,
+        counterevidenceEventIds: hypothesis.counterevidenceEventIds,
+        state: 'open',
+      }));
+      try {
+        storage.replaceFindings(id, ['ai-analyzer'], findings);
+        return {
+          analysis: {
+            analyzerVersion: parsed.data.analyzerVersion,
+            promptDigest: parsed.data.promptDigest,
+            hypotheses: findings,
+          },
+        };
+      } catch {
+        return reply.code(400).send({ code: 'INVALID_AI_EVIDENCE' });
+      }
     });
     app.patch('/api/v1/findings/:id/review', async (request, reply) => {
       const params = z

@@ -102,6 +102,45 @@ CREATE TABLE bundle_imports (
 );
 `,
   },
+  {
+    id: 5,
+    sql: `
+CREATE TABLE eval_cases (
+ id TEXT PRIMARY KEY, source_session_id TEXT REFERENCES sessions(id), name TEXT NOT NULL,
+ manifest_blob_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL UNIQUE, schema_version TEXT NOT NULL,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE eval_runs (
+ id TEXT PRIMARY KEY, eval_case_id TEXT NOT NULL REFERENCES eval_cases(id), source_session_id TEXT REFERENCES sessions(id),
+ configuration_json TEXT NOT NULL, configuration_hash TEXT NOT NULL, worktree_fingerprint_hash TEXT NOT NULL,
+ status TEXT NOT NULL, outcome_json TEXT, metrics_json TEXT, output_blob_hash TEXT,
+ started_at TEXT, ended_at TEXT, created_at TEXT NOT NULL,
+ UNIQUE(eval_case_id, configuration_hash, worktree_fingerprint_hash)
+);
+CREATE TABLE eval_comparisons (
+ id TEXT PRIMARY KEY, eval_case_id TEXT NOT NULL REFERENCES eval_cases(id), name TEXT NOT NULL,
+ configuration_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE eval_comparison_results (
+ comparison_id TEXT NOT NULL REFERENCES eval_comparisons(id), eval_run_id TEXT NOT NULL REFERENCES eval_runs(id),
+ ordinal INTEGER NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(comparison_id, eval_run_id)
+);
+CREATE INDEX eval_runs_case_created ON eval_runs(eval_case_id, created_at);
+    `,
+  },
+  {
+    id: 6,
+    sql: `
+CREATE TABLE capture_profiles (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, mode TEXT NOT NULL,
+ settings_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE retention_policies (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, retention_days INTEGER NOT NULL,
+ max_sessions INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+`,
+  },
 ];
 
 /** Apply only migrations not already recorded in the encrypted database. */

@@ -9,6 +9,7 @@ import { userEvent } from '@testing-library/user-event';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { ForensicWorkbench } from './App.js';
+import { FindingsPanel } from './Panels.js';
 import type {
   CoverageDatum,
   Finding,
@@ -247,5 +248,24 @@ describe('forensic dashboard', () => {
       label: 'outcome:partial failure',
       note: 'Tests were not rerun.',
     });
+  });
+
+  it('labels AI hypotheses separately from deterministic findings', () => {
+    render(
+      <FindingsPanel
+        findings={[
+          {
+            ...findings[0]!,
+            id: 'finding-ai',
+            ruleId: 'ai-analyzer',
+            title: 'Possible repeated tool loop',
+          },
+        ]}
+        onSelect={() => undefined}
+        onReview={async () => undefined}
+      />,
+    );
+    expect(screen.getByText(/AI hypothesis · review required/)).toBeTruthy();
+    expect(document.querySelector('[data-kind="ai-hypothesis"]')).toBeTruthy();
   });
 });

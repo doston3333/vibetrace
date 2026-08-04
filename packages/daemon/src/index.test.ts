@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import {
   createEventId,
   createSessionId,
+  TraceEventSchema,
   type TraceEvent,
 } from '@vibetrace/schema';
 import { MemoryKeyProvider, Storage } from '@vibetrace/storage';
@@ -797,6 +798,33 @@ describe('daemon API', () => {
         })
       ).statusCode,
     ).toBe(200);
+    const ai = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/sessions/${sessionId}/ai-findings`,
+      headers,
+      payload: {
+        analyzerVersion: '1.0.0',
+        promptDigest: 'c'.repeat(64),
+        hypotheses: [
+          {
+            id: 'hypothesis-1',
+            category: 'verification',
+            title: 'The retry loop lacked a new signal',
+            explanation: 'The same failure evidence was repeated.',
+            recommendation: 'Change the command or inspect the first error.',
+            confidence: 0.82,
+            evidenceEventIds: [failedCommandSegment(1).event.id],
+            counterevidenceEventIds: [],
+          },
+        ],
+      },
+    });
+    expect(ai.statusCode).toBe(200);
+    expect(storage.listFindings(sessionId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ruleId: 'ai-analyzer', state: 'open' }),
+      ]),
+    );
     expect(
       storage
         .listFindings(sessionId)
@@ -868,6 +896,15 @@ describe('daemon API', () => {
     ).json() as { events: { id: string }[] };
     expect(second.events).toHaveLength(1);
     expect(second.events[0]!.id).not.toBe(first.events[0]!.id);
+
+    const stream = await daemon.app.inject({
+      method: 'GET',
+      url: `/api/v1/sessions/${sessionId}/events/stream?once=true&limit=1`,
+      headers,
+    });
+    expect(stream.statusCode).toBe(200);
+    expect(stream.headers['content-type']).toContain('text/event-stream');
+    expect(stream.body).toContain(first.events[0]!.id);
 
     expect(
       (
@@ -1066,6 +1103,268 @@ describe('daemon API', () => {
     });
     await rm(join(path, 'daemon.json'), { force: true });
     await rm(join(path, 'daemon.lock'), { force: true, recursive: true });
+    storage.close();
+  });
+
+  it('validates and persists eval cases, runs, and comparison results through the authenticated API', async () => {
+    const { path, storage } = await state();
+    await writeSegment(spoolPaths(path), segment());
+    const daemon = await startDaemon({ stateDir: path, storage });
+    const headers = { authorization: `Bearer ${daemon.token}` };
+    const sessionId = segment().event.sessionId;
+    const preTaskPatch = Buffer.from('diff --git a/README.md b/README.md\n');
+    const preTaskPatchBlob = await storage.blobs.put(
+      Readable.from([preTaskPatch]),
+    );
+    storage.recordBlob(preTaskPatchBlob);
+    const manifest = {
+      schemaVersion: '1.0.0',
+      id: createSessionId('eval', 'api-case'),
+      name: 'API evaluation case',
+      sourceSessionId: sessionId,
+      sourceEvidence: {
+        eventIds: [segment().event.id],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: {
+        baseCommit: 'a'.repeat(40),
+        preTaskPatchBlobHash: preTaskPatchBlob.address,
+        preTaskPatchSha256: createHash('sha256')
+          .update(preTaskPatch)
+          .digest('hex'),
+      },
+      task: { prompt: 'Fix the fixture.', constraints: [], inferredFields: [] },
+      configuration: { skills: [], instructionHashes: [], inferredFields: [] },
+      success: {
+        assertions: [
+          { type: 'human_rating' as const, prompt: 'Review', minimum: 0 },
+        ],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const created = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/eval/cases',
+      headers,
+      payload: { manifest },
+    });
+    expect(created.statusCode).toBe(201);
+    const evalCase = (created.json() as { case: { id: string } }).case;
+    expect(evalCase.id).toBe(manifest.id);
+    const manifestResponse = await daemon.app.inject({
+      method: 'GET',
+      url: `/api/v1/eval/cases/${evalCase.id}/manifest`,
+      headers,
+    });
+    expect(manifestResponse.statusCode).toBe(200);
+    expect(manifestResponse.json()).toMatchObject({
+      manifest: { id: manifest.id, task: { prompt: manifest.task.prompt } },
+    });
+    const patchResponse = await daemon.app.inject({
+      method: 'GET',
+      url: `/api/v1/eval/cases/${evalCase.id}/pre-task-patch`,
+      headers,
+    });
+    expect(patchResponse.statusCode).toBe(200);
+    expect(Buffer.from(patchResponse.rawPayload)).toEqual(preTaskPatch);
+    const run = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/cases/${evalCase.id}/runs`,
+      headers,
+      payload: {
+        configuration: { model: 'fixture' },
+        worktreeFingerprintHash: 'b'.repeat(64),
+      },
+    });
+    expect(run.statusCode).toBe(201);
+    const evalRun = (run.json() as { run: { id: string } }).run;
+    const updated = await daemon.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/eval/runs/${evalRun.id}`,
+      headers,
+      payload: { status: 'completed', outcome: { success: true } },
+    });
+    expect(updated.statusCode).toBe(200);
+    const output = Buffer.from('{"type":"turn.completed"}\n', 'utf8');
+    const outputResponse = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/runs/${evalRun.id}/output`,
+      headers: { ...headers, 'content-type': 'application/octet-stream' },
+      payload: output,
+    });
+    expect(outputResponse.statusCode).toBe(200);
+    const outputHash = (
+      outputResponse.json() as { run: { outputBlobHash: string } }
+    ).run.outputBlobHash;
+    expect(outputHash).toMatch(/^[a-f0-9]{64}$/);
+    const outputStream = await storage.blobs.open(outputHash);
+    const outputChunks: Buffer[] = [];
+    for await (const chunk of outputStream)
+      outputChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    expect(Buffer.concat(outputChunks)).toEqual(output);
+    const comparison = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/eval/comparisons',
+      headers,
+      payload: {
+        evalCaseId: evalCase.id,
+        name: 'Fixture comparison',
+        configuration: { dimensions: ['model'] },
+      },
+    });
+    expect(comparison.statusCode).toBe(201);
+    const comparisonId = (comparison.json() as { comparison: { id: string } })
+      .comparison.id;
+    const result = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/comparisons/${comparisonId}/results`,
+      headers,
+      payload: {
+        evalRunId: evalRun.id,
+        ordinal: 0,
+        result: { success: true },
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    const secondRunResponse = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/cases/${evalCase.id}/runs`,
+      headers,
+      payload: {
+        configuration: { model: 'fixture-variant' },
+        worktreeFingerprintHash: 'c'.repeat(64),
+      },
+    });
+    expect(secondRunResponse.statusCode).toBe(201);
+    const secondRun = (secondRunResponse.json() as { run: { id: string } }).run;
+    const secondResult = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/comparisons/${comparisonId}/results`,
+      headers,
+      payload: {
+        evalRunId: secondRun.id,
+        ordinal: 1,
+        result: { success: false },
+      },
+    });
+    expect(secondResult.statusCode).toBe(200);
+    const rightEvent = TraceEventSchema.parse({
+      ...segment().event,
+      id: createEventId({
+        adapter: 'test',
+        sourceSessionId: 'source-session',
+        sourceSequence: 99,
+        type: 'message.agent',
+      }),
+      payload: { content: 'different evidence' },
+      rawPayload: { content: 'different evidence' },
+    });
+    const divergence = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/comparisons/${comparisonId}/divergence`,
+      headers,
+      payload: {
+        leftRunId: evalRun.id,
+        rightRunId: secondRun.id,
+        leftEvents: [segment().event],
+        rightEvents: [rightEvent],
+      },
+    });
+    expect(divergence.statusCode).toBe(200);
+    expect(divergence.json()).toMatchObject({
+      firstDivergence: { index: 0, reason: 'payload' },
+    });
+    expect(
+      (
+        await daemon.app.inject({
+          method: 'GET',
+          url: `/api/v1/eval/comparisons/${comparisonId}`,
+          headers,
+        })
+      ).json(),
+    ).toMatchObject({
+      results: [{ evalRunId: evalRun.id }, { evalRunId: secondRun.id }],
+      summary: { firstDivergence: { index: 0, reason: 'payload' } },
+    });
+    await daemon.close();
+    storage.close();
+  });
+
+  it('keeps OpenTelemetry opt-in and excludes prompt bodies by default', async () => {
+    const { path, storage } = await state();
+    const daemon = await startDaemon({
+      stateDir: path,
+      storage,
+      otel: { enabled: true },
+    });
+    const response = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/otel/v1/logs',
+      headers: {
+        authorization: `Bearer ${daemon.token}`,
+        'x-vibetrace-source-session': 'otel-test',
+      },
+      payload: {
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    body: { stringValue: 'private prompt' },
+                    attributes: {
+                      'gen_ai.usage.input_tokens': 3,
+                      'gen_ai.usage.output_tokens': 2,
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ accepted: 1, gaps: 0 });
+    const session = storage
+      .listSessions()
+      .find((item) => item.source === 'opentelemetry');
+    expect(session).toBeDefined();
+    const events = storage.listEvents({ sessionId: session!.id });
+    expect(events[0]?.event.usage?.inputTokens).toBe(3);
+    expect(JSON.stringify(events[0]?.event.rawPayload)).not.toContain(
+      'private prompt',
+    );
+    await daemon.close();
+    storage.close();
+  });
+
+  it('exposes explicit capture-profile and retention controls without deleting evidence', async () => {
+    const { path, storage } = await state();
+    const daemon = await startDaemon({ stateDir: path, storage });
+    const headers = { authorization: `Bearer ${daemon.token}` };
+    const profile = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/privacy/capture-profiles',
+      headers,
+      payload: {
+        name: 'Minimal',
+        mode: 'minimal',
+        settings: { capturePrompts: false, secretDetection: true },
+      },
+    });
+    expect(profile.statusCode).toBe(201);
+    expect(profile.json()).toMatchObject({ profile: { mode: 'minimal' } });
+    const retention = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/privacy/retention',
+      headers,
+      payload: { name: 'Thirty days', retentionDays: 30 },
+    });
+    expect(retention.statusCode).toBe(201);
+    expect(retention.json()).toMatchObject({ policy: { retentionDays: 30 } });
+    await daemon.close();
     storage.close();
   });
 

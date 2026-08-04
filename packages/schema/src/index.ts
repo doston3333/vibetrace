@@ -62,6 +62,7 @@ export const EventTypeSchema = z.enum([
   'session.completed',
   'turn.started',
   'turn.completed',
+  'usage.updated',
   'message.user',
   'message.agent',
   'message.plan',
@@ -245,6 +246,7 @@ export const CaptureGapDataClassSchema = z.enum([
   'subagents',
   'tokenUsage',
   'repositoryState',
+  'unknown',
 ]);
 
 /** Exact payload contract for a capture gap. */
@@ -388,6 +390,7 @@ export const TraceEventSchema = z.discriminatedUnion('type', [
   eventVariant('session.completed', genericPayloadSchema),
   eventVariant('turn.started', genericPayloadSchema),
   eventVariant('turn.completed', genericPayloadSchema),
+  eventVariant('usage.updated', genericPayloadSchema),
   eventVariant('message.user', textPayloadSchema),
   eventVariant('message.agent', textPayloadSchema),
   eventVariant('message.plan', textPayloadSchema),

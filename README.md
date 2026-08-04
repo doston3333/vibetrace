@@ -1,8 +1,8 @@
 # VibeTrace
 
-VibeTrace is a local-first, open-source forensic debugger for AI coding sessions. Evaluation and replay are roadmap work, not part of the strict MVP.
+VibeTrace is a local-first, open-source forensic debugger and evaluation lab for AI coding sessions.
 
-The current MVP foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, Codex lifecycle-hook capture, a responsive forensic dashboard, evidence-linked deterministic diagnostics, annotations, and previewed scrubbed bundles encrypted with standard age passphrase encryption.
+The production foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, Codex lifecycle-hook and app-server capture, generic JSONL and opt-in OpenTelemetry adapters, a responsive forensic dashboard, evidence-linked deterministic and optional tool-free AI findings, annotations, isolated evaluation runs, deterministic comparison summaries, and previewed scrubbed bundles encrypted with standard age passphrase encryption.
 
 ## Documentation
 
@@ -15,6 +15,8 @@ The current MVP foundation includes the canonical trace schema and deterministic
 - [Release gate](docs/release.md)
 - [Deterministic diagnostic rules](docs/diagnostics/rules.md)
 - [Diagnostic fixture precision/recall report](docs/diagnostics/precision-recall.md)
+- [Evaluation and comparison architecture](docs/architecture/evaluation.md)
+- [Adapter SDK](packages/adapter-sdk/README.md)
 - [ADR 0001: Local-first](docs/decisions/0001-local-first.md)
 - [ADR 0002: Canonical event schema](docs/decisions/0002-canonical-event-schema.md)
 - [ADR 0003: Codex-first capture](docs/decisions/0003-codex-first-capture.md)
@@ -48,11 +50,19 @@ needed.
 
 - `apps/dashboard` — React and Vite forensic dashboard
 - `packages/adapter-codex` — versioned Codex hook, installer, doctor, and transcript adapter
+- `packages/adapter-codex-app-server` — opt-in full-fidelity Codex app-server JSONL adapter
+- `packages/adapter-generic-jsonl` — bounded generic agent JSONL adapter
+- `packages/adapter-otel` — opt-in OpenTelemetry enrichment adapter
+- `packages/adapter-sdk` — source-adapter capability and conformance contracts
+- `packages/analyzer-ai` — provider-neutral, tool-free structured analyzer boundary
 - `packages/bundle` — derived redaction views and bounded standard-age portable bundles
 - `packages/cli` — the `vibetrace` command-line interface
 - `packages/daemon` — authenticated loopback API and crash-safe spool importer
 - `packages/diagnostics` — versioned deterministic rules and labeled fixture corpus
 - `packages/enrichment` — repository, command, verification, and run-fingerprint evidence
+- `packages/eval-spec` — versioned, reviewable evaluation manifests
+- `packages/eval-runner` — shell-free isolated worktree execution and assertions
+- `packages/eval-compare` — deterministic comparison metrics and divergence analysis
 - `packages/schema` — canonical trace model and stable identifiers
 - `packages/storage` — encrypted SQLCipher-compatible storage and blob layer
 - `packages/test-fixtures` — deterministic trace corpora
@@ -92,6 +102,14 @@ vibetrace sessions list
 vibetrace sessions show <session-id>
 vibetrace export <session-id> --profile share-safe --output trace.vibetrace.age
 vibetrace import trace.vibetrace.age
+
+# Convert a captured session into a reviewed eval, run it in a detached worktree,
+# then compare persisted runs.
+vibetrace eval create <session-id> --name "authorization regression"
+vibetrace eval validate eval-manifest.json --json
+vibetrace eval run eval-manifest.json --cwd /path/to/checkout --json
+vibetrace eval compare <comparison-id> --json
+vibetrace eval compare-divergence <comparison-id> <left-run-id> <right-run-id> left-events.json right-events.json --json
 ```
 
 Export prints the exact versioned manifest before hidden passphrase entry. The manifest hash is submitted with the export request, so a changed session requires a new preview. Portable bundles have no plaintext mode.

@@ -8,8 +8,8 @@ Reliable capture is a prerequisite for reconstruction and diagnosis. Supporting 
 
 ## Decision
 
-The MVP supports Codex lifecycle hooks first. Hooks write atomic per-event JSONL spool segments locally and report missing source data as capture gaps. No additional adapter is added before Codex capture is reliable.
+The standard capture mode is Codex lifecycle hooks. Hooks write atomic per-event JSONL spool segments locally and report missing source data as capture gaps. Additional adapters are isolated behind the adapter SDK and cannot change the canonical schema or weaken the standard hook boundary.
 
 ## Consequences
 
-The hook process remains small and resilient to daemon downtime. Codex-specific compatibility code is isolated behind adapter provenance, while the canonical schema remains source-neutral. Lab/app-server capture and OpenTelemetry are not MVP capabilities.
+The hook process remains small and resilient to daemon downtime. Codex-specific compatibility code is isolated behind adapter provenance, while the canonical schema remains source-neutral. App-server, generic JSONL, and OpenTelemetry capture are explicit opt-in adapters with their own capability gaps.

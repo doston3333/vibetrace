@@ -8,8 +8,13 @@
       "types": "./src/index.ts",
       "development": "./src/index.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./schema.json": "./generated/trace-event.schema.json"
   },
+  "files": [
+    "dist",
+    "generated"
+  ],
   "scripts": {
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",

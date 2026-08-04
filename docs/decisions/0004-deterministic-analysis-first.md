@@ -8,7 +8,7 @@ Diagnoses need transparent, reproducible evidence. Model-generated conclusions c
 
 ## Decision
 
-Initial analysis uses deterministic rules with stable rule IDs, versions, fixtures, clear recommendations, and concrete evidence event IDs. AI-assisted analysis is outside the MVP.
+Initial analysis uses deterministic rules with stable rule IDs, versions, fixtures, clear recommendations, and concrete evidence event IDs. Optional AI-assisted synthesis is a separate, provider-neutral, tool-free boundary and cannot replace deterministic findings.
 
 ## Consequences
 

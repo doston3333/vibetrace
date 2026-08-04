@@ -201,6 +201,15 @@ pre {
   width: 0.55rem;
 }
 
+.masthead-link {
+  color: var(--blue-ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  justify-self: end;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+}
+
 .eyebrow {
   color: var(--oxide);
   font-family: var(--font-body);
@@ -436,6 +445,88 @@ textarea::placeholder {
 .teaching-empty strong {
   font-family: var(--font-display);
   font-size: 1.5rem;
+}
+
+.eval-case-list {
+  display: grid;
+}
+
+.eval-case-row {
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+  display: grid;
+  gap: var(--space-md);
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: var(--space-lg);
+}
+
+.eval-case-row > div {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.eval-case-row small {
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+}
+
+.eval-case-row code {
+  font-family: var(--font-data);
+  font-size: 0.72rem;
+}
+
+.comparison-panel {
+  background: var(--paper-bright);
+  border-block: 1px solid var(--rule-strong);
+  display: grid;
+  gap: var(--space-lg);
+  margin-top: var(--space-2xl);
+  padding: var(--space-xl);
+}
+
+.comparison-panel > div:first-child p {
+  color: var(--ink-soft);
+  margin-top: var(--space-sm);
+}
+
+.comparison-panel label {
+  display: grid;
+  font-size: 0.72rem;
+  font-weight: 700;
+  gap: var(--space-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.comparison-results {
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: var(--space-md);
+  padding-top: var(--space-lg);
+}
+
+.comparison-results dl {
+  display: grid;
+  gap: var(--space-md);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.comparison-results dl div {
+  border-left: 2px solid var(--sage);
+  display: grid;
+  gap: var(--space-xs);
+  padding-left: var(--space-sm);
+}
+
+.comparison-results dt {
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.comparison-results dd {
+  font-family: var(--font-data);
 }
 
 .session-overview {
@@ -971,9 +1062,119 @@ textarea::placeholder {
 .coverage-ledger,
 .finding-list,
 .diff-history,
-.annotation-ledger {
+.annotation-ledger,
+.context-grid,
+.causal-graph {
   display: grid;
   padding-inline: var(--space-lg);
+}
+
+.context-grid {
+  gap: 1px;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  background: var(--rule-strong);
+}
+
+.context-card {
+  background: var(--paper-bright);
+  min-height: 12rem;
+  padding: var(--space-lg);
+}
+
+.context-card > header {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+}
+
+.context-card > header span,
+.context-card > small {
+  color: var(--ink-soft);
+  font-family: var(--font-data);
+  font-size: 0.68rem;
+}
+
+.context-card > p {
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+}
+
+.context-card ul {
+  list-style: none;
+  margin: 0;
+  max-height: 12rem;
+  overflow: auto;
+  padding: 0;
+}
+
+.context-card li + li {
+  border-top: 1px solid var(--rule);
+}
+
+.context-card button {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  gap: var(--space-sm);
+  padding: 0.45rem 0;
+  text-align: left;
+  width: 100%;
+}
+
+.context-card button span {
+  color: var(--ink-soft);
+  font-family: var(--font-data);
+  font-size: 0.68rem;
+}
+
+.causal-graph {
+  gap: var(--space-xl);
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.causal-chain {
+  background: var(--paper-deep);
+  border-left: 0.25rem solid var(--oxide);
+  display: grid;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+}
+
+.causal-chain button,
+.causal-finding {
+  background: var(--paper-bright);
+  border: 1px solid var(--rule);
+  display: grid;
+  gap: 0.25rem;
+  padding: var(--space-md);
+  text-align: left;
+}
+
+.causal-chain button {
+  cursor: pointer;
+}
+
+.causal-chain button span,
+.causal-finding span {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.causal-finding {
+  border-color: var(--oxide);
+}
+
+.causal-finding p {
+  margin-bottom: 0;
+}
+
+.causal-arrow {
+  color: var(--oxide);
+  font-size: 1.25rem;
+  text-align: center;
 }
 
 .coverage-ledger article {
@@ -1039,6 +1240,15 @@ textarea::placeholder {
   gap: var(--space-lg);
   grid-template-columns: 3.5rem 1fr;
   padding-block: var(--space-xl);
+}
+
+.finding-list article[data-kind='ai-hypothesis'] {
+  border-left: 0.25rem solid var(--amber);
+  padding-left: var(--space-lg);
+}
+
+.finding-list article[data-kind='ai-hypothesis'] .finding-meta {
+  color: var(--amber);
 }
 
 .finding-number {

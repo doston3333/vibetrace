@@ -113,6 +113,77 @@ importers:
         specifier: workspace:*
         version: link:../storage
 
+  packages/adapter-codex-app-server:
+    dependencies:
+      '@vibetrace/daemon':
+        specifier: workspace:*
+        version: link:../daemon
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
+  packages/adapter-generic-jsonl:
+    dependencies:
+      '@vibetrace/adapter-sdk':
+        specifier: workspace:*
+        version: link:../adapter-sdk
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
+  packages/adapter-otel:
+    dependencies:
+      '@vibetrace/adapter-sdk':
+        specifier: workspace:*
+        version: link:../adapter-sdk
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
+  packages/adapter-sdk:
+    dependencies:
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
+  packages/analyzer-ai:
+    dependencies:
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
   packages/bundle:
     dependencies:
       '@vibetrace/schema':
@@ -147,12 +218,30 @@ importers:
       '@vibetrace/adapter-codex':
         specifier: workspace:*
         version: link:../adapter-codex
+      '@vibetrace/adapter-codex-app-server':
+        specifier: workspace:*
+        version: link:../adapter-codex-app-server
+      '@vibetrace/adapter-generic-jsonl':
+        specifier: workspace:*
+        version: link:../adapter-generic-jsonl
       '@vibetrace/bundle':
         specifier: workspace:*
         version: link:../bundle
       '@vibetrace/daemon':
         specifier: workspace:*
         version: link:../daemon
+      '@vibetrace/eval-compare':
+        specifier: workspace:*
+        version: link:../eval-compare
+      '@vibetrace/eval-runner':
+        specifier: workspace:*
+        version: link:../eval-runner
+      '@vibetrace/eval-spec':
+        specifier: workspace:*
+        version: link:../eval-spec
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
       commander:
         specifier: 15.0.0
         version: 15.0.0
@@ -171,12 +260,24 @@ importers:
       '@fastify/static':
         specifier: 10.1.2
         version: 10.1.2
+      '@vibetrace/adapter-otel':
+        specifier: workspace:*
+        version: link:../adapter-otel
+      '@vibetrace/analyzer-ai':
+        specifier: workspace:*
+        version: link:../analyzer-ai
       '@vibetrace/bundle':
         specifier: workspace:*
         version: link:../bundle
       '@vibetrace/diagnostics':
         specifier: workspace:*
         version: link:../diagnostics
+      '@vibetrace/eval-compare':
+        specifier: workspace:*
+        version: link:../eval-compare
+      '@vibetrace/eval-spec':
+        specifier: workspace:*
+        version: link:../eval-spec
       '@vibetrace/schema':
         specifier: workspace:*
         version: link:../schema
@@ -187,8 +288,8 @@ importers:
         specifier: 5.11.2
         version: 5.11.2
       zod:
-        specifier: 4.3.6
-        version: 4.3.6
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: 24.13.3
@@ -222,6 +323,48 @@ importers:
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
+
+  packages/eval-compare:
+    dependencies:
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@vibetrace/storage':
+        specifier: workspace:*
+        version: link:../storage
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
+  packages/eval-runner:
+    dependencies:
+      '@vibetrace/eval-spec':
+        specifier: workspace:*
+        version: link:../eval-spec
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+
+  packages/eval-spec:
+    dependencies:
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      '@vibetrace/test-fixtures':
+        specifier: workspace:*
+        version: link:../test-fixtures
 
   packages/schema:
     dependencies:

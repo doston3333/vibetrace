@@ -86,6 +86,78 @@ export interface CoverageDatum {
   }[];
 }
 
+export interface EvalCaseSummary {
+  readonly id: string;
+  readonly sourceSessionId?: string;
+  readonly name: string;
+  readonly manifestBlobHash: string;
+  readonly manifestHash: string;
+  readonly schemaVersion: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface EvalRunSummary {
+  readonly id: string;
+  readonly evalCaseId: string;
+  readonly status: string;
+  readonly configuration: JsonObject;
+  readonly outcome?: JsonObject;
+  readonly metrics?: JsonObject;
+  readonly createdAt: string;
+}
+
+export interface EvalComparisonSummary {
+  readonly id: string;
+  readonly evalCaseId: string;
+  readonly name: string;
+  readonly configuration: JsonObject;
+  readonly createdAt: string;
+}
+
+export interface EvalComparisonResponse {
+  readonly comparison: EvalComparisonSummary;
+  readonly results: readonly {
+    readonly comparisonId: string;
+    readonly evalRunId: string;
+    readonly ordinal: number;
+    readonly result: JsonObject;
+  }[];
+  readonly summary: {
+    readonly runCount: number;
+    readonly passedCount: number;
+    readonly failedCount: number;
+    readonly pendingCount: number;
+    readonly successRate: number | null;
+    readonly durationMs: {
+      readonly median: number | null;
+      readonly p95: number | null;
+    };
+    readonly toolCount: {
+      readonly median: number | null;
+      readonly p95: number | null;
+    };
+    readonly diffFileCount: {
+      readonly median: number | null;
+      readonly p95: number | null;
+    };
+    readonly tokenCount: {
+      readonly median: number | null;
+      readonly p95: number | null;
+    };
+    readonly estimatedCostMicros: {
+      readonly median: number | null;
+      readonly p95: number | null;
+    };
+    readonly firstDivergence?: {
+      readonly index: number;
+      readonly reason: string;
+      readonly leftEventId?: string;
+      readonly rightEventId?: string;
+    };
+  };
+}
+
 interface EventCursor {
   readonly afterSequence: number;
   readonly afterId: string;
@@ -212,6 +284,17 @@ export const api = {
       `/api/v1/annotations${query({ targetType, targetId })}`,
     );
     return response.annotations;
+  },
+  async evalCases(): Promise<readonly EvalCaseSummary[]> {
+    const response = await jsonRequest<{ cases: readonly EvalCaseSummary[] }>(
+      '/api/v1/eval/cases?limit=10000',
+    );
+    return response.cases;
+  },
+  async evalComparison(id: string): Promise<EvalComparisonResponse> {
+    return jsonRequest<EvalComparisonResponse>(
+      `/api/v1/eval/comparisons/${encodeURIComponent(id)}`,
+    );
   },
   async createAnnotation(input: {
     targetType: string;

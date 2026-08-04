@@ -71,7 +71,11 @@ export function SessionOverview({
       </dl>
       {findings[0] ? (
         <div className="primary-hypothesis">
-          <span>Primary deterministic finding</span>
+          <span>
+            {findings[0].ruleId === 'ai-analyzer'
+              ? 'Primary AI hypothesis · review required'
+              : 'Primary deterministic finding'}
+          </span>
           <strong>{findings[0].title}</strong>
           <p>{findings[0].explanation}</p>
         </div>
@@ -135,6 +139,176 @@ export function CoveragePanel({
   );
 }
 
+function payloadText(event: StoredEvent, key: string): string | undefined {
+  const value = (event.event.payload as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** Show observed context inputs without implying that repository presence meant model awareness. */
+export function ContextMap({
+  events,
+  onSelect,
+}: {
+  readonly events: readonly StoredEvent[];
+  readonly onSelect: (id: string) => void;
+}) {
+  const instructions = events.filter((item) =>
+    ['instruction.loaded', 'skill.loaded'].includes(item.type),
+  );
+  const read = events.filter((item) => item.type === 'file.read');
+  const changed = events.filter((item) => item.type === 'file.changed');
+  const compactions = events.filter((item) =>
+    item.type.startsWith('context.compaction'),
+  );
+  const subagents = events.filter((item) => item.type.startsWith('subagent.'));
+  const group = (
+    title: string,
+    note: string,
+    items: readonly StoredEvent[],
+  ) => (
+    <article className="context-card" key={title}>
+      <header>
+        <strong>{title}</strong>
+        <span>{items.length.toLocaleString()}</span>
+      </header>
+      <p>{note}</p>
+      <ul>
+        {items.slice(0, 40).map((item) => (
+          <li key={item.id}>
+            <button type="button" onClick={() => onSelect(item.id)}>
+              <span>#{item.sequence}</span>
+              {payloadText(item, 'name') ??
+                payloadText(item, 'path') ??
+                payloadText(item, 'subagentId') ??
+                item.type}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {items.length > 40 ? (
+        <small>Showing the first 40 observed entries.</small>
+      ) : null}
+    </article>
+  );
+  return (
+    <section className="panel-page" aria-labelledby="context-map-title">
+      <header>
+        <p className="eyebrow">Observed context</p>
+        <h2 id="context-map-title">Context map</h2>
+        <p>
+          These are source events that were observed or loaded. Presence in the
+          repository alone is never treated as model awareness.
+        </p>
+      </header>
+      <div className="context-grid">
+        {group(
+          'Instructions and skills',
+          'Loaded by the source adapter.',
+          instructions,
+        )}
+        {group(
+          'Files read',
+          'Read events observed before or during the task.',
+          read,
+        )}
+        {group(
+          'Files changed',
+          'Changed-file observations, not authorship claims.',
+          changed,
+        )}
+        {group(
+          'Compaction boundaries',
+          'Context lifecycle events observed by the adapter.',
+          compactions,
+        )}
+        {group(
+          'Subagent activity',
+          'Subagent lifecycle events exposed by the source.',
+          subagents,
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** Render a conservative evidence chain; every edge is deterministic or explicitly marked as a finding. */
+export function CausalGraph({
+  events,
+  findings,
+  onSelect,
+}: {
+  readonly events: readonly StoredEvent[];
+  readonly findings: readonly Finding[];
+  readonly onSelect: (id: string) => void;
+}) {
+  return (
+    <section className="panel-page" aria-labelledby="causal-graph-title">
+      <header>
+        <p className="eyebrow">Evidence relationships</p>
+        <h2 id="causal-graph-title">Causal evidence graph</h2>
+        <p>
+          Edges are deterministic links between captured events and findings;
+          they are not claims about hidden reasoning.
+        </p>
+      </header>
+      {findings.length === 0 ? (
+        <div className="teaching-empty">
+          <strong>No evidence-linked chain yet.</strong>
+          <p>Run deterministic analysis or review the timeline manually.</p>
+        </div>
+      ) : (
+        <div className="causal-graph" role="list">
+          {findings.map((finding) => {
+            const evidence = finding.evidenceEventIds
+              .map((id) => events.find((event) => event.id === id))
+              .filter((event): event is StoredEvent => event !== undefined);
+            const first = evidence[0];
+            const last = evidence.at(-1);
+            return (
+              <article
+                className="causal-chain"
+                key={finding.id}
+                role="listitem"
+              >
+                <button
+                  type="button"
+                  onClick={() => first && onSelect(first.id)}
+                >
+                  <span>Observed evidence</span>
+                  <strong>
+                    {first ? eventTitle(first.event) : 'Unavailable event'}
+                  </strong>
+                </button>
+                <span className="causal-arrow" aria-hidden="true">
+                  ↓
+                </span>
+                <div className="causal-finding">
+                  <span>
+                    {finding.ruleId === 'ai-analyzer'
+                      ? 'AI hypothesis · review required'
+                      : 'Deterministic finding'}
+                  </span>
+                  <strong>{finding.title}</strong>
+                  <p>{finding.explanation}</p>
+                </div>
+                <span className="causal-arrow" aria-hidden="true">
+                  ↓
+                </span>
+                <button type="button" onClick={() => last && onSelect(last.id)}>
+                  <span>Related terminal evidence</span>
+                  <strong>
+                    {last ? eventTitle(last.event) : 'No linked terminal event'}
+                  </strong>
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function FindingsPanel({
   findings,
   onSelect,
@@ -155,20 +329,33 @@ export function FindingsPanel({
   return (
     <section className="panel-page" aria-labelledby="findings-title">
       <header>
-        <p className="eyebrow">Deterministic analysis</p>
+        <p className="eyebrow">
+          Deterministic analysis and optional hypotheses
+        </p>
         <h2 id="findings-title">Evidence-linked findings</h2>
         <p>Findings remain separate from source facts and user labels.</p>
       </header>
       <div className="finding-list">
         {findings.length > 0 ? (
           findings.map((finding, index) => (
-            <article key={finding.id} data-severity={finding.severity}>
+            <article
+              key={finding.id}
+              data-severity={finding.severity}
+              data-kind={
+                finding.ruleId === 'ai-analyzer'
+                  ? 'ai-hypothesis'
+                  : 'deterministic'
+              }
+            >
               <span className="finding-number">
                 F-{String(index + 1).padStart(2, '0')}
               </span>
               <div>
                 <p className="finding-meta">
-                  {finding.category} · {finding.severity} · {finding.ruleId}
+                  {finding.ruleId === 'ai-analyzer'
+                    ? 'AI hypothesis · review required'
+                    : 'Deterministic'}{' '}
+                  · {finding.category} · {finding.severity} · {finding.ruleId}
                 </p>
                 <h3>{finding.title}</h3>
                 <p>{finding.explanation}</p>

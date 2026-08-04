@@ -15,7 +15,7 @@ import { performance } from 'node:perf_hooks';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-import { hkdfSync } from 'node:crypto';
+import { createHash, hkdfSync } from 'node:crypto';
 
 import Database from 'better-sqlite3-multiple-ciphers';
 import {
@@ -296,6 +296,125 @@ describe('encrypted Storage', () => {
         .get(),
     ).toMatchObject({ count: 1 });
     db.close();
+  });
+
+  it('persists capture profiles and applies reversible retention tombstones', async () => {
+    const { storage, sessionId } = await setup();
+    storage.createCaptureProfile({
+      id: 'profile-standard',
+      name: 'Standard local',
+      mode: 'standard',
+      settings: { captureDiffs: true, secretDetection: true },
+    });
+    expect(storage.getCaptureProfile('Standard local')).toMatchObject({
+      mode: 'standard',
+    });
+    storage.createRetentionPolicy({
+      id: 'retention',
+      name: 'Ninety days',
+      retentionDays: 90,
+      maxSessions: 10,
+    });
+    expect(storage.listRetentionPolicies()).toHaveLength(1);
+    storage.createSession({
+      id: 'old-session',
+      projectId: 'project',
+      source: 'test-adapter',
+      sourceSessionId: 'old-source-session',
+      startedAt: '2025-01-01T00:00:00.000Z',
+      status: 'completed',
+      captureMode: 'minimal',
+    });
+    expect(storage.applyRetention('2026-01-01T00:00:00.000Z')).toBe(1);
+    expect(storage.getSession('old-session')).toBeUndefined();
+    expect(storage.getSession('old-session', true)).toBeDefined();
+    expect(storage.getSession(sessionId)).toBeDefined();
+    storage.close();
+  });
+
+  it('persists eval manifests, deterministic runs, and comparison evidence', async () => {
+    const { storage, sessionId } = await setup();
+    const manifest = await storage.blobs.put(
+      Readable.from([Buffer.from('{"schemaVersion":"1.0.0"}')]),
+    );
+    storage.recordBlob(manifest);
+    const manifestHash = 'c'.repeat(64);
+    const caseId = storage.createEvalCase({
+      id: 'eval-case-1',
+      name: 'Authorization regression',
+      manifestBlobHash: manifest.address,
+      manifestHash,
+      schemaVersion: '1.0.0',
+      sourceSessionId: sessionId,
+    });
+    expect(caseId).toBe('eval-case-1');
+    expect(
+      storage.createEvalCase({
+        id: 'ignored-duplicate',
+        name: 'Duplicate import',
+        manifestBlobHash: manifest.address,
+        manifestHash,
+        schemaVersion: '1.0.0',
+      }),
+    ).toBe(caseId);
+    expect(storage.getEvalCase(caseId)).toMatchObject({
+      id: caseId,
+      manifestBlobHash: manifest.address,
+    });
+
+    const configuration = { model: 'gpt-test' };
+    const configurationHash = createHash('sha256')
+      .update('{"model":"gpt-test"}')
+      .digest('hex');
+    const worktreeFingerprintHash = 'd'.repeat(64);
+    const runId = storage.upsertEvalRun({
+      id: 'eval-run-1',
+      evalCaseId: caseId,
+      configuration,
+      configurationHash,
+      worktreeFingerprintHash,
+      status: 'queued',
+    });
+    expect(
+      storage.upsertEvalRun({
+        id: 'ignored-duplicate-run',
+        evalCaseId: caseId,
+        configuration,
+        configurationHash,
+        worktreeFingerprintHash,
+        status: 'running',
+      }),
+    ).toBe(runId);
+    storage.updateEvalRun(runId, {
+      status: 'completed',
+      outcome: { success: true },
+      metrics: { durationMs: 42 },
+      startedAt: '2026-01-01T00:00:00.000Z',
+      endedAt: '2026-01-01T00:00:01.000Z',
+    });
+    expect(storage.getEvalRun(runId)).toMatchObject({
+      id: runId,
+      status: 'completed',
+      outcome: { success: true },
+      metrics: { durationMs: 42 },
+    });
+
+    const comparisonId = storage.createEvalComparison({
+      id: 'comparison-1',
+      evalCaseId: caseId,
+      name: 'Model comparison',
+      configuration: { dimensions: ['model'] },
+    });
+    storage.upsertEvalComparisonResult({
+      comparisonId,
+      evalRunId: runId,
+      ordinal: 0,
+      result: { success: true, firstDivergenceEventId: null },
+    });
+    expect(storage.listEvalComparisonResults(comparisonId)).toEqual([
+      expect.objectContaining({ comparisonId, evalRunId: runId, ordinal: 0 }),
+    ]);
+    storage.close();
   });
 
   it('resolves export profiles and rolls back nested portable-import work atomically', async () => {
