@@ -178,6 +178,13 @@ export interface EvalCaseInput {
   readonly sourceSessionId?: string;
 }
 
+export interface EvalCaseUpdate {
+  readonly name: string;
+  readonly manifestBlobHash: string;
+  readonly manifestHash: string;
+  readonly schemaVersion: string;
+}
+
 export interface StoredEvalCase extends EvalCaseInput {
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -1828,6 +1835,41 @@ export class Storage {
       )
       .get(id) as Row | undefined;
     return row ? storedEvalCase(row) : undefined;
+  }
+
+  /** Replace a reviewed manifest while retaining the case identity and provenance. */
+  updateEvalCase(id: string, update: EvalCaseUpdate): void {
+    assertText(id, 'evalCase.id');
+    assertText(update.name, 'evalCase.name');
+    assertText(update.manifestBlobHash, 'evalCase.manifestBlobHash');
+    assertText(update.manifestHash, 'evalCase.manifestHash');
+    assertText(update.schemaVersion, 'evalCase.schemaVersion');
+    if (!/^[a-f0-9]{64}$/.test(update.manifestBlobHash))
+      throw new Error('Invalid eval manifest blob hash.');
+    if (!/^[a-f0-9]{64}$/.test(update.manifestHash))
+      throw new Error('Invalid eval manifest hash.');
+    if (
+      !this.#database
+        .prepare('SELECT 1 FROM blob_objects WHERE address = ?')
+        .get(update.manifestBlobHash)
+    )
+      throw new Error('Eval manifest blob is unavailable.');
+    const result = this.#database
+      .prepare(
+        `UPDATE eval_cases
+            SET name = ?, manifest_blob_hash = ?, manifest_hash = ?,
+                schema_version = ?, updated_at = ?
+          WHERE id = ?`,
+      )
+      .run(
+        update.name,
+        update.manifestBlobHash,
+        update.manifestHash,
+        update.schemaVersion,
+        this.#clock.now().toISOString(),
+        id,
+      );
+    if (result.changes !== 1) throw new Error('Eval case was not found.');
   }
 
   listEvalCases(limit = 500): readonly StoredEvalCase[] {

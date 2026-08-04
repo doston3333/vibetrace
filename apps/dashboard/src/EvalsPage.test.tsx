@@ -2,9 +2,28 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { EvalsPage } from './EvalsPage.js';
+
+vi.mock('@tanstack/react-router', () => ({
+  Link: ({
+    children,
+    params: _params,
+    to,
+    ...props
+  }: {
+    children: ReactNode;
+    params?: unknown;
+    to?: string;
+    className?: string;
+  }) => (
+    <a {...props} href={typeof to === 'string' ? to : '/'}>
+      {children}
+    </a>
+  ),
+}));
 
 vi.mock('./api.js', () => ({
   api: {
@@ -72,6 +91,7 @@ describe('evaluation lab', () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText('Fixture case')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Review manifest' })).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Comparison ID'), {
       target: { value: 'comparison-1' },
     });

@@ -326,6 +326,21 @@ export const api = {
     );
     return response.case;
   },
+  async evalCaseManifest(id: string): Promise<unknown> {
+    const response = await jsonRequest<{ manifest: unknown }>(
+      `/api/v1/eval/cases/${encodeURIComponent(id)}/manifest`,
+    );
+    return response.manifest;
+  },
+  async updateEvalCaseManifest(
+    id: string,
+    manifest: unknown,
+  ): Promise<{ case: EvalCaseSummary; manifest: unknown }> {
+    return jsonRequest(
+      `/api/v1/eval/cases/${encodeURIComponent(id)}/manifest`,
+      { method: 'PATCH', body: JSON.stringify({ manifest }) },
+    );
+  },
   async evalComparison(id: string): Promise<EvalComparisonResponse> {
     return jsonRequest<EvalComparisonResponse>(
       `/api/v1/eval/comparisons/${encodeURIComponent(id)}`,

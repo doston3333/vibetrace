@@ -1307,6 +1307,40 @@ describe('daemon API', () => {
     expect(manifestResponse.json()).toMatchObject({
       manifest: { id: manifest.id, task: { prompt: manifest.task.prompt } },
     });
+    const reviewedManifest = {
+      ...manifest,
+      name: 'Reviewed API evaluation case',
+      task: {
+        ...manifest.task,
+        constraints: ['Keep the fixture deterministic.'],
+      },
+    };
+    const updatedManifest = await daemon.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/eval/cases/${evalCase.id}/manifest`,
+      headers,
+      payload: { manifest: reviewedManifest },
+    });
+    expect(updatedManifest.statusCode).toBe(200);
+    expect(updatedManifest.json()).toMatchObject({
+      case: { name: reviewedManifest.name },
+      manifest: {
+        name: reviewedManifest.name,
+        task: { constraints: reviewedManifest.task.constraints },
+      },
+    });
+    const rejectedIdentityChange = await daemon.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/eval/cases/${evalCase.id}/manifest`,
+      headers,
+      payload: {
+        manifest: { ...reviewedManifest, id: createSessionId('eval', 'other') },
+      },
+    });
+    expect(rejectedIdentityChange.statusCode).toBe(400);
+    expect(rejectedIdentityChange.json()).toEqual({
+      code: 'EVAL_CASE_ID_IMMUTABLE',
+    });
     const patchResponse = await daemon.app.inject({
       method: 'GET',
       url: `/api/v1/eval/cases/${evalCase.id}/pre-task-patch`,

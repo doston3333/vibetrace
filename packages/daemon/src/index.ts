@@ -1467,6 +1467,43 @@ export async function startDaemon(
           .send({ code: 'EVAL_MANIFEST_INTEGRITY_FAILURE' });
       }
     });
+    app.patch('/api/v1/eval/cases/:id/manifest', async (request, reply) => {
+      const id = evalCaseId(request);
+      if (!id) return reply.code(400).send({ code: 'INVALID_EVAL_CASE_ID' });
+      const stored = storage.getEvalCase(id);
+      if (!stored) return reply.code(404).send({ code: 'NOT_FOUND' });
+      const parsed = evalManifestCreateSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_EVAL_MANIFEST' });
+      let manifest: EvalManifest;
+      try {
+        manifest = parseEvalManifest(parsed.data.manifest);
+      } catch {
+        return reply.code(400).send({ code: 'INVALID_EVAL_MANIFEST' });
+      }
+      if (manifest.id !== id)
+        return reply.code(400).send({ code: 'EVAL_CASE_ID_IMMUTABLE' });
+      if (
+        (manifest.sourceSessionId ?? undefined) !==
+        (stored.sourceSessionId ?? undefined)
+      )
+        return reply.code(400).send({ code: 'EVAL_SOURCE_SESSION_IMMUTABLE' });
+      try {
+        const blob = await storage.blobs.put(
+          Readable.from([Buffer.from(JSON.stringify(manifest), 'utf8')]),
+        );
+        storage.recordBlob(blob);
+        storage.updateEvalCase(id, {
+          name: manifest.name,
+          manifestBlobHash: blob.address,
+          manifestHash: hashEvalJson(manifest),
+          schemaVersion: manifest.schemaVersion,
+        });
+        return { case: storage.getEvalCase(id), manifest };
+      } catch {
+        return reply.code(409).send({ code: 'EVAL_CASE_CONFLICT' });
+      }
+    });
     app.get('/api/v1/eval/cases/:id/pre-task-patch', async (request, reply) => {
       const id = evalCaseId(request);
       if (!id) return reply.code(400).send({ code: 'INVALID_EVAL_CASE_ID' });

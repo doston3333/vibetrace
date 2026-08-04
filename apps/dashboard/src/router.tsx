@@ -5,6 +5,7 @@ import {
 } from '@tanstack/react-router';
 
 import { AppShell, SessionPage } from './App.js';
+import { EvalCasePage } from './EvalCasePage.js';
 import { EvalsPage } from './EvalsPage.js';
 import { SessionsPage } from './SessionsPage.js';
 
@@ -36,10 +37,17 @@ const evalsRoute = createRoute({
   component: EvalsPage,
 });
 
+const evalCaseRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/evals/$caseId',
+  component: EvalCasePage,
+});
+
 const routeTree = rootRoute.addChildren([
   sessionsRoute,
   sessionRoute,
   evalsRoute,
+  evalCaseRoute,
 ]);
 
 export const router = createRouter({

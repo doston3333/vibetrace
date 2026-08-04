@@ -369,6 +369,21 @@ describe('encrypted Storage', () => {
       id: caseId,
       manifestBlobHash: manifest.address,
     });
+    const reviewedManifest = await storage.blobs.put(
+      Readable.from([Buffer.from('{"schemaVersion":"1.0.0","reviewed":true}')]),
+    );
+    storage.recordBlob(reviewedManifest);
+    storage.updateEvalCase(caseId, {
+      name: 'Reviewed authorization regression',
+      manifestBlobHash: reviewedManifest.address,
+      manifestHash: 'e'.repeat(64),
+      schemaVersion: '1.0.0',
+    });
+    expect(storage.getEvalCase(caseId)).toMatchObject({
+      name: 'Reviewed authorization regression',
+      manifestBlobHash: reviewedManifest.address,
+      manifestHash: 'e'.repeat(64),
+    });
 
     const configuration = { model: 'gpt-test' };
     const configurationHash = createHash('sha256')

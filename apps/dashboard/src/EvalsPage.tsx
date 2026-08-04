@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import { useState } from 'react';
 
 import { api } from './api.js';
@@ -151,6 +152,13 @@ export function EvalsPage() {
                 {item.sourceSessionId ? (
                   <small>Source session {item.sourceSessionId}</small>
                 ) : null}
+                <Link
+                  className="text-link"
+                  to="/evals/$caseId"
+                  params={{ caseId: item.id }}
+                >
+                  Review manifest
+                </Link>
               </article>
             ))}
           </div>
