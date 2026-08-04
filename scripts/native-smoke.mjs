@@ -163,7 +163,10 @@ function cli(args, options = {}) {
 }
 
 async function waitForStatus(env, expected) {
-  const deadline = Date.now() + 15_000;
+  // Native SQLCipher/keyring bindings can take several seconds to initialize
+  // after a clean npm install. Allow cold-start variance without masking a
+  // daemon that genuinely fails to become healthy.
+  const deadline = Date.now() + 30_000;
   do {
     const result = await cli(['status'], { env });
     if (result.stdout.trim() === expected) return;
