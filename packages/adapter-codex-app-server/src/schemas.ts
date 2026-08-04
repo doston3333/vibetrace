@@ -41,7 +41,9 @@ export const CODEX_APP_SERVER_SCHEMA_REGISTRY: readonly AppServerSchemaDescripto
   );
 
 function version(value: string): [number, number, number] | undefined {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u.exec(value);
+  // The registry is an exact contract registry: prerelease/build-suffixed
+  // versions are not silently treated as the packaged stable contract.
+  const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(value);
   return match
     ? [Number(match[1]), Number(match[2]), Number(match[3])]
     : undefined;
