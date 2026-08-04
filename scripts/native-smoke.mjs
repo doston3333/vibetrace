@@ -294,6 +294,9 @@ try {
     maxOutputBytes: 16 * 1024 * 1024,
     label: 'codex native session',
   });
+  const checkoutStatus = await git(['status', '--porcelain'], checkout);
+  if (checkoutStatus.stdout.trim() !== '')
+    throw new Error('Native Codex smoke modified its read-only checkout.');
   const codexEventTypes = new Set();
   for (const line of codexRun.stdout.split(/\r?\n/)) {
     try {
