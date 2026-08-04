@@ -39,7 +39,7 @@ can be inferred from a single developer workstation.
 
 ## Local verification record
 
-Commit `6f2f28c` was verified on 2026-08-04 from a clean macOS arm64 checkout
+Commit `a3a9abf` was verified on 2026-08-04 from a clean macOS arm64 checkout
 with Node `v26.4.0`, pnpm `10.33.4`, and npm `11.17.0`. Node 26 is newer than
 the supported release runtimes, so this record supplements rather than replaces
 the CI matrix.
@@ -54,7 +54,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm test:integration   # 11 files, 136 tests
-pnpm test:e2e           # 3 files, 18 tests
+pnpm test:e2e           # 4 files, 20 tests
 pnpm test:security      # 7 files, 88 tests
 pnpm test:performance   # 7 files, 98 tests
 pnpm pack:smoke
