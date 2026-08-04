@@ -32,6 +32,26 @@ describe('createProgram', () => {
     expect(program.helpInformation()).not.toContain('hook collect');
   });
 
+  it('bundles the named coding-agent adapters in the published CLI surface', async () => {
+    const outputs: string[] = [];
+    const program = createProgram({ output: (line) => outputs.push(line) });
+
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'adapters',
+      'list',
+      '--json',
+    ]);
+
+    const result = JSON.parse(outputs.at(-1) ?? '{}') as {
+      adapters?: Array<{ id?: string }>;
+    };
+    expect(result.adapters?.map((adapter) => adapter.id)).toEqual(
+      expect.arrayContaining(['claude-code', 'codex-app-server']),
+    );
+  });
+
   it('runs root lifecycle commands through injected process, browser, readiness, and HTTP boundaries', async () => {
     const state = await mkdtemp(join(tmpdir(), 'vibetrace-cli-'));
     directories.push(state);

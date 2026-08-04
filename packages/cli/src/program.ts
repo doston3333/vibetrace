@@ -19,6 +19,7 @@ import {
   runAppServerSession,
   type AppServerCaptureResult,
 } from '@vibetrace/adapter-codex-app-server';
+import { claudeCodeAdapter } from '@vibetrace/adapter-claude-code';
 import { genericJsonlAdapter } from '@vibetrace/adapter-generic-jsonl';
 import {
   manifestFromSession,
@@ -1068,6 +1069,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
             verification: true,
           },
         },
+        claudeCodeAdapter.descriptor,
         genericJsonlAdapter.descriptor,
       ];
       output(
@@ -1084,7 +1086,11 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .action((options: { json?: boolean }) => {
       const report = {
         ok: true,
-        adapters: [APP_SERVER_ADAPTER_ID, genericJsonlAdapter.descriptor.id],
+        adapters: [
+          APP_SERVER_ADAPTER_ID,
+          claudeCodeAdapter.descriptor.id,
+          genericJsonlAdapter.descriptor.id,
+        ],
         checks: [
           {
             id: 'sdk',

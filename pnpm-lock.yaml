@@ -234,6 +234,9 @@ importers:
         specifier: 12.11.1
         version: 12.11.1
     devDependencies:
+      '@vibetrace/adapter-claude-code':
+        specifier: workspace:*
+        version: link:../adapter-claude-code
       '@vibetrace/adapter-codex':
         specifier: workspace:*
         version: link:../adapter-codex
