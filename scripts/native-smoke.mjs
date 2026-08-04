@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 const repositoryDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const cliDirectory = join(repositoryDirectory, 'packages', 'cli');
-const codexBinary = process.env.VIBETRACE_CODEX_BIN ?? 'codex';
+const codexBinary = 'codex';
 const temporary = await mkdtemp(join(tmpdir(), 'vibetrace-native-smoke-'));
 const packDirectory = join(temporary, 'pack output');
 const installPrefix = join(temporary, 'global install');
@@ -30,6 +30,24 @@ const reportPath = process.env.VIBETRACE_NATIVE_SMOKE_OUTPUT
   : undefined;
 const storagePassphrase = `native-smoke-${randomBytes(24).toString('hex')}`;
 const keepTemporary = process.env.VIBETRACE_KEEP_NATIVE_SMOKE === '1';
+
+function extractVersion(value) {
+  return /(?:^|\s)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)/.exec(value)?.[1];
+}
+
+function supportsCodexVersion(value) {
+  const parts = value?.split('.').slice(0, 3).map(Number);
+  if (
+    !parts ||
+    parts.length !== 3 ||
+    parts.some((part) => !Number.isInteger(part))
+  )
+    return false;
+  const [major, minor, patch] = parts;
+  return (
+    major > 0 || (major === 0 && (minor > 144 || (minor === 144 && patch >= 3)))
+  );
+}
 
 function run(command, args, options = {}) {
   return new Promise((resolveRun, reject) => {
@@ -216,6 +234,10 @@ async function writeReport(report) {
 let env;
 let daemonStarted = false;
 try {
+  if (process.env.VIBETRACE_CODEX_BIN)
+    throw new Error(
+      'VIBETRACE_CODEX_BIN is not accepted by release smoke; install the tested Codex binary on PATH.',
+    );
   await access(join(cliDirectory, 'dist', 'index.js'));
   await mkdir(packDirectory, { recursive: true, mode: 0o700 });
   await mkdir(codexHome, { recursive: true, mode: 0o700 });
@@ -252,12 +274,15 @@ try {
     PATH: [pathEntry, process.env.PATH ?? ''].filter(Boolean).join(delimiter),
   };
   const authMode = await copyCodexAuth(env);
-  const codexVersion = (
+  const codexVersionOutput = (
     await run(codexBinary, ['--version'], { env, label: 'codex --version' })
   ).stdout
     .trim()
     .split(/\r?\n/, 1)[0]
     ?.slice(0, 128);
+  const codexVersion = extractVersion(codexVersionOutput ?? '');
+  if (!codexVersion || !supportsCodexVersion(codexVersion))
+    throw new Error('Native smoke requires Codex 0.144.3 or later.');
 
   await git(['init', '-q'], checkout);
   await git(['config', 'user.email', 'native-smoke@example.invalid'], checkout);
@@ -345,7 +370,7 @@ try {
       .map((item) => item?.event?.provenance?.sourceVersion)
       .filter((value) => typeof value === 'string'),
   );
-  if (!adapters.has('codex-hooks') || sourceVersions.size === 0)
+  if (!adapters.has('codex-hooks') || !sourceVersions.has(codexVersion))
     throw new Error('Native smoke events are missing Codex provenance.');
 
   await writeReport({
