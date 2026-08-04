@@ -1,0 +1,29 @@
+name: Release gate
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      codex_model:
+        description: Optional Codex model override for native smoke
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Cross-platform verification
+    uses: ./.github/workflows/ci.yml
+
+  native-smoke:
+    name: Native Codex evidence
+    needs: verify
+    uses: ./.github/workflows/native-smoke.yml
+    with:
+      codex_model: ${{ inputs.codex_model }}
+    secrets:
+      CODEX_OPENAI_API_KEY: ${{ secrets.CODEX_OPENAI_API_KEY }}
