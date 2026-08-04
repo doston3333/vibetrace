@@ -138,8 +138,12 @@ describe('createProgram', () => {
   it('exposes opt-in full-fidelity app-server capture without shell interpolation', async () => {
     const state = await mkdtemp(join(tmpdir(), 'vibetrace-cli-app-server-'));
     directories.push(state);
-    const calls: Array<{ cwd: string; prompt: string; executable?: string }> =
-      [];
+    const calls: Array<{
+      cwd: string;
+      prompt: string;
+      executable?: string;
+      sourceVersion?: string;
+    }> = [];
     const outputs: string[] = [];
     const program = createProgram({
       stateDir: () => state,
@@ -148,9 +152,11 @@ describe('createProgram', () => {
           cwd: options.cwd,
           prompt: options.prompt,
           executable: options.executable,
+          sourceVersion: options.context.sourceVersion,
         });
         return { events: [], raw: [], gaps: [] };
       },
+      detectCodexVersion: async () => '0.144.3',
       output: (line) => outputs.push(line),
     });
     await program.parseAsync([
@@ -164,7 +170,12 @@ describe('createProgram', () => {
       state,
     ]);
     expect(calls).toEqual([
-      { cwd: state, prompt: 'Inspect the repository.', executable: undefined },
+      {
+        cwd: state,
+        prompt: 'Inspect the repository.',
+        executable: undefined,
+        sourceVersion: '0.144.3',
+      },
     ]);
     expect(outputs).toContain(
       JSON.stringify({
