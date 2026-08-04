@@ -25,8 +25,9 @@ base commit is reported as an explicit prerequisite failure.
 
 The daemon stores the manifest as an authenticated encrypted blob and records
 its stable content hash. The manifest endpoint verifies both blob decryption
-and the canonical manifest hash before returning it. A pre-task patch is
-bounded to 16 MiB and is SHA-256 checked before it leaves the daemon.
+and the canonical manifest hash before returning it. Manifest JSON is bounded
+to 2 MiB at create and review-update boundaries. A pre-task patch is bounded
+to 16 MiB and is SHA-256 checked before it leaves the daemon.
 
 ## Isolated execution
 

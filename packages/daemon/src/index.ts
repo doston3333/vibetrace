@@ -185,6 +185,7 @@ const bundleImportSchema = z
   })
   .strict();
 const evalManifestCreateSchema = z.object({ manifest: z.unknown() }).strict();
+const MAX_EVAL_MANIFEST_BYTES = 2 * 1024 * 1024;
 const evalManifestFromSessionSchema = z
   .object({
     name: z.string().min(1).max(512),
@@ -240,6 +241,13 @@ const evalComparisonDivergenceSchema = z
   .refine((value) => value.leftRunId !== value.rightRunId, {
     message: 'Compared runs must be different.',
   });
+
+function serializeEvalManifest(manifest: EvalManifest): Buffer {
+  const bytes = Buffer.from(JSON.stringify(manifest), 'utf8');
+  if (bytes.byteLength > MAX_EVAL_MANIFEST_BYTES)
+    throw new Error('Evaluation manifest exceeds the 2 MiB limit.');
+  return bytes;
+}
 const evalEventCaptureSchema = z
   .object({ events: z.array(TraceEventSchema).max(20_000) })
   .strict();
@@ -1348,10 +1356,14 @@ export async function startDaemon(
       } catch {
         return reply.code(400).send({ code: 'INVALID_EVAL_MANIFEST' });
       }
+      let manifestBytes: Buffer;
       try {
-        const blob = await storage.blobs.put(
-          Readable.from([Buffer.from(JSON.stringify(manifest), 'utf8')]),
-        );
+        manifestBytes = serializeEvalManifest(manifest);
+      } catch {
+        return reply.code(413).send({ code: 'EVAL_MANIFEST_TOO_LARGE' });
+      }
+      try {
+        const blob = await storage.blobs.put(Readable.from([manifestBytes]));
         storage.recordBlob(blob);
         const id = storage.createEvalCase({
           id: manifest.id,
@@ -1423,10 +1435,14 @@ export async function startDaemon(
       } catch {
         return reply.code(400).send({ code: 'INVALID_EVAL_MANIFEST' });
       }
+      let manifestBytes: Buffer;
       try {
-        const blob = await storage.blobs.put(
-          Readable.from([Buffer.from(JSON.stringify(manifest), 'utf8')]),
-        );
+        manifestBytes = serializeEvalManifest(manifest);
+      } catch {
+        return reply.code(413).send({ code: 'EVAL_MANIFEST_TOO_LARGE' });
+      }
+      try {
+        const blob = await storage.blobs.put(Readable.from([manifestBytes]));
         storage.recordBlob(blob);
         const id = storage.createEvalCase({
           id: manifest.id,
@@ -1488,10 +1504,14 @@ export async function startDaemon(
         (stored.sourceSessionId ?? undefined)
       )
         return reply.code(400).send({ code: 'EVAL_SOURCE_SESSION_IMMUTABLE' });
+      let manifestBytes: Buffer;
       try {
-        const blob = await storage.blobs.put(
-          Readable.from([Buffer.from(JSON.stringify(manifest), 'utf8')]),
-        );
+        manifestBytes = serializeEvalManifest(manifest);
+      } catch {
+        return reply.code(413).send({ code: 'EVAL_MANIFEST_TOO_LARGE' });
+      }
+      try {
+        const blob = await storage.blobs.put(Readable.from([manifestBytes]));
         storage.recordBlob(blob);
         storage.updateEvalCase(id, {
           name: manifest.name,

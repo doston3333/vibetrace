@@ -1298,6 +1298,28 @@ describe('daemon API', () => {
     expect(created.statusCode).toBe(201);
     const evalCase = (created.json() as { case: { id: string } }).case;
     expect(evalCase.id).toBe(manifest.id);
+    const oversizedManifest = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/eval/cases',
+      headers,
+      payload: {
+        manifest: {
+          ...manifest,
+          id: createSessionId('eval', 'oversized'),
+          sourceEvidence: {
+            ...manifest.sourceEvidence,
+            eventIds: Array.from(
+              { length: 100_000 },
+              () => '00000000-0000-4000-8000-000000000000',
+            ),
+          },
+        },
+      },
+    });
+    expect(oversizedManifest.statusCode).toBe(413);
+    expect(oversizedManifest.json()).toEqual({
+      code: 'EVAL_MANIFEST_TOO_LARGE',
+    });
     const manifestResponse = await daemon.app.inject({
       method: 'GET',
       url: `/api/v1/eval/cases/${evalCase.id}/manifest`,
