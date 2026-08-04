@@ -1154,10 +1154,28 @@ describe('daemon API', () => {
 
   it('validates and persists eval cases, runs, and comparison results through the authenticated API', async () => {
     const { path, storage } = await state();
-    await writeSegment(spoolPaths(path), segment());
+    const sourceSegment = segment();
+    sourceSegment.session = {
+      ...sourceSegment.session,
+      baseCommit: 'a'.repeat(40),
+    };
+    await writeSegment(spoolPaths(path), sourceSegment);
     const daemon = await startDaemon({ stateDir: path, storage });
     const headers = { authorization: `Bearer ${daemon.token}` };
-    const sessionId = segment().event.sessionId;
+    const sessionId = sourceSegment.event.sessionId;
+    const derived = await daemon.app.inject({
+      method: 'POST',
+      url: `/api/v1/eval/cases/from-session/${sessionId}`,
+      headers,
+      payload: { name: 'Derived from captured fixture' },
+    });
+    expect(derived.statusCode).toBe(201);
+    expect(derived.json()).toMatchObject({
+      manifest: {
+        sourceSessionId: sessionId,
+        repository: { baseCommit: 'a'.repeat(40) },
+      },
+    });
     const preTaskPatch = Buffer.from('diff --git a/README.md b/README.md\n');
     const preTaskPatchBlob = await storage.blobs.put(
       Readable.from([preTaskPatch]),

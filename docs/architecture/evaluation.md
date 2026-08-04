@@ -16,6 +16,13 @@ The generated JSON Schema is published alongside the package at
 `packages/eval-spec/generated/eval-manifest.schema.json` so external tooling
 can validate manifests without importing the TypeScript implementation.
 
+The authenticated `POST /api/v1/eval/cases/from-session/:id` endpoint and the
+dashboard's Evaluation Lab use the same `manifestFromSession` conversion. They
+require a captured Git base commit, preserve every source event ID and capture
+gap, and create an encrypted manifest blob with a canonical content hash.
+Users can review the resulting case before creating runs; a session without a
+base commit is reported as an explicit prerequisite failure.
+
 The daemon stores the manifest as an authenticated encrypted blob and records
 its stable content hash. The manifest endpoint verifies both blob decryption
 and the canonical manifest hash before returning it. A pre-task patch is
@@ -30,6 +37,13 @@ or a supplied executor, evaluates bounded assertions, stores a worktree
 fingerprint, and removes the worktree in a `finally` path. Shell operators,
 absolute paths, traversal, oversized assertion files, and unbounded command
 output are rejected.
+
+Codex runs resolve an explicit `configuration.execution` block into the exact
+argv and effective model/approval/sandbox/network policy recorded on the run.
+Legacy flat fields remain readable, conflicting fields are rejected, and extra
+arguments may not override `exec`, JSON output, working-directory, approval,
+sandbox, or output controls. Unsupported policy values fail closed rather than
+being silently ignored.
 
 Human assertions remain `pending_review`; they are not silently converted into
 failures. Captured command output is uploaded to the encrypted blob store and

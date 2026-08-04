@@ -498,6 +498,22 @@ textarea::placeholder {
   text-transform: uppercase;
 }
 
+.eval-builder form {
+  align-items: end;
+  display: grid;
+  gap: var(--space-md);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.eval-builder form button {
+  min-height: 2.65rem;
+}
+
+.eval-builder form select,
+.eval-builder form input {
+  min-width: 0;
+}
+
 .comparison-results {
   border-top: 1px solid var(--rule);
   display: grid;
@@ -1650,6 +1666,10 @@ textarea::placeholder {
 
   .annotations-page form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .eval-builder form {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   }
 
   .annotations-page .note-field,

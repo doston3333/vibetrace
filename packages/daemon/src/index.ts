@@ -45,7 +45,9 @@ import {
 } from '@vibetrace/eval-compare';
 import {
   hashEvalJson,
+  manifestFromSession,
   parseEvalManifest,
+  SuccessAssertionSchema,
   type EvalManifest,
 } from '@vibetrace/eval-spec';
 import {
@@ -177,6 +179,12 @@ const bundleImportSchema = z
   })
   .strict();
 const evalManifestCreateSchema = z.object({ manifest: z.unknown() }).strict();
+const evalManifestFromSessionSchema = z
+  .object({
+    name: z.string().min(1).max(512),
+    successAssertions: z.array(z.unknown()).max(10_000).optional(),
+  })
+  .strict();
 const evalRunCreateSchema = z
   .object({
     id: z.string().uuid().optional(),
@@ -1324,6 +1332,84 @@ export async function startDaemon(
             : {}),
         });
         return reply.code(201).send({ case: storage.getEvalCase(id) });
+      } catch {
+        return reply.code(409).send({ code: 'EVAL_CASE_CONFLICT' });
+      }
+    });
+    app.post('/api/v1/eval/cases/from-session/:id', async (request, reply) => {
+      const sessionId = sessionIdSchema.safeParse(
+        (request.params as { id?: unknown }).id,
+      );
+      const parsed = evalManifestFromSessionSchema.safeParse(request.body);
+      if (!sessionId.success || !parsed.success)
+        return reply.code(400).send({ code: 'INVALID_EVAL_SOURCE_SESSION' });
+      const session = storage.getSession(sessionId.data);
+      if (!session) return reply.code(404).send({ code: 'NOT_FOUND' });
+      if (!session.baseCommit)
+        return reply.code(409).send({ code: 'EVAL_BASE_COMMIT_REQUIRED' });
+      const events: TraceEvent[] = [];
+      let cursor: { afterSequence: number; afterId: string } | undefined;
+      do {
+        const page = storage.listEvents({
+          sessionId: sessionId.data,
+          limit: 10_000,
+          ...(cursor ?? {}),
+        });
+        events.push(...page.map((item) => item.event));
+        if (events.length > 20_000)
+          return reply.code(413).send({ code: 'EVAL_SOURCE_EVENT_LIMIT' });
+        const last = page.at(-1);
+        cursor =
+          page.length === 10_000 && last
+            ? { afterSequence: last.sequence, afterId: last.id }
+            : undefined;
+      } while (cursor);
+      if (events.length === 0)
+        return reply.code(409).send({ code: 'EVAL_SOURCE_HAS_NO_EVENTS' });
+      let successAssertions:
+        readonly z.infer<typeof SuccessAssertionSchema>[] | undefined;
+      try {
+        successAssertions = parsed.data.successAssertions?.map((assertion) =>
+          SuccessAssertionSchema.parse(assertion),
+        );
+      } catch {
+        return reply.code(400).send({ code: 'INVALID_EVAL_ASSERTIONS' });
+      }
+      let manifest: EvalManifest;
+      try {
+        manifest = manifestFromSession({
+          id: randomUUID(),
+          name: parsed.data.name,
+          sessionId: session.id,
+          repository: { baseCommit: session.baseCommit },
+          events,
+          ...(session.runFingerprint
+            ? { runFingerprint: session.runFingerprint }
+            : {}),
+          ...(successAssertions ? { successAssertions } : {}),
+        });
+      } catch {
+        return reply.code(400).send({ code: 'INVALID_EVAL_MANIFEST' });
+      }
+      try {
+        const blob = await storage.blobs.put(
+          Readable.from([Buffer.from(JSON.stringify(manifest), 'utf8')]),
+        );
+        storage.recordBlob(blob);
+        const id = storage.createEvalCase({
+          id: manifest.id,
+          name: manifest.name,
+          manifestBlobHash: blob.address,
+          manifestHash: hashEvalJson(manifest),
+          schemaVersion: manifest.schemaVersion,
+          ...(manifest.sourceSessionId
+            ? { sourceSessionId: manifest.sourceSessionId }
+            : {}),
+        });
+        return reply.code(201).send({
+          case: storage.getEvalCase(id),
+          manifest,
+        });
       } catch {
         return reply.code(409).send({ code: 'EVAL_CASE_CONFLICT' });
       }

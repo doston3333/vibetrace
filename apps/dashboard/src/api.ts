@@ -316,6 +316,16 @@ export const api = {
     );
     return response.cases;
   },
+  async createEvalCaseFromSession(
+    sessionId: string,
+    name: string,
+  ): Promise<EvalCaseSummary> {
+    const response = await jsonRequest<{ case: EvalCaseSummary }>(
+      `/api/v1/eval/cases/from-session/${encodeURIComponent(sessionId)}`,
+      { method: 'POST', body: JSON.stringify({ name }) },
+    );
+    return response.case;
+  },
   async evalComparison(id: string): Promise<EvalComparisonResponse> {
     return jsonRequest<EvalComparisonResponse>(
       `/api/v1/eval/comparisons/${encodeURIComponent(id)}`,

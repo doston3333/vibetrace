@@ -255,9 +255,19 @@ try {
     },
   );
   if (!handoff.ok) throw new Error('Browser handoff failed.');
+  const handoffBody = await handoff.json();
+  if (typeof handoffBody.handoffToken !== 'string')
+    throw new Error('Browser handoff did not return a single-use token.');
   const browserSession = await fetch(
     `${descriptor.origin}/api/v1/auth/browser-session`,
-    { method: 'POST', headers: { origin: descriptor.origin } },
+    {
+      method: 'POST',
+      headers: {
+        origin: descriptor.origin,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ handoffToken: handoffBody.handoffToken }),
+    },
   );
   const cookie = browserSession.headers.get('set-cookie');
   const dashboard = await fetch(`${descriptor.origin}/`, {

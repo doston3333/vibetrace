@@ -1,13 +1,29 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 
 import { api } from './api.js';
 
 export function EvalsPage() {
+  const queryClient = useQueryClient();
   const cases = useQuery({
     queryKey: ['eval-cases'],
     queryFn: api.evalCases,
     staleTime: 5_000,
+  });
+  const sessions = useQuery({
+    queryKey: ['sessions', { limit: 10_000 }],
+    queryFn: () => api.sessions(),
+    staleTime: 5_000,
+  });
+  const [sourceSessionId, setSourceSessionId] = useState('');
+  const [manifestName, setManifestName] = useState('');
+  const createCase = useMutation({
+    mutationFn: () =>
+      api.createEvalCaseFromSession(sourceSessionId, manifestName.trim()),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['eval-cases'] });
+      setManifestName('');
+    },
   });
   const [comparisonId, setComparisonId] = useState('');
   const comparison = useQuery({
@@ -51,6 +67,71 @@ export function EvalsPage() {
           </p>
         </div>
       ) : null}
+      <section
+        className="comparison-panel eval-builder"
+        aria-labelledby="eval-builder-title"
+      >
+        <div>
+          <h2 id="eval-builder-title">Turn a session into an eval</h2>
+          <p>
+            VibeTrace derives an editable, evidence-linked manifest from the
+            observable session. The source remains unchanged.
+          </p>
+        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (sourceSessionId && manifestName.trim())
+              void createCase.mutateAsync();
+          }}
+        >
+          <label>
+            Source session
+            <select
+              required
+              value={sourceSessionId}
+              onChange={(event) => setSourceSessionId(event.target.value)}
+              disabled={sessions.isPending || createCase.isPending}
+            >
+              <option value="">Choose a session…</option>
+              {sessions.data?.map((session) => (
+                <option value={session.id} key={session.id}>
+                  {(session.title ?? session.displayName).slice(0, 96)} ·{' '}
+                  {session.id.slice(0, 8)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Manifest name
+            <input
+              required
+              maxLength={512}
+              value={manifestName}
+              onChange={(event) => setManifestName(event.target.value)}
+              placeholder="Regression: failed verification session"
+              disabled={createCase.isPending}
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={
+              createCase.isPending || !sourceSessionId || !manifestName.trim()
+            }
+          >
+            {createCase.isPending ? 'Deriving manifest…' : 'Create eval case'}
+          </button>
+        </form>
+        {createCase.isError ? (
+          <p className="page-error" role="alert">
+            Could not derive the case. The session needs a captured Git base
+            commit and at least one event.
+          </p>
+        ) : null}
+        {createCase.isSuccess ? (
+          <p role="status">Eval case created: {createCase.data.name}</p>
+        ) : null}
+      </section>
       {(cases.data?.length ?? 0) > 0 ? (
         <section className="session-index" aria-labelledby="eval-case-title">
           <div className="session-index-heading">
