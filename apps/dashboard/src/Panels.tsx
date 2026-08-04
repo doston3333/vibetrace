@@ -244,32 +244,43 @@ export function ApprovalsPanel({
         <h2 id="approvals-title">Approvals</h2>
         <p>
           Requests and observed decisions are shown as facts. An absent
-          resolution is a capture gap, never an assumed approval.
+          resolution is a capture gap, never an assumed approval. Command and
+          file scope are displayed when the source exposes them; this ledger
+          never infers approval from a missing response.
         </p>
       </header>
       {approvals.length === 0 ? (
         <p className="teaching-empty">No approval activity was captured.</p>
       ) : (
         <div className="approval-ledger">
-          {approvals.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className="approval-row"
-              onClick={() => onSelect(item.id)}
-            >
-              <span>{item.event.type.replaceAll('.', ' ')}</span>
-              <strong>
-                {String(
-                  (item.event.payload as Record<string, unknown>).requestId ??
-                    item.event.toolName ??
-                    'scoped request',
-                )}
-              </strong>
-              <em>{item.event.status ?? 'observed'}</em>
-              <small>{eventDetail(item.event)}</small>
-            </button>
-          ))}
+          {approvals.map((item) =>
+            (() => {
+              const payload = item.event.payload as Record<string, unknown>;
+              const scope = [payload.command, payload.path]
+                .filter((value): value is string => typeof value === 'string')
+                .join(' · ');
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  className="approval-row"
+                  onClick={() => onSelect(item.id)}
+                >
+                  <span>{item.event.type.replaceAll('.', ' ')}</span>
+                  <strong>
+                    {String(
+                      (item.event.payload as Record<string, unknown>)
+                        .requestId ??
+                        item.event.toolName ??
+                        'scoped request',
+                    )}
+                  </strong>
+                  <em>{item.event.status ?? 'observed'}</em>
+                  <small>{scope || eventDetail(item.event)}</small>
+                </button>
+              );
+            })(),
+          )}
         </div>
       )}
     </section>

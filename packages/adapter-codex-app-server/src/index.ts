@@ -417,12 +417,18 @@ function eventKind(
       normalizedMethod.includes('response');
     const decision = stringValue(params.decision);
     const declined = decision === 'decline' || decision === 'rejected';
+    const approvalItem = record(params.item);
+    const command =
+      stringValue(params.command) ?? stringValue(approvalItem.command);
+    const path = stringValue(params.path) ?? stringValue(approvalItem.path);
     return {
       type: resolved ? 'permission.resolved' : 'permission.requested',
       source: 'harness',
       payload: {
         requestId:
           stringValue(params.requestId) ?? String(params.id ?? 'approval'),
+        ...(command ? { command } : {}),
+        ...(path ? { path } : {}),
         ...(decision ? { decision } : {}),
         ...(stringValue(params.reason)
           ? { reason: params.reason as string }

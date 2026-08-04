@@ -166,6 +166,7 @@ describe('Codex app-server adapter', () => {
       requestId: '41',
       decision: 'decline',
     });
+    expect(result.events[0]?.payload).toMatchObject({ command: 'pnpm test' });
   });
 
   it('turns unknown, malformed, and oversized frames into bounded capture gaps', async () => {
