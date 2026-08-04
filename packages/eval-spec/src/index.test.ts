@@ -81,6 +81,47 @@ describe('eval manifest schema', () => {
     ).toBe(true);
   });
 
+  it('validates explicit, executable Codex configuration without changing legacy manifests', () => {
+    const manifest = parseEvalManifest({
+      ...base,
+      configuration: {
+        ...base.configuration,
+        execution: {
+          model: 'gpt-5.6-codex',
+          approvalPolicy: 'never',
+          sandboxPolicy: 'workspace-write',
+          networkPolicy: 'disabled',
+          extraArgs: ['--ephemeral', '--color=never'],
+        },
+      },
+    });
+    expect(manifest.configuration.execution).toMatchObject({
+      model: 'gpt-5.6-codex',
+      approvalPolicy: 'never',
+      sandboxPolicy: 'workspace-write',
+      networkPolicy: 'disabled',
+    });
+    expect(
+      EvalManifestSchema.safeParse({
+        ...base,
+        configuration: {
+          ...base.configuration,
+          execution: { extraArgs: ['--json'] },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      EvalManifestSchema.safeParse({
+        ...base,
+        configuration: {
+          ...base.configuration,
+          execution: { networkPolicy: 'enabled' },
+        },
+      }).success,
+    ).toBe(false);
+    expect(parseEvalManifest(base).configuration.execution).toBeUndefined();
+  });
+
   it('creates a reviewable case from observed prompts, gaps, and failures', () => {
     const events = [
       TraceEventSchema.parse({

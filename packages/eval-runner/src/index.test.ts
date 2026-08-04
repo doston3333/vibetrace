@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { execFile as nodeExecFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { parseEvalManifest } from '@vibetrace/eval-spec';
 import { createSessionId } from '@vibetrace/schema';
 import { afterAll, describe, expect, it } from 'vitest';
 
@@ -13,6 +14,8 @@ import {
   evaluateAssertions,
   normalizeExecutionEvents,
   parseCommand,
+  resolveCodexExecution,
+  runCodexExec,
   runEvaluation,
 } from './index.js';
 
@@ -37,6 +40,19 @@ async function repository(): Promise<{ path: string; commit: string }> {
     shell: false,
   });
   return { path, commit: stdout.trim() };
+}
+
+async function codexMock(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'vibetrace-codex-mock-'));
+  directories.push(directory);
+  const executable = join(directory, 'codex-mock.mjs');
+  await writeFile(
+    executable,
+    '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ argv: process.argv.slice(2) }) + "\\n");\n',
+    { mode: 0o700 },
+  );
+  await chmod(executable, 0o700);
+  return executable;
 }
 
 describe('isolated evaluation runner', () => {
@@ -120,6 +136,141 @@ describe('isolated evaluation runner', () => {
     expect(() => parseCommand('pnpm test && cat .env')).toThrow(
       'unsupported shell syntax',
     );
+  });
+
+  it('resolves manifest execution configuration into explicit Codex argv', () => {
+    const manifest = parseEvalManifest({
+      schemaVersion: '1.0.0',
+      id: createSessionId('eval', 'codex-resolution'),
+      name: 'Codex resolution',
+      sourceEvidence: {
+        eventIds: [],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: { baseCommit: 'a'.repeat(40) },
+      task: {
+        prompt: 'Resolve this task.',
+        constraints: [],
+        inferredFields: [],
+      },
+      configuration: {
+        model: 'gpt-5.6-codex',
+        approvalPolicy: 'never',
+        sandboxPolicy: 'workspace-write',
+        networkPolicy: 'disabled',
+        execution: {
+          model: 'gpt-5.6-codex',
+          approvalPolicy: 'never',
+          sandboxPolicy: 'workspace-write',
+          networkPolicy: 'disabled',
+          extraArgs: ['--ephemeral'],
+        },
+        skills: [],
+        instructionHashes: [],
+        inferredFields: [],
+      },
+      success: {
+        assertions: [{ type: 'human_rating', prompt: 'Review', minimum: 0 }],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const resolved = resolveCodexExecution(manifest, {
+      executable: 'codex-fixture',
+      extraArgs: ['--strict-config'],
+    });
+    expect(resolved.argv).toEqual([
+      'codex-fixture',
+      'exec',
+      '--json',
+      '--model',
+      'gpt-5.6-codex',
+      '--config',
+      'approval_policy="never"',
+      '--sandbox',
+      'workspace-write',
+      '--config',
+      'sandbox_workspace_write.network_access=false',
+      '--ephemeral',
+      '--strict-config',
+      'Resolve this task.',
+    ]);
+    expect(resolved.configuration).toEqual({
+      model: 'gpt-5.6-codex',
+      approvalPolicy: 'never',
+      sandboxPolicy: 'workspace-write',
+      networkPolicy: 'disabled',
+      extraArgs: ['--ephemeral', '--strict-config'],
+    });
+    expect(() =>
+      resolveCodexExecution(manifest, { extraArgs: ['--sandbox=read-only'] }),
+    ).toThrow('overrides a reserved exec or policy option');
+    const legacyManifest = parseEvalManifest({
+      ...manifest,
+      configuration: {
+        model: 'gpt-5.6-codex',
+        approvalPolicy: 'never',
+        sandboxPolicy: 'workspace-write',
+        networkPolicy: 'disabled',
+        skills: [],
+        instructionHashes: [],
+        inferredFields: [],
+      },
+    });
+    expect(resolveCodexExecution(legacyManifest).configuration).toEqual({
+      model: 'gpt-5.6-codex',
+      approvalPolicy: 'never',
+      sandboxPolicy: 'workspace-write',
+      networkPolicy: 'disabled',
+      extraArgs: [],
+    });
+  });
+
+  it('runs the resolved shell-free argv and records its effective configuration', async () => {
+    const executable = await codexMock();
+    const manifest = parseEvalManifest({
+      schemaVersion: '1.0.0',
+      id: createSessionId('eval', 'codex-execution'),
+      name: 'Codex execution',
+      sourceEvidence: {
+        eventIds: [],
+        artifactBlobHashes: [],
+        captureGapIds: [],
+      },
+      repository: { baseCommit: 'a'.repeat(40) },
+      task: { prompt: 'Run the mock.', constraints: [], inferredFields: [] },
+      configuration: {
+        skills: [],
+        instructionHashes: [],
+        inferredFields: [],
+        execution: {
+          model: 'gpt-5.6-codex',
+          sandboxPolicy: 'workspace-write',
+          networkPolicy: 'enabled',
+          extraArgs: ['--color=never'],
+        },
+      },
+      success: {
+        assertions: [{ type: 'human_rating', prompt: 'Review', minimum: 0 }],
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const record = await runCodexExec(manifest, tmpdir(), {
+      executable,
+      cwd: tmpdir(),
+      timeoutMs: 5_000,
+      maxOutputBytes: 10_000,
+    });
+    expect(record.execution?.argv).toEqual(record.commandResults?.[0]?.argv);
+    expect(record.execution?.configuration).toEqual({
+      model: 'gpt-5.6-codex',
+      sandboxPolicy: 'workspace-write',
+      networkPolicy: 'enabled',
+      extraArgs: ['--color=never'],
+    });
+    expect(JSON.parse(record.output ?? '')).toEqual({
+      argv: record.execution?.argv.slice(1),
+    });
   });
 
   it('evaluates command, file, regex, diff, and human assertions', async () => {

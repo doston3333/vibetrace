@@ -469,8 +469,14 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           body: JSON.stringify({ ticket: ticket.ticket }),
         },
       );
-      if (!handoff.ok) throw new Error('Could not prepare browser handoff.');
-      openBrowser(`${running.origin}/`);
+      const handoffBody = (await handoff.json()) as {
+        handoffToken?: unknown;
+      };
+      if (!handoff.ok || typeof handoffBody.handoffToken !== 'string')
+        throw new Error('Could not prepare browser handoff.');
+      openBrowser(
+        `${running.origin}/?handoff=${encodeURIComponent(handoffBody.handoffToken)}`,
+      );
     });
 
   const sessions = program
@@ -852,6 +858,11 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     )
     .option('--project-name <name>', 'Display name for the project.')
     .option('--model <model>', 'Optional Codex model override.')
+    .option(
+      '--approval-policy <policy>',
+      'Approval response policy: decline (default) or allow.',
+      'decline',
+    )
     .action(
       async (options: {
         prompt: string;
@@ -859,11 +870,25 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         projectId: string;
         projectName?: string;
         model?: string;
+        approvalPolicy: string;
       }) => {
         const cwd = resolve(options.cwd);
+        if (
+          options.approvalPolicy !== 'allow' &&
+          options.approvalPolicy !== 'decline'
+        )
+          throw new Error('Approval policy must be allow or decline.');
+        const approvalDecision =
+          options.approvalPolicy === 'allow'
+            ? ('allow' as const)
+            : ('decline' as const);
         const result = await runAppServer({
           cwd,
           prompt: options.prompt,
+          approval: async () => ({
+            decision: approvalDecision,
+            reason: 'cli-policy',
+          }),
           context: {
             stateDir: stateDir(),
             sourceSessionId: `cli-${randomUUID()}`,

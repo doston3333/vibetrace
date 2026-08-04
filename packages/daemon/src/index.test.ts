@@ -480,23 +480,54 @@ describe('daemon API', () => {
         headers: bearer,
       })
     ).json() as { ticket: string };
-    expect(
-      (
-        await daemon.app.inject({
-          method: 'POST',
-          url: '/api/v1/auth/browser-handoff',
-          headers: bearer,
-          payload: { ticket: browserTicket.ticket },
-        })
-      ).statusCode,
-    ).toBe(200);
+    const handoff = await daemon.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/browser-handoff',
+      headers: bearer,
+      payload: { ticket: browserTicket.ticket },
+    });
+    expect(handoff.statusCode).toBe(200);
+    const handoffToken = (handoff.json() as { handoffToken: string })
+      .handoffToken;
     const browserSession = await daemon.app.inject({
       method: 'POST',
       url: '/api/v1/auth/browser-session',
       headers: { origin: daemon.descriptor.origin },
+      payload: { handoffToken },
     });
     expect(browserSession.statusCode).toBe(200);
     expect(browserSession.headers['set-cookie']).toContain('HttpOnly');
+
+    const parallelHandoffs = await Promise.all(
+      [1, 2].map(async () => {
+        const minted = (
+          await daemon.app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/tickets',
+            headers: bearer,
+          })
+        ).json() as { ticket: string };
+        const prepared = await daemon.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/browser-handoff',
+          headers: bearer,
+          payload: { ticket: minted.ticket },
+        });
+        return (prepared.json() as { handoffToken: string }).handoffToken;
+      }),
+    );
+    for (const handoffToken of parallelHandoffs) {
+      expect(
+        (
+          await daemon.app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/browser-session',
+            headers: { origin: daemon.descriptor.origin },
+            payload: { handoffToken },
+          })
+        ).statusCode,
+      ).toBe(200);
+    }
     const ticket = (
       await daemon.app.inject({
         method: 'POST',

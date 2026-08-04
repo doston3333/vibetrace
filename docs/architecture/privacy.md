@@ -12,9 +12,20 @@ Bounded verification output and repository diffs are buffered from sealed spool 
 
 Repository fingerprints retain content hashes, recognized version or policy enum values, and explicit bounded-capture omissions only. Unknown policy strings are omitted and recorded as such instead of being copied into metadata. Plugin manifests are not available through the Codex hook contract and are recorded as omitted instead of silently appearing complete. File contents, absolute repository paths, source session identifiers, and environment-variable values are excluded. The small cross-hook baseline pointer contains only a canonical full commit ID and repository-root hash, uses an opaque session-derived filename, and is stored with user-only permissions.
 
+## Capture profiles
+
+The daemon persists one effective capture policy in `capture-policy.json` before
+it starts importing events. `minimal` omits prompt/message bodies, tool inputs
+and outputs, diffs, repository snapshots, and environment metadata;
+`standard` captures the normal forensic fields; `full` additionally captures
+bounded repository and environment metadata. All three modes run the secret
+detector before the source event reaches the spool, and `redactSecrets` is
+always true. A profile change affects future capture only; immutable events
+already stored are not rewritten.
+
 ## Local API and browser access
 
-The Fastify API binds only to loopback or a local Unix socket. It requires a random local authentication token. A browser obtains access through an authenticated, short-lived, one-time ticket; the ticket can be redeemed once and is not stored in URLs, logs, or browser persistence.
+The Fastify API binds only to loopback or a local Unix socket. It requires a random local authentication token. A browser obtains access through an authenticated, short-lived, one-time ticket and a separate single-use handoff token. The handoff URL is stripped with `history.replaceState`/navigation immediately after the cookie exchange; neither token is logged or persisted by VibeTrace.
 
 ## Trust boundaries
 

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibetrace.dev/schemas/codex-app-server/0.144.3.json",
+  "title": "Codex app-server 0.144.3 JSON-RPC envelope",
+  "type": "object",
+  "properties": {
+    "id": { "type": ["string", "integer"] },
+    "method": { "type": "string", "minLength": 1 },
+    "params": { "type": "object", "additionalProperties": true },
+    "result": {},
+    "error": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": true
+}

@@ -12,6 +12,13 @@ Repository enrichment uses bounded `git` subprocesses with argument arrays and `
 
 The hook collector seals the original source event before attempting command, repository, turn, or transcript enrichment. A later enrichment failure therefore cannot change Codex behavior or discard the original event. Exposed verification output and Git diffs cross the spool boundary as bounded pending artifacts and become encrypted content-addressed blobs during daemon import.
 
+Before sealing, the collector applies the active local capture profile and
+secret detector. Minimal, standard, and full profiles are enforced at the
+source boundary, including the immutable raw payload; unknown fields remain
+available only after sensitive values are replaced or omitted. The spool
+importer also caps one import pass at 512 MiB so a backlog cannot force an
+unbounded memory read.
+
 The supported hook baseline is Codex 0.144.3. Its generated hook schemas do not include the later documented `SessionEnd` event, so VibeTrace installs the forward-compatible handler but also performs bounded transcript enrichment from `Stop`. Missing, unsafe, oversized, malformed, mismatched, or unsupported rollout data becomes an explicit capture gap. Only exposed assistant `output_text` rows from the recognized rollout-v1 shape are normalized; encrypted reasoning records are not canonicalized.
 
 Installation uses `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) and preserves unrelated configuration. Each handler contains `commandWindows`, is uniquely tied to a VibeTrace install manifest, and must be reviewed through Codex `/hooks`. Uninstall removes only handlers whose semantic hashes still match that manifest; user-modified handlers are preserved for manual review. The wire behavior follows the [official Codex hooks contract](https://developers.openai.com/codex/hooks).
@@ -36,7 +43,11 @@ capture gaps instead of being silently treated as equivalent:
 
 - `codex-app-server` uses the documented stdio JSONL handshake and captures
   rich lifecycle, messages, plans, exposed reasoning, commands, file changes,
-  approvals, compaction, usage, and unsupported-event gaps.
+  approvals, compaction, usage, and unsupported-event gaps. Its validated
+  envelope artifacts are packaged under
+  `packages/adapter-codex-app-server/schemas/`; server approval requests are
+  explicitly declined when no policy callback is supplied and every response
+  is persisted as a `permission.resolved` event.
 - `generic-jsonl-agent` validates a source-neutral JSONL envelope while
   preserving unknown fields in raw payloads.
 - `opentelemetry` accepts approved usage or explicitly tagged VibeTrace events;

@@ -48,6 +48,7 @@ export const DEFAULT_APP_SERVER_INITIALIZE_TIMEOUT_MS = 10_000;
 export const DEFAULT_APP_SERVER_THREAD_START_TIMEOUT_MS = 30_000;
 export const DEFAULT_APP_SERVER_TURN_START_TIMEOUT_MS = 30_000;
 export const DEFAULT_APP_SERVER_TURN_TIMEOUT_MS = 5 * 60_000;
+export const DEFAULT_APP_SERVER_APPROVAL_TIMEOUT_MS = 30_000;
 
 const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
   z.union([
@@ -80,6 +81,14 @@ const usageSchema = z
     estimatedCostMicros: z.number().int().nonnegative().optional(),
   })
   .strict();
+
+const approvalDecisionSchema = z
+  .object({
+    decision: z.enum(['allow', 'decline']),
+    reason: z.string().max(4_096).optional(),
+  })
+  .passthrough();
+export type AppServerApprovalDecision = z.infer<typeof approvalDecisionSchema>;
 
 export interface AppServerProjectContext {
   readonly projectId: string;
@@ -394,22 +403,30 @@ function eventKind(
         status: 'failed',
       };
   }
-  if (method.includes('approval') || method.includes('permission'))
+  if (
+    method.toLowerCase().includes('approval') ||
+    method.includes('permission')
+  ) {
+    const normalizedMethod = method.toLowerCase();
+    const resolved =
+      normalizedMethod.includes('resolved') ||
+      normalizedMethod.includes('response');
+    const decision = stringValue(params.decision);
+    const declined = decision === 'decline' || decision === 'rejected';
     return {
-      type:
-        method.includes('resolved') || method.includes('response')
-          ? 'permission.resolved'
-          : 'permission.requested',
+      type: resolved ? 'permission.resolved' : 'permission.requested',
       source: 'harness',
       payload: {
         requestId:
           stringValue(params.requestId) ?? String(params.id ?? 'approval'),
+        ...(decision ? { decision } : {}),
         ...(stringValue(params.reason)
           ? { reason: params.reason as string }
           : {}),
       },
-      status: method.includes('resolved') ? 'completed' : 'pending',
+      status: resolved ? (declined ? 'declined' : 'completed') : 'pending',
     };
+  }
   if (method === 'error' || params.error)
     return {
       type: 'error',
@@ -738,7 +755,11 @@ export interface AppServerClientOptions {
     segment: SpoolSegment,
   ) => Promise<string>;
   readonly maxFrameBytes?: number;
-  readonly approval?: (request: AppServerRpcMessage) => Promise<JsonObject>;
+  /** Resolve a scoped server approval; an omitted handler is an explicit decline. */
+  readonly approval?: (
+    request: AppServerRpcMessage,
+  ) => Promise<AppServerApprovalDecision>;
+  readonly approvalTimeoutMs?: number;
   /** Bound each handshake phase and the complete turn so a stuck child cannot hang the collector. */
   readonly initializeTimeoutMs?: number;
   readonly threadStartTimeoutMs?: number;
@@ -765,7 +786,8 @@ function send(stdin: Writable, message: Record<string, unknown>): void {
 
 class AppServerPhaseTimeout extends Error {
   constructor(
-    readonly phase: 'initialize' | 'thread-start' | 'turn-start' | 'turn',
+    readonly phase:
+      'initialize' | 'thread-start' | 'turn-start' | 'turn' | 'approval',
     readonly timeoutMs: number,
   ) {
     super(`Codex app-server ${phase} timed out after ${timeoutMs} ms.`);
@@ -836,6 +858,10 @@ export async function runAppServerSession(
     options.turnTimeoutMs,
     DEFAULT_APP_SERVER_TURN_TIMEOUT_MS,
   );
+  const approvalTimeout = timeoutMs(
+    options.approvalTimeoutMs,
+    DEFAULT_APP_SERVER_APPROVAL_TIMEOUT_MS,
+  );
   const append = async (
     item:
       | { readonly message: AppServerRpcMessage; readonly receivedAt: string }
@@ -888,13 +914,53 @@ export async function runAppServerSession(
       const message = item.value.message;
       if (message.method && message.id !== undefined) {
         await append(item.value);
-        const result = options.approval
-          ? await options.approval(message)
-          : { decision: 'decline' };
+        let result: AppServerApprovalDecision;
+        if (!options.approval) {
+          result = {
+            decision: 'decline',
+            reason: 'no-approval-handler',
+          };
+        } else {
+          try {
+            const candidate = await withTimeout(
+              options.approval(message),
+              Math.min(approvalTimeout, durationMs),
+              'approval',
+            );
+            const parsed = approvalDecisionSchema.safeParse(candidate);
+            result = parsed.success
+              ? parsed.data
+              : {
+                  decision: 'decline',
+                  reason: 'invalid-approval-decision',
+                };
+          } catch (error) {
+            result = {
+              decision: 'decline',
+              reason:
+                error instanceof AppServerPhaseTimeout
+                  ? 'approval-timeout'
+                  : 'approval-handler-failed',
+            };
+          }
+        }
         send(process.stdin, {
           jsonrpc: '2.0',
           id: message.id,
           result,
+        });
+        await append({
+          message: {
+            jsonrpc: '2.0',
+            id: message.id,
+            method: 'permission/resolved',
+            params: {
+              requestId: String(message.id),
+              decision: result.decision,
+              ...(result.reason ? { reason: result.reason } : {}),
+            },
+          },
+          receivedAt: new Date().toISOString(),
         });
         continue;
       }

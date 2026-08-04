@@ -12,7 +12,13 @@ import { promisify } from 'node:util';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import {
+  EvalExecutionApprovalPolicySchema,
+  EvalExecutionConfigurationSchema,
+  EvalExecutionNetworkPolicySchema,
+  EvalExecutionSandboxPolicySchema,
   parseEvalManifest,
+  validateEvalExecutionExtraArgs,
+  type EvalExecutionConfiguration,
   type EvalManifest,
   type SuccessAssertion,
 } from '@vibetrace/eval-spec';
@@ -78,6 +84,8 @@ export interface EvalExecutionContext {
 export interface EvalExecutionRecord {
   readonly commandResults?: readonly CommandResult[];
   readonly output?: string;
+  /** Effective Codex argv and policy configuration used for this execution. */
+  readonly execution?: ResolvedCodexExecution;
   /** Optional canonical events supplied by an adapter-backed executor. */
   readonly events?: readonly TraceEvent[];
 }
@@ -104,6 +112,8 @@ export interface EvalRunResult extends EvalOutcome {
   readonly jsonRecordCount: number;
   readonly malformedJsonRecordCount: number;
   readonly sessionId?: string;
+  /** Effective Codex argv and policy configuration, when Codex executed the run. */
+  readonly execution?: ResolvedCodexExecution;
   readonly events: readonly TraceEvent[];
 }
 
@@ -112,10 +122,150 @@ export interface CodexExecOptions {
   readonly extraArgs?: readonly string[];
 }
 
+/** The policy dimensions actually supplied to Codex for one eval execution. */
+export interface EffectiveCodexExecutionConfiguration {
+  readonly model?: string;
+  readonly approvalPolicy?: string;
+  readonly sandboxPolicy?: string;
+  readonly networkPolicy?: string;
+  readonly extraArgs: readonly string[];
+}
+
+/** A fully resolved shell-free Codex invocation and its effective configuration. */
+export interface ResolvedCodexExecution {
+  readonly argv: readonly string[];
+  readonly configuration: EffectiveCodexExecutionConfiguration;
+}
+
 function text(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.length === 0)
     throw new Error(`${field} must be a non-empty string.`);
   return value;
+}
+
+function resolveExecutionValue(
+  field: string,
+  executionValue: string | undefined,
+  legacyValue: string | undefined,
+): string | undefined {
+  if (
+    executionValue !== undefined &&
+    legacyValue !== undefined &&
+    executionValue !== legacyValue
+  )
+    throw new Error(
+      `configuration.execution.${field} conflicts with configuration.${field}.`,
+    );
+  return executionValue ?? legacyValue;
+}
+
+function validateExecutionPolicy(
+  field: 'approvalPolicy' | 'sandboxPolicy' | 'networkPolicy',
+  value: string | undefined,
+): string | undefined {
+  if (value === undefined) return undefined;
+  const result =
+    field === 'approvalPolicy'
+      ? EvalExecutionApprovalPolicySchema.safeParse(value)
+      : field === 'sandboxPolicy'
+        ? EvalExecutionSandboxPolicySchema.safeParse(value)
+        : EvalExecutionNetworkPolicySchema.safeParse(value);
+  if (!result.success)
+    throw new Error(
+      `Unsupported execution ${field}: ${value}. Configure a supported explicit policy instead.`,
+    );
+  return result.data;
+}
+
+/** Resolve manifest configuration into the exact, shell-free Codex argv. */
+export function resolveCodexExecution(
+  manifest: EvalManifest,
+  options: CodexExecOptions = {},
+): ResolvedCodexExecution {
+  const execution: EvalExecutionConfiguration | undefined =
+    manifest.configuration.execution === undefined
+      ? undefined
+      : EvalExecutionConfigurationSchema.parse(
+          manifest.configuration.execution,
+        );
+  const model = resolveExecutionValue(
+    'model',
+    execution?.model,
+    manifest.configuration.model,
+  );
+  if (
+    model !== undefined &&
+    (model.length === 0 ||
+      model.length > 512 ||
+      model.includes('\0') ||
+      /[\r\n]/u.test(model))
+  )
+    throw new Error('execution model is not a safe bounded value.');
+  const approvalPolicy = validateExecutionPolicy(
+    'approvalPolicy',
+    resolveExecutionValue(
+      'approvalPolicy',
+      execution?.approvalPolicy,
+      manifest.configuration.approvalPolicy,
+    ),
+  );
+  const sandboxPolicy = validateExecutionPolicy(
+    'sandboxPolicy',
+    resolveExecutionValue(
+      'sandboxPolicy',
+      execution?.sandboxPolicy,
+      manifest.configuration.sandboxPolicy,
+    ),
+  );
+  const networkPolicy = validateExecutionPolicy(
+    'networkPolicy',
+    resolveExecutionValue(
+      'networkPolicy',
+      execution?.networkPolicy,
+      manifest.configuration.networkPolicy,
+    ),
+  );
+  if (networkPolicy !== undefined && sandboxPolicy !== 'workspace-write')
+    throw new Error(
+      'networkPolicy requires sandboxPolicy "workspace-write" so it can be applied explicitly.',
+    );
+
+  const extraArgs = [
+    ...(execution?.extraArgs ?? []),
+    ...(options.extraArgs ?? []),
+  ];
+  validateEvalExecutionExtraArgs(extraArgs);
+  const executable = options.executable ?? 'codex';
+  if (
+    typeof executable !== 'string' ||
+    executable.length === 0 ||
+    executable.length > 4_096 ||
+    executable.includes('\0')
+  )
+    throw new Error('Codex executable is not a safe bounded value.');
+
+  const argv = [executable, 'exec', '--json'];
+  if (model !== undefined) argv.push('--model', model);
+  if (approvalPolicy !== undefined)
+    argv.push('--config', `approval_policy=${JSON.stringify(approvalPolicy)}`);
+  if (sandboxPolicy !== undefined) argv.push('--sandbox', sandboxPolicy);
+  if (networkPolicy !== undefined)
+    argv.push(
+      '--config',
+      `sandbox_workspace_write.network_access=${networkPolicy === 'enabled'}`,
+    );
+  argv.push(...extraArgs, text(manifest.task.prompt, 'manifest.task.prompt'));
+  const configuration: EffectiveCodexExecutionConfiguration = {
+    ...(model !== undefined ? { model } : {}),
+    ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
+    ...(sandboxPolicy !== undefined ? { sandboxPolicy } : {}),
+    ...(networkPolicy !== undefined ? { networkPolicy } : {}),
+    extraArgs: Object.freeze([...extraArgs]),
+  };
+  return Object.freeze({
+    argv: Object.freeze(argv),
+    configuration: Object.freeze(configuration),
+  });
 }
 
 function safeRelativePath(value: string): string {
@@ -659,16 +809,13 @@ export async function runCodexExec(
   cwd: string,
   options: CodexExecOptions & ExecuteOptions,
 ): Promise<EvalExecutionRecord> {
-  const executable = options.executable ?? 'codex';
-  const args = [
-    executable,
-    'exec',
-    '--json',
-    ...(options.extraArgs ?? []),
-    manifest.task.prompt,
-  ];
-  const result = await executeArgv(args, options);
-  return { commandResults: [result], output: result.stdout };
+  const execution = resolveCodexExecution(manifest, options);
+  const result = await executeArgv(execution.argv, options);
+  return {
+    commandResults: [result],
+    output: result.stdout,
+    execution,
+  };
 }
 
 /** Execute one reviewed manifest in a detached worktree and run its checks. */
@@ -775,6 +922,7 @@ export async function runEvaluation(
             ],
           }
         : {}),
+      ...(execution?.execution ? { execution: execution.execution } : {}),
       jsonRecordCount: records.count,
       malformedJsonRecordCount: records.malformed,
       ...(events.length > 0 ? { sessionId: events[0]!.sessionId } : {}),

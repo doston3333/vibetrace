@@ -65,6 +65,10 @@ describe('createProgram', () => {
         return new Response(JSON.stringify({ ticket: 'b'.repeat(43) }), {
           status: 200,
         });
+      if (String(url).endsWith('/auth/browser-handoff'))
+        return new Response(JSON.stringify({ handoffToken: 'c'.repeat(43) }), {
+          status: 200,
+        });
       return new Response('{}', { status: 200 });
     }) as typeof fetch;
     const opened: string[] = [];
@@ -100,7 +104,7 @@ describe('createProgram', () => {
       call.url.endsWith('/auth/browser-handoff'),
     );
     expect(handoff?.init?.body).toContain('b'.repeat(43));
-    expect(opened).toEqual([`${origin}/`]);
+    expect(opened).toEqual([`${origin}/?handoff=${'c'.repeat(43)}`]);
     expect(opened[0]).not.toContain(token);
     expect(opened[0]).not.toContain('b'.repeat(43));
     expect(outputs).toContain('running');

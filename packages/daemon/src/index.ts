@@ -89,6 +89,9 @@ const TOKEN_BYTES = 32;
 const ticketSchema = z
   .object({ ticket: z.string().regex(/^[A-Za-z0-9_-]{43}$/) })
   .strict();
+const browserSessionSchema = z
+  .object({ handoffToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/) })
+  .strict();
 const annotationSchema = z
   .object({
     targetType: z.string().min(1).max(64),
@@ -260,7 +263,14 @@ const captureProfileSchema = z
     id: z.string().min(1).max(128).optional(),
     name: z.string().min(1).max(256),
     mode: z.enum(['minimal', 'standard', 'full']),
-    settings: z.record(z.string(), z.unknown()),
+    settings: z
+      .record(z.string().min(1).max(128), z.unknown())
+      .refine((value) => Object.keys(value).length <= 64, {
+        message: 'Capture profile settings contain too many keys.',
+      })
+      .refine((value) => JSON.stringify(value).length <= 16_384, {
+        message: 'Capture profile settings exceed the 16 KiB limit.',
+      }),
     activate: z.boolean().default(false),
   })
   .strict();
@@ -347,6 +357,12 @@ export interface RunningDaemon {
 }
 
 interface Ticket {
+  readonly expiresAt: number;
+  used: boolean;
+}
+
+interface BrowserHandoff {
+  readonly ticketId: string;
   readonly expiresAt: number;
   used: boolean;
 }
@@ -869,8 +885,8 @@ export async function startDaemon(
       }
     }
     const tickets = new Map<string, Ticket>();
+    const browserHandoffs = new Map<string, BrowserHandoff>();
     const sessions = new Set<string>();
-    let pendingBrowserTicket: string | undefined;
     const importer = {
       status: 'idle' as 'idle' | 'error',
       lastImportedAt: undefined as string | undefined,
@@ -929,8 +945,13 @@ export async function startDaemon(
       const now = clock.now().getTime();
       for (const [id, ticket] of tickets)
         if (ticket.used || ticket.expiresAt <= now) tickets.delete(id);
+      for (const [id, handoff] of browserHandoffs)
+        if (handoff.used || handoff.expiresAt <= now)
+          browserHandoffs.delete(id);
       while (tickets.size > 128)
         tickets.delete(tickets.keys().next().value as string);
+      while (browserHandoffs.size > 128)
+        browserHandoffs.delete(browserHandoffs.keys().next().value as string);
       while (sessions.size > 128)
         sessions.delete(sessions.values().next().value as string);
     };
@@ -980,10 +1001,24 @@ export async function startDaemon(
       if (!supplied || !constantTimeEquals(supplied, token))
         return reply.code(401).send({ code: 'UNAUTHORIZED' });
       const parsed = ticketSchema.safeParse(request.body);
-      if (!parsed.success || !tickets.has(hashTicket(parsed.data.ticket)))
+      if (!parsed.success)
         return reply.code(400).send({ code: 'INVALID_TICKET' });
-      pendingBrowserTicket = hashTicket(parsed.data.ticket);
-      return { ok: true };
+      const ticketId = hashTicket(parsed.data.ticket);
+      const record = tickets.get(ticketId);
+      if (!record || record.used || record.expiresAt <= clock.now().getTime())
+        return reply.code(400).send({ code: 'INVALID_TICKET' });
+      const handoffToken = randomBytes(TOKEN_BYTES).toString('base64url');
+      browserHandoffs.set(hashTicket(handoffToken), {
+        ticketId,
+        expiresAt: record.expiresAt,
+        used: false,
+      });
+      prune();
+      return {
+        ok: true,
+        handoffToken,
+        expiresAt: new Date(record.expiresAt).toISOString(),
+      };
     });
     app.post('/api/v1/auth/session', async (request, reply) => {
       if (request.headers.origin !== exactOrigin())
@@ -1009,9 +1044,19 @@ export async function startDaemon(
     app.post('/api/v1/auth/browser-session', async (request, reply) => {
       if (request.headers.origin !== exactOrigin())
         return reply.code(403).send({ code: 'FOREIGN_ORIGIN' });
-      const ticketId = pendingBrowserTicket;
-      pendingBrowserTicket = undefined;
-      const record = ticketId ? tickets.get(ticketId) : undefined;
+      const parsed = browserSessionSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'INVALID_HANDOFF' });
+      const handoffId = hashTicket(parsed.data.handoffToken);
+      const handoff = browserHandoffs.get(handoffId);
+      if (
+        !handoff ||
+        handoff.used ||
+        handoff.expiresAt <= clock.now().getTime()
+      )
+        return reply.code(401).send({ code: 'INVALID_TICKET' });
+      handoff.used = true;
+      const record = tickets.get(handoff.ticketId);
       if (!record || record.used || record.expiresAt <= clock.now().getTime())
         return reply.code(401).send({ code: 'INVALID_TICKET' });
       record.used = true;
@@ -2024,7 +2069,7 @@ export async function startDaemon(
       return reply
         .type('text/html')
         .send(
-          '<!doctype html><meta charset="utf-8"><script>fetch("/api/v1/auth/browser-session",{method:"POST"}).then(r=>{if(r.ok)location.replace("/")})</script>',
+          '<!doctype html><meta charset="utf-8"><script>const p=new URLSearchParams(location.search),h=p.get("handoff");if(h){fetch("/api/v1/auth/browser-session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({handoffToken:h})}).then(r=>{if(r.ok)location.replace(location.pathname+location.hash)})}</script>',
         );
     };
     app.get('/', serveDashboard);

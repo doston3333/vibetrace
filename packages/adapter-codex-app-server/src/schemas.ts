@@ -23,6 +23,8 @@ export type AppServerRpcEnvelope = z.infer<typeof AppServerRpcEnvelopeSchema>;
 export interface AppServerSchemaDescriptor {
   readonly schemaVersion: string;
   readonly minimumCodexVersion: typeof CODEX_APP_SERVER_BASELINE_VERSION;
+  /** Packaged generated envelope schema for this validated contract. */
+  readonly artifactPath: `schemas/${string}.json`;
   readonly validated: boolean;
   readonly compatibility: 'validated' | 'forward-compatible';
 }
@@ -32,6 +34,7 @@ export const CODEX_APP_SERVER_SCHEMA_REGISTRY: readonly AppServerSchemaDescripto
     CODEX_APP_SERVER_VALIDATED_VERSIONS.map((schemaVersion) => ({
       schemaVersion,
       minimumCodexVersion: CODEX_APP_SERVER_BASELINE_VERSION,
+      artifactPath: `schemas/${schemaVersion}.json` as `schemas/${string}.json`,
       validated: true,
       compatibility: 'validated' as const,
     })),

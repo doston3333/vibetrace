@@ -72,6 +72,136 @@ const taskSchema = z
   })
   .strict();
 
+export const EvalExecutionApprovalPolicySchema = z.enum([
+  'untrusted',
+  'on-request',
+  'never',
+]);
+export const EvalExecutionSandboxPolicySchema = z.enum([
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+]);
+export const EvalExecutionNetworkPolicySchema = z.enum(['enabled', 'disabled']);
+
+const MAX_EXECUTION_EXTRA_ARGS = 64;
+const MAX_EXECUTION_EXTRA_ARG_LENGTH = 4_096;
+const safeExecutionBooleanArgs = new Set([
+  '--ephemeral',
+  '--ignore-rules',
+  '--ignore-user-config',
+  '--oss',
+  '--strict-config',
+]);
+
+/** Reject exec arguments that could alter the isolated execution contract. */
+export function validateEvalExecutionExtraArgs(args: readonly string[]): void {
+  if (args.length > MAX_EXECUTION_EXTRA_ARGS)
+    throw new Error(
+      `execution.extraArgs exceeds the ${MAX_EXECUTION_EXTRA_ARGS}-argument limit.`,
+    );
+  for (const [index, argument] of args.entries()) {
+    if (
+      typeof argument !== 'string' ||
+      argument.length === 0 ||
+      argument.length > MAX_EXECUTION_EXTRA_ARG_LENGTH ||
+      argument.includes('\0') ||
+      /[\r\n]/u.test(argument)
+    )
+      throw new Error(`execution.extraArgs[${index}] is not a safe argument.`);
+    const normalized = argument.toLowerCase();
+    const reserved =
+      normalized === 'exec' ||
+      normalized === 'e' ||
+      normalized === '--json' ||
+      normalized.startsWith('--json=') ||
+      normalized === '--model' ||
+      normalized.startsWith('--model=') ||
+      normalized === '--sandbox' ||
+      normalized.startsWith('--sandbox=') ||
+      normalized === '--ask-for-approval' ||
+      normalized.startsWith('--ask-for-approval=') ||
+      normalized === '--config' ||
+      normalized.startsWith('--config=') ||
+      normalized === '-m' ||
+      normalized.startsWith('-m') ||
+      normalized === '-s' ||
+      normalized.startsWith('-s') ||
+      normalized === '-a' ||
+      normalized.startsWith('-a') ||
+      normalized === '-c' ||
+      normalized.startsWith('-c') ||
+      normalized === '--dangerously-bypass-approvals-and-sandbox' ||
+      normalized === '--dangerously-bypass-hook-trust' ||
+      normalized === '--full-auto' ||
+      normalized === '--cd' ||
+      normalized.startsWith('--cd=') ||
+      normalized === '--add-dir' ||
+      normalized.startsWith('--add-dir=') ||
+      normalized === '--output-last-message' ||
+      normalized.startsWith('--output-last-message=') ||
+      normalized === '-o' ||
+      normalized === '--output-schema' ||
+      normalized.startsWith('--output-schema=') ||
+      normalized === '--image' ||
+      normalized.startsWith('--image=') ||
+      normalized === '-i';
+    if (reserved)
+      throw new Error(
+        `execution.extraArgs[${index}] overrides a reserved exec or policy option.`,
+      );
+    if (
+      safeExecutionBooleanArgs.has(normalized) ||
+      /^--color=(?:always|never|auto)$/u.test(normalized)
+    )
+      continue;
+    throw new Error(
+      `execution.extraArgs[${index}] is not an allowed non-policy exec option.`,
+    );
+  }
+}
+
+/** Validated Codex execution recipe; absent for legacy, capture-only manifests. */
+export const EvalExecutionConfigurationSchema = z
+  .object({
+    model: z.string().min(1).max(512).optional(),
+    approvalPolicy: EvalExecutionApprovalPolicySchema.optional(),
+    sandboxPolicy: EvalExecutionSandboxPolicySchema.optional(),
+    networkPolicy: EvalExecutionNetworkPolicySchema.optional(),
+    extraArgs: z
+      .array(z.string().min(1).max(MAX_EXECUTION_EXTRA_ARG_LENGTH))
+      .max(MAX_EXECUTION_EXTRA_ARGS)
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    try {
+      validateEvalExecutionExtraArgs(value.extraArgs ?? []);
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        path: ['extraArgs'],
+        message:
+          error instanceof Error
+            ? error.message
+            : 'execution.extraArgs is invalid.',
+      });
+    }
+    if (
+      value.networkPolicy !== undefined &&
+      value.sandboxPolicy !== 'workspace-write'
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['networkPolicy'],
+        message:
+          'networkPolicy requires sandboxPolicy "workspace-write" so it can be applied explicitly.',
+      });
+  });
+export type EvalExecutionConfiguration = z.infer<
+  typeof EvalExecutionConfigurationSchema
+>;
+
 const configurationSchema = z
   .object({
     model: z.string().min(1).max(512).optional(),
@@ -90,6 +220,7 @@ const configurationSchema = z
     approvalPolicy: z.string().min(1).max(128).optional(),
     sandboxPolicy: z.string().min(1).max(128).optional(),
     networkPolicy: z.string().min(1).max(128).optional(),
+    execution: EvalExecutionConfigurationSchema.optional(),
     environmentFingerprint: z
       .string()
       .regex(/^[a-f0-9]{64}$/)

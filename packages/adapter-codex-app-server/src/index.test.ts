@@ -31,6 +31,7 @@ describe('Codex app-server adapter', () => {
     expect(resolveAppServerSchema('0.144.3')).toMatchObject({
       schemaVersion: '0.144.3',
       validated: true,
+      artifactPath: 'schemas/0.144.3.json',
     });
     expect(resolveAppServerSchema('0.145.0')).toMatchObject({
       schemaVersion: '0.145.0',
@@ -135,6 +136,38 @@ describe('Codex app-server adapter', () => {
     );
   });
 
+  it('records approval requests and explicit resolutions as scoped facts', async () => {
+    const result = await captureAppServerJsonl(
+      Readable.from([
+        line({
+          id: 41,
+          method: 'item/commandExecution/requestApproval',
+          params: { command: 'pnpm test', reason: 'needs execution' },
+        }),
+        line({
+          id: 41,
+          method: 'permission/resolved',
+          params: {
+            requestId: '41',
+            decision: 'decline',
+            reason: 'user-denied',
+          },
+        }),
+      ]),
+      context,
+    );
+    expect(result.events.map((event) => event.type)).toEqual([
+      'permission.requested',
+      'permission.resolved',
+    ]);
+    expect(result.events[0]?.status).toBe('pending');
+    expect(result.events[1]?.status).toBe('declined');
+    expect(result.events[1]?.payload).toMatchObject({
+      requestId: '41',
+      decision: 'decline',
+    });
+  });
+
   it('turns unknown, malformed, and oversized frames into bounded capture gaps', async () => {
     const malformed = '{not-json}\n';
     const oversized = `${'x'.repeat(20)}\n`;
@@ -197,7 +230,7 @@ describe('Codex app-server adapter', () => {
     const stdin = new Writable({
       write(chunk, _encoding, callback) {
         const request = JSON.parse(String(chunk)) as {
-          id?: number;
+          id?: number | string;
           method?: string;
         };
         if (request.id === 1)
@@ -228,6 +261,15 @@ describe('Codex app-server adapter', () => {
           stdout.write(line({ id: 3, result: { turn: { id: 'turn-live' } } }));
           stdout.write(
             line({
+              id: 99,
+              method: 'item/commandExecution/requestApproval',
+              params: { command: 'pnpm test' },
+            }),
+          );
+        }
+        if (request.id === 99) {
+          stdout.write(
+            line({
               method: 'turn/completed',
               params: { turn: { id: 'turn-live', status: 'completed' } },
             }),
@@ -255,9 +297,12 @@ describe('Codex app-server adapter', () => {
     expect(result.events.map((event) => event.type)).toEqual([
       'session.started',
       'turn.started',
+      'permission.requested',
+      'permission.resolved',
       'turn.completed',
     ]);
-    expect(writes).toHaveLength(3);
+    expect(result.events[3]?.status).toBe('declined');
+    expect(writes).toHaveLength(5);
     expect(
       result.events.every(
         (event) => event.provenance.adapter === APP_SERVER_ADAPTER_ID,

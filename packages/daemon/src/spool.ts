@@ -30,6 +30,7 @@ import { z } from 'zod';
 
 /** Large tool output remains bounded without excluding the 100 MiB capture scenario. */
 const MAX_SEGMENT_BYTES = 128 * 1024 * 1024;
+const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
 const TEMP_GRACE_MS = 60_000;
 
 const projectSchema = z
@@ -199,6 +200,8 @@ export interface SpoolFaults {
 export interface SpoolImportOptions extends SpoolFaults {
   readonly now?: () => number;
   readonly temporaryGraceMs?: number;
+  /** Maximum sealed bytes one import pass may stage into memory. */
+  readonly maxImportBytes?: number;
   /** Observe a segment only after its database commit and durable archive move. */
   readonly onCommittedSession?: (sessionId: string) => void;
 }
@@ -351,6 +354,14 @@ export async function importSegments(
   await ensureSpool(paths);
   let importedCount = 0;
   let quarantined = 0;
+  const requestedImportBytes = options.maxImportBytes;
+  const maxImportBytes =
+    requestedImportBytes !== undefined &&
+    Number.isInteger(requestedImportBytes) &&
+    requestedImportBytes > 0
+      ? Math.min(MAX_IMPORT_BYTES, requestedImportBytes)
+      : MAX_IMPORT_BYTES;
+  let stagedBytes = 0;
   for (const entry of await readdir(paths.incoming)) {
     if (entry.endsWith('.tmp')) {
       const metadata = await lstat(join(paths.incoming, entry)).catch(
@@ -381,6 +392,8 @@ export async function importSegments(
         reason = 'OVERSIZE';
         throw new Error();
       }
+      if (stagedBytes + metadata.size > maxImportBytes) break;
+      stagedBytes += metadata.size;
       const text = await readFile(path, 'utf8');
       if (!text.endsWith('\n') || text.slice(0, -1).includes('\n')) {
         reason = 'MULTILINE';
@@ -448,5 +461,6 @@ export async function importSegments(
 /** Test-only size limit accessor; production import always uses the bounded constant. */
 export const spoolLimits = {
   maxSegmentBytes: MAX_SEGMENT_BYTES,
+  maxImportBytes: MAX_IMPORT_BYTES,
   temporaryGraceMs: TEMP_GRACE_MS,
 } as const;
