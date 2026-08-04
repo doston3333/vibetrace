@@ -513,7 +513,8 @@ describe('Codex hook contracts', () => {
 
     const standardInput = fixture('PostToolUse');
     standardInput.tool_response = {
-      output: 'Authorization: Bearer secret-bearer-value-123456789',
+      output:
+        'Authorization: Bearer secret-bearer-value-123456789\nPATH=/private/user/workspace',
       environment: { DATABASE_PASSWORD: 'do-not-persist' },
     };
     const standard = normalizeCodexHook(standardInput, {
@@ -522,6 +523,7 @@ describe('Codex hook contracts', () => {
     });
     expect(JSON.stringify(standard)).not.toContain('secret-bearer-value');
     expect(JSON.stringify(standard)).not.toContain('do-not-persist');
+    expect(JSON.stringify(standard)).not.toContain('/private/user/workspace');
     expect(standard.event.redactions?.length).toBeGreaterThan(0);
   });
 

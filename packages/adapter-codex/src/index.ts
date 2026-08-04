@@ -726,6 +726,8 @@ const bearerPattern = /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/giu;
 const basicPattern = /\bBasic\s+[A-Za-z0-9+/=]{12,}/giu;
 const knownTokenPattern =
   /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{20,})\b/gu;
+const environmentAssignmentPattern =
+  /(^|\n)([A-Za-z_][A-Za-z0-9_]{1,63})=(?:"[^"\n]*"|'[^'\n]*'|[^\n]*)/gu;
 const assignmentSecretPattern =
   /((?:password|passwd|secret|token|api[_-]?key|authorization|cookie|private[_-]?key)\s*[:=]\s*)(["']?)([^\s"',;}]+)\2/giu;
 
@@ -779,6 +781,19 @@ function redactText(
     redactions.push({
       path,
       detector: 'secret-assignment',
+      replacement,
+    });
+  }
+  if (environmentAssignmentPattern.test(value)) {
+    environmentAssignmentPattern.lastIndex = 0;
+    const replacement = '[REDACTED:environment-value]';
+    value = value.replace(
+      environmentAssignmentPattern,
+      (_match, prefix: string, key: string) => `${prefix}${key}=${replacement}`,
+    );
+    redactions.push({
+      path,
+      detector: 'environment-assignment',
       replacement,
     });
   }
