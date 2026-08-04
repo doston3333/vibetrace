@@ -175,6 +175,42 @@ async function waitForStatus(env, expected) {
   throw new Error(`VibeTrace daemon did not reach ${expected} state.`);
 }
 
+async function waitForSessions(
+  env,
+  predicate,
+  minimumEvents,
+  label,
+  timeoutMs = 45_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let latest;
+  do {
+    const result = await cli(['sessions', 'list', '--json'], { env });
+    const parsed = JSON.parse(result.stdout);
+    latest = Array.isArray(parsed.sessions) ? parsed.sessions : [];
+    const matching = latest.filter(predicate);
+    const eventCount = matching.reduce(
+      (total, session) => total + Number(session.eventCount ?? 0),
+      0,
+    );
+    if (matching.length > 0 && eventCount >= minimumEvents) return matching;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `Native Codex ${label} did not produce complete captured sessions (expected=${minimumEvents} actual=${latest
+      .filter(predicate)
+      .reduce(
+        (total, session) => total + Number(session.eventCount ?? 0),
+        0,
+      )} sessions=${latest
+      .map(
+        (session) =>
+          `${session.source ?? 'unknown'}:${session.eventCount ?? 0}`,
+      )
+      .join(',')}).`,
+  );
+}
+
 async function stop(env) {
   try {
     await cli(['stop'], { env, timeoutMs: 15_000 });
@@ -376,6 +412,105 @@ try {
   if (!adapters.has('codex-hooks') || !sourceVersions.has(codexVersion))
     throw new Error('Native smoke events are missing Codex provenance.');
 
+  // Exercise the opt-in full-fidelity app-server path with the installed
+  // native Codex binary. The read-only prompt and decline policy keep this
+  // acceptance run from modifying the checkout or requesting unsafe access.
+  const appServerRun = await cli(
+    [
+      'codex',
+      'app-server',
+      '--prompt',
+      'Inspect README.md and respond with exactly APP_SERVER_SMOKE_OK. Do not modify files and do not use the network.',
+      '--cwd',
+      checkout,
+      '--approval-policy',
+      'decline',
+    ],
+    {
+      env,
+      timeoutMs: Number(
+        process.env.VIBETRACE_NATIVE_APP_SERVER_TIMEOUT_MS ??
+          process.env.VIBETRACE_NATIVE_SMOKE_TIMEOUT_MS ??
+          300_000,
+      ),
+      maxOutputBytes: 16 * 1024 * 1024,
+      label: 'codex native app-server session',
+    },
+  );
+  const appServerSummary = JSON.parse(appServerRun.stdout.trim());
+  if (
+    appServerSummary.adapter !== 'codex-app-server' ||
+    !Number.isInteger(appServerSummary.eventCount) ||
+    appServerSummary.eventCount < 1
+  )
+    throw new Error('Native app-server command returned an invalid summary.');
+  const appServerSessions = await waitForSessions(
+    env,
+    (candidate) =>
+      candidate.source === 'codex-app-server' && candidate.eventCount > 0,
+    appServerSummary.eventCount,
+    'app-server',
+  );
+  const appServerEvents = [];
+  const appServerSessionRecords = [];
+  for (const appServerSession of appServerSessions) {
+    const appServerEventsResponse = await fetch(
+      `${descriptor.origin}/api/v1/sessions/${encodeURIComponent(appServerSession.id)}/events?limit=2000`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    if (!appServerEventsResponse.ok)
+      throw new Error('Native app-server event query failed.');
+    const appServerEventsBody = await appServerEventsResponse.json();
+    if (Array.isArray(appServerEventsBody.events)) {
+      appServerEvents.push(...appServerEventsBody.events);
+      appServerSessionRecords.push({
+        id: appServerSession.id,
+        sourceSessionId: appServerSession.sourceSessionId,
+        eventCount: appServerSession.eventCount,
+        eventTypes: [
+          ...new Set(
+            appServerEventsBody.events
+              .map((item) => item?.event?.type)
+              .filter((value) => typeof value === 'string'),
+          ),
+        ].sort(),
+      });
+    }
+  }
+  const appServerEventTypes = new Set(
+    appServerEvents
+      .map((item) => item?.event?.type)
+      .filter((value) => typeof value === 'string'),
+  );
+  const appServerAdapters = new Set(
+    appServerEvents
+      .map((item) => item?.event?.provenance?.adapter)
+      .filter((value) => typeof value === 'string'),
+  );
+  const appServerSourceVersions = new Set(
+    appServerEvents
+      .map((item) => item?.event?.provenance?.sourceVersion)
+      .filter((value) => typeof value === 'string'),
+  );
+  if (
+    !appServerAdapters.has('codex-app-server') ||
+    !appServerSourceVersions.has(codexVersion) ||
+    !appServerEventTypes.has('session.started') ||
+    !appServerEventTypes.has('turn.started') ||
+    !appServerEventTypes.has('turn.completed') ||
+    !(
+      appServerEventTypes.has('message.agent') ||
+      appServerEventTypes.has('command.started') ||
+      appServerEventTypes.has('capture.gap')
+    )
+  )
+    throw new Error(
+      `Native app-server events are missing rich provenance (types=${[...appServerEventTypes].sort().join(',') || 'none'} adapters=${[...appServerAdapters].sort().join(',') || 'none'} sourceVersions=${[...appServerSourceVersions].sort().join(',') || 'none'}).`,
+    );
+  const appServerGapCount = appServerEvents.filter(
+    (item) => item?.event?.type === 'capture.gap',
+  ).length;
+
   // Verify that a bad passphrase cannot unlock the existing envelope, then
   // prove that the same local state remains recoverable with the right one.
   await stop(env);
@@ -410,6 +545,19 @@ try {
     codexOutputEventTypes: [...codexEventTypes].sort(),
     adapters: [...adapters].sort(),
     sourceVersions: [...sourceVersions].sort(),
+    appServer: {
+      status: 'passed',
+      sessionId: appServerSessions[0]?.id,
+      sessionIds: appServerSessions.map((candidate) => candidate.id).sort(),
+      sessionRecords: appServerSessionRecords.sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+      eventCount: appServerEvents.length,
+      eventTypes: [...appServerEventTypes].sort(),
+      gapCount: appServerGapCount,
+      adapters: [...appServerAdapters].sort(),
+      sourceVersions: [...appServerSourceVersions].sort(),
+    },
     storagePassphraseRecovery: 'verified',
   });
 } catch (error) {

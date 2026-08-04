@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import {
   codexAdapterLimits,
   collectCodexHook,
+  detectCodexVersion,
   doctorCodex,
   installCodexHooks,
   uninstallCodexHooks,
@@ -70,6 +71,7 @@ export interface CliDependencies {
     readonly dryRun?: boolean;
   }) => Promise<HookChangeResult>;
   readonly doctorCodex?: () => Promise<CodexDoctorReport>;
+  readonly detectCodexVersion?: () => Promise<string | undefined>;
   readonly runAppServerSession?: (
     options: Parameters<typeof runAppServerSession>[0],
   ) => Promise<AppServerCaptureResult>;
@@ -371,6 +373,8 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
   const doctor =
     dependencies.doctorCodex ??
     (() => doctorCodex({ stateDir: stateDir(), fetch: request }));
+  const detectVersion =
+    dependencies.detectCodexVersion ?? (() => detectCodexVersion());
   const runAppServer = dependencies.runAppServerSession ?? runAppServerSession;
   const setExitCode =
     dependencies.setExitCode ?? ((code: number) => (process.exitCode = code));
@@ -1260,6 +1264,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         if (!approval)
           throw new Error('Approval handler could not be created.');
         try {
+          const sourceVersion = await detectVersion();
           const result = await runAppServer({
             cwd,
             prompt: options.prompt,
@@ -1273,6 +1278,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
                 pathHash: createHash('sha256').update(cwd).digest('hex'),
               },
               ...(options.model ? { model: options.model } : {}),
+              ...(sourceVersion ? { sourceVersion } : {}),
             },
             thread: {
               mode: options.threadMode as AppServerThreadMode,

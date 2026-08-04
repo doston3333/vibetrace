@@ -50,9 +50,9 @@ constructing a 100 MB input buffer.
 To produce native Codex evidence, authenticate the Codex CLI without putting a
 key in arguments, then run the isolated smoke harness. It packs and installs
 the exact local CLI tarball, creates a disposable Git checkout and Codex home,
-executes one read-only Codex session, verifies captured event provenance through
-the authenticated daemon API, and prints only metadata (never prompts or model
-output):
+executes one read-only lifecycle-hook session and one read-only app-server
+session, verifies captured event provenance through the authenticated daemon
+API, and prints only metadata (never prompts or model output):
 
 ```bash
 printf '%s\n' "$OPENAI_API_KEY" | CODEX_HOME="$TMPDIR/vibetrace-codex-home" codex login --with-api-key
@@ -69,7 +69,10 @@ same local envelope afterward. It requires the repository's
 `CODEX_OPENAI_API_KEY` secret and is intentionally separate from ordinary
 pull-request CI because it invokes a real model. The `Release gate` workflow
 calls both the full cross-platform CI matrix and this native-smoke workflow for
-version tags or an explicit manual run.
+version tags or an explicit manual run. The native harness exercises both the
+Codex lifecycle-hook path and the opt-in `codex app-server` path, aggregating
+bounded evidence when a server emits a provisional capture gap before its
+thread identifier is known.
 
 The release workflow is complete only after the CI matrix passes and a native
 Codex smoke session has been recorded on macOS, Linux, and Windows. A local

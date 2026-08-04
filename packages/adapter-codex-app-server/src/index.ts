@@ -33,6 +33,7 @@ import { resolveAppServerSchema } from './schemas.js';
 
 export {
   AppServerRpcEnvelopeSchema,
+  APP_SERVER_SCHEMA_ARTIFACTS,
   CODEX_APP_SERVER_BASELINE_VERSION,
   CODEX_APP_SERVER_VALIDATED_VERSIONS,
   CODEX_APP_SERVER_SCHEMA_REGISTRY,
@@ -938,9 +939,9 @@ export async function runAppServerSession(
       (item.message.method === 'thread/started' ||
         item.message.method === 'thread/resumed')
     ) {
-      const discovered = stringValue(
-        record(record(item.message.params).thread).id,
-      );
+      const params = record(item.message.params);
+      const discovered =
+        stringValue(record(params.thread).id) ?? stringValue(params.threadId);
       if (discovered)
         activeContext = { ...activeContext, sourceSessionId: discovered };
     }

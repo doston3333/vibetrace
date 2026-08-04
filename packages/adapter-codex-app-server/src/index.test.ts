@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   APP_SERVER_ADAPTER_ID,
+  APP_SERVER_SCHEMA_ARTIFACTS,
+  CODEX_APP_SERVER_SCHEMA_REGISTRY,
+  CODEX_APP_SERVER_VALIDATED_VERSIONS,
+  AppServerRpcEnvelopeSchema,
   assertSupportedAppServerVersion,
   captureAppServerJsonl,
   captureAppServerToSpool,
@@ -27,6 +31,28 @@ function line(value: unknown): string {
 }
 
 describe('Codex app-server adapter', () => {
+  it('loads generated artifacts for every registered version', () => {
+    expect(Object.keys(APP_SERVER_SCHEMA_ARTIFACTS)).toEqual([
+      ...CODEX_APP_SERVER_VALIDATED_VERSIONS,
+    ]);
+    expect(CODEX_APP_SERVER_SCHEMA_REGISTRY).toHaveLength(
+      CODEX_APP_SERVER_VALIDATED_VERSIONS.length,
+    );
+    for (const descriptor of CODEX_APP_SERVER_SCHEMA_REGISTRY) {
+      expect(descriptor.artifact.$id).toBe(
+        `https://vibetrace.dev/schemas/codex-app-server/${descriptor.schemaVersion}.json`,
+      );
+      expect(descriptor.artifact.properties).toHaveProperty('params');
+      expect(
+        AppServerRpcEnvelopeSchema.safeParse({
+          id: 1,
+          method: 'thread/started',
+          params: { unknownField: true },
+        }).success,
+      ).toBe(true);
+    }
+  });
+
   it('resolves the versioned contract and turns older versions into explicit gaps', async () => {
     expect(resolveAppServerSchema('0.144.3')).toMatchObject({
       schemaVersion: '0.144.3',
@@ -247,7 +273,7 @@ describe('Codex app-server adapter', () => {
           stdout.write(
             line({
               method: 'thread/started',
-              params: { thread: { id: 'thread-live' } },
+              params: { threadId: 'thread-live' },
             }),
           );
           stdout.write(

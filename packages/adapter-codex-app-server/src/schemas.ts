@@ -1,13 +1,19 @@
 import { z } from 'zod';
 
+import {
+  APP_SERVER_SCHEMA_ARTIFACTS,
+  CODEX_APP_SERVER_VALIDATED_VERSIONS,
+  type AppServerSchemaArtifact,
+} from './generated-schemas.js';
+
+export {
+  APP_SERVER_SCHEMA_ARTIFACTS,
+  CODEX_APP_SERVER_VALIDATED_VERSIONS,
+} from './generated-schemas.js';
+export type { AppServerSchemaArtifact } from './generated-schemas.js';
+
 /** The earliest app-server contract validated by this adapter. */
 export const CODEX_APP_SERVER_BASELINE_VERSION = '0.144.3' as const;
-export const CODEX_APP_SERVER_VALIDATED_VERSIONS = [
-  '0.144.3',
-  '0.145.0',
-  '0.146.0',
-] as const;
-
 export const AppServerRpcEnvelopeSchema = z
   .object({
     id: z.union([z.string(), z.number().int()]).optional(),
@@ -25,6 +31,8 @@ export interface AppServerSchemaDescriptor {
   readonly minimumCodexVersion: typeof CODEX_APP_SERVER_BASELINE_VERSION;
   /** Packaged generated envelope schema for this validated contract. */
   readonly artifactPath: `schemas/${string}.json`;
+  /** Runtime-loaded artifact; generated from the checked-in JSON contract. */
+  readonly artifact: AppServerSchemaArtifact;
   readonly validated: boolean;
   readonly compatibility: 'validated';
 }
@@ -35,6 +43,7 @@ export const CODEX_APP_SERVER_SCHEMA_REGISTRY: readonly AppServerSchemaDescripto
       schemaVersion,
       minimumCodexVersion: CODEX_APP_SERVER_BASELINE_VERSION,
       artifactPath: `schemas/${schemaVersion}.json` as `schemas/${string}.json`,
+      artifact: APP_SERVER_SCHEMA_ARTIFACTS[schemaVersion],
       validated: true,
       compatibility: 'validated' as const,
     })),
