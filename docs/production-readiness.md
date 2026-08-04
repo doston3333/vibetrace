@@ -39,7 +39,7 @@ can be inferred from a single developer workstation.
 
 ## Local verification record
 
-Commit `1db6f47` was verified on 2026-08-04 from a clean macOS arm64 checkout
+Commit `caf77c8` was verified on 2026-08-04 from a clean macOS arm64 checkout
 with Node `v26.4.0`, pnpm `10.33.4`, and npm `11.17.0`. Node 26 is newer than
 the supported release runtimes, so this record supplements rather than replaces
 the CI matrix.
@@ -67,8 +67,10 @@ replace the official Node 22/24 and three-OS CI matrix.
 
 The native smoke harness also passed locally on macOS arm64 with Codex
 `0.144.3` and Node `v24.18.0`: 12 captured events, adapter `codex-hooks`, and
-source version `0.144.3`. This is supplementary evidence because the release
-runtime matrix still requires independent Linux and Windows runners.
+source version `0.144.3`; the report also verified wrong-passphrase rejection
+and recovery with the correct local envelope. This is supplementary evidence
+because the release runtime matrix still requires independent Linux and
+Windows runners.
 
 The packed-install smoke test exercises the bundled CLI, isolated temporary
 homes, daemon authentication and lifecycle, dashboard serving, encrypted
