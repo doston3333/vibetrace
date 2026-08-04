@@ -59,6 +59,12 @@ export function SessionOverview({
         'number' &&
         (item.event.payload as { exitCode: number }).exitCode !== 0),
   ).length;
+  const measuredDimensions = scorecard?.dimensions
+    .filter((dimension) => dimension.score !== null)
+    .slice(0, 3);
+  const awaitingDimensions = scorecard?.dimensions.filter(
+    (dimension) => dimension.score === null,
+  ).length;
   return (
     <section className="session-overview" aria-labelledby="session-title">
       <div className="case-heading">
@@ -67,7 +73,7 @@ export function SessionOverview({
             Case file · {session.source} · {session.captureMode} capture
           </p>
           <h1 id="session-title">{session.title ?? session.displayName}</h1>
-          <p>
+          <p className="case-metadata">
             {session.model ?? 'Model not exposed'} ·{' '}
             {formatDuration(session.startedAt, session.endedAt)} ·{' '}
             {new Date(session.startedAt).toLocaleString()}
@@ -108,7 +114,10 @@ export function SessionOverview({
               : 'Primary deterministic finding'}
           </span>
           <strong>{primary.title}</strong>
-          <p>{primary.impact ?? primary.explanation}</p>
+          <details>
+            <summary>Review supporting analysis</summary>
+            <p>{primary.impact ?? primary.explanation}</p>
+          </details>
         </div>
       ) : (
         <div className="primary-hypothesis is-empty">
@@ -126,22 +135,22 @@ export function SessionOverview({
           aria-label="Independent scorecard dimensions"
         >
           <div>
-            <span className="eyebrow">Independent scorecard dimensions</span>
+            <span className="eyebrow">Independent scorecard evidence</span>
             <small>
               Not a universal quality score · v{scorecard.schemaVersion}
             </small>
           </div>
           <div className="overview-scorecard-grid">
-            {scorecard.dimensions.map((dimension) => (
+            {measuredDimensions?.map((dimension) => (
               <div key={dimension.id}>
                 <span>{dimension.label}</span>
-                <strong>
-                  {dimension.score === null
-                    ? 'Unknown'
-                    : `${dimension.score}/100`}
-                </strong>
+                <strong>{dimension.score}/100 measured</strong>
               </div>
             ))}
+            <div className="overview-awaiting">
+              <span>Awaiting evidence</span>
+              <strong>{awaitingDimensions ?? 0} dimensions</strong>
+            </div>
           </div>
         </section>
       ) : null}

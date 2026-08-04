@@ -123,7 +123,13 @@ export function SessionsPage() {
             <h2 id="session-index-title">Case index</h2>
             <span>Virtualized for up to 10,000 sessions</span>
           </div>
-          <div className="session-list" ref={scroll}>
+          <div
+            className="session-list"
+            ref={scroll}
+            style={{
+              height: `${Math.min(816, Math.max(104, rows.length * 104))}px`,
+            }}
+          >
             <div
               className="session-list-space"
               style={{ height: `${virtualizer.getTotalSize()}px` }}

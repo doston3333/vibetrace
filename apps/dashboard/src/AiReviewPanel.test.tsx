@@ -114,6 +114,13 @@ describe('AiReviewPanel', () => {
     expect((await screen.findByRole('alert')).textContent).toContain(
       'Confirm that this session may be sent',
     );
+    const consent = screen.getByRole('checkbox', {
+      name: /Send this bounded session dossier/,
+    });
+    expect(consent.getAttribute('aria-invalid')).toBe('true');
+    expect(consent.getAttribute('aria-describedby')).toBe(
+      'ai-validation-error',
+    );
     expect(run).not.toHaveBeenCalled();
   });
 });

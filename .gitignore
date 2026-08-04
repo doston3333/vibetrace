@@ -5,6 +5,8 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 .gstack/
+.playwright-cli/
+output/playwright/
 .env
 .env.*
 !.env.example

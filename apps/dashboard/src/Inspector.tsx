@@ -21,6 +21,7 @@ const TABS = [
   'redaction',
 ] as const;
 type InspectorTab = (typeof TABS)[number];
+const RAW_PREVIEW_LIMIT = 50_000;
 
 interface InspectorProps {
   readonly sessionId: string;
@@ -71,6 +72,31 @@ function TextDiff({ text }: { readonly text: string }) {
   );
 }
 
+function JsonPreview({
+  value,
+  label,
+}: {
+  readonly value: unknown;
+  readonly label: string;
+}) {
+  const serialized = JSON.stringify(value, null, 2) ?? 'null';
+  const safe = safeDisplayText(serialized, RAW_PREVIEW_LIMIT);
+  const truncated = safe.length < serialized.length;
+  return (
+    <>
+      <pre className="json-view" aria-label={label}>
+        {safe}
+      </pre>
+      {truncated ? (
+        <p className="payload-limit" role="status">
+          Preview stopped at the safe display limit. The preserved source is
+          unchanged.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 function ArtifactText({
   sessionId,
   artifact,
@@ -107,11 +133,15 @@ export function Inspector({
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   if (!selected)
     return (
-      <aside className="inspector inspector-empty">
+      <aside
+        className="inspector inspector-empty"
+        aria-labelledby="inspector-heading"
+      >
         <p className="eyebrow">Event inspector</p>
-        <h2>Select observable evidence</h2>
+        <h2 id="inspector-heading">Select observable evidence</h2>
         <p>
-          Choose a timeline entry to inspect facts without opening raw JSON.
+          Choose an event from the chronology. Facts, linked findings, and safe
+          text previews appear here without interpreting source HTML.
         </p>
       </aside>
     );
@@ -232,14 +262,16 @@ export function Inspector({
           </div>
         ) : null}
         {tab === 'raw' ? (
-          <pre className="json-view">
-            {JSON.stringify(selected.event.rawPayload, null, 2)}
-          </pre>
+          <JsonPreview
+            value={selected.event.rawPayload}
+            label="Safe raw event preview"
+          />
         ) : null}
         {tab === 'provenance' ? (
-          <pre className="json-view">
-            {JSON.stringify(selected.event.provenance, null, 2)}
-          </pre>
+          <JsonPreview
+            value={selected.event.provenance}
+            label="Safe provenance preview"
+          />
         ) : null}
         {tab === 'related' ? (
           <div className="related-list">
@@ -279,9 +311,10 @@ export function Inspector({
             <p className="tab-note">
               Preview only. The encrypted local source remains unchanged.
             </p>
-            <pre className="json-view">
-              {JSON.stringify(redactionPreview(selected.event), null, 2)}
-            </pre>
+            <JsonPreview
+              value={redactionPreview(selected.event)}
+              label="Safe redaction preview"
+            />
           </>
         ) : null}
       </div>

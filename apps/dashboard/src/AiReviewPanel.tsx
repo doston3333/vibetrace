@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { api, type AiAnalysisRequest } from './api.js';
 
 type AiProvider = AiAnalysisRequest['provider'];
+type InvalidField = 'endpoint' | 'model' | 'api-key' | 'consent';
 
 const DEFAULT_DIRECT_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 
@@ -57,6 +58,7 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
   const [codexModel, setCodexModel] = useState('');
   const [status, setStatus] = useState<string>();
   const [validationError, setValidationError] = useState<string>();
+  const [invalidField, setInvalidField] = useState<InvalidField>();
 
   const analyze = useMutation({
     mutationFn: (request: AiAnalysisRequest) =>
@@ -64,6 +66,7 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
     onSuccess: async (result) => {
       setApiKey('');
       setValidationError(undefined);
+      setInvalidField(undefined);
       setStatus(
         `Saved ${result.hypotheses.length} evidence-linked ${result.hypotheses.length === 1 ? 'issue' : 'issues'} from ${result.provider}${result.model ? ` · ${result.model}` : ''}.`,
       );
@@ -76,22 +79,31 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
   const runAnalysis = () => {
     setStatus(undefined);
     setValidationError(undefined);
+    setInvalidField(undefined);
     if (!prompt.data) return;
     if (provider === 'direct-api') {
       if (!validDirectEndpoint(endpoint)) {
         setValidationError(
           'Enter an HTTPS chat-completions endpoint without credentials or a fragment.',
         );
+        setInvalidField('endpoint');
         return;
       }
-      if (!directModel.trim() || !apiKey) {
-        setValidationError('The direct API model and API key are required.');
+      if (!directModel.trim()) {
+        setValidationError('Enter the direct API model ID.');
+        setInvalidField('model');
+        return;
+      }
+      if (!apiKey) {
+        setValidationError('Enter an API key for this in-memory run.');
+        setInvalidField('api-key');
         return;
       }
       if (!consent) {
         setValidationError(
           'Confirm that this session may be sent to the selected endpoint.',
         );
+        setInvalidField('consent');
         return;
       }
       analyze.mutate({
@@ -151,7 +163,11 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
                 name="ai-provider"
                 value="codex"
                 checked={provider === 'codex'}
-                onChange={() => setProvider('codex')}
+                onChange={() => {
+                  setProvider('codex');
+                  setValidationError(undefined);
+                  setInvalidField(undefined);
+                }}
               />
               <span>
                 <strong>Use Codex</strong>
@@ -166,7 +182,11 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
                 name="ai-provider"
                 value="direct-api"
                 checked={provider === 'direct-api'}
-                onChange={() => setProvider('direct-api')}
+                onChange={() => {
+                  setProvider('direct-api');
+                  setValidationError(undefined);
+                  setInvalidField(undefined);
+                }}
               />
               <span>
                 <strong>Use direct API</strong>
@@ -202,7 +222,16 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
                   aria-label="Direct API endpoint"
                   type="url"
                   value={endpoint}
-                  onChange={(event) => setEndpoint(event.target.value)}
+                  onChange={(event) => {
+                    setEndpoint(event.target.value);
+                    setInvalidField(undefined);
+                  }}
+                  aria-invalid={invalidField === 'endpoint'}
+                  aria-describedby={
+                    invalidField === 'endpoint'
+                      ? 'ai-validation-error'
+                      : undefined
+                  }
                   spellCheck={false}
                   autoComplete="url"
                 />
@@ -212,7 +241,14 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
                 <input
                   aria-label="Direct API model"
                   value={directModel}
-                  onChange={(event) => setDirectModel(event.target.value)}
+                  onChange={(event) => {
+                    setDirectModel(event.target.value);
+                    setInvalidField(undefined);
+                  }}
+                  aria-invalid={invalidField === 'model'}
+                  aria-describedby={
+                    invalidField === 'model' ? 'ai-validation-error' : undefined
+                  }
                   placeholder="Provider model ID"
                   spellCheck={false}
                   autoComplete="off"
@@ -224,7 +260,16 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
                   aria-label="Direct API key"
                   type="password"
                   value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
+                  onChange={(event) => {
+                    setApiKey(event.target.value);
+                    setInvalidField(undefined);
+                  }}
+                  aria-invalid={invalidField === 'api-key'}
+                  aria-describedby={
+                    invalidField === 'api-key'
+                      ? 'ai-validation-error'
+                      : undefined
+                  }
                   autoComplete="off"
                 />
               </label>
@@ -232,7 +277,16 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
                 <input
                   type="checkbox"
                   checked={consent}
-                  onChange={(event) => setConsent(event.target.checked)}
+                  onChange={(event) => {
+                    setConsent(event.target.checked);
+                    setInvalidField(undefined);
+                  }}
+                  aria-invalid={invalidField === 'consent'}
+                  aria-describedby={
+                    invalidField === 'consent'
+                      ? 'ai-validation-error'
+                      : undefined
+                  }
                 />
                 <span>
                   Send this bounded session dossier to{' '}
@@ -260,7 +314,11 @@ export function AiReviewPanel({ sessionId }: { readonly sessionId: string }) {
           >
             {analyze.isPending ? 'Analyzing session…' : 'Analyze session'}
           </button>
-          {validationError ? <p role="alert">{validationError}</p> : null}
+          {validationError ? (
+            <p id="ai-validation-error" role="alert">
+              {validationError}
+            </p>
+          ) : null}
           {status ? <p role="status">{status}</p> : null}
           {analyze.isError ? (
             <p role="alert" className="panel-error">

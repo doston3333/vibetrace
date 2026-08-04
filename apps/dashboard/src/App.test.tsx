@@ -15,6 +15,7 @@ import { userEvent } from '@testing-library/user-event';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { ForensicWorkbench } from './App.js';
+import { Inspector } from './Inspector.js';
 import { FindingsPanel } from './Panels.js';
 import type {
   CoverageDatum,
@@ -257,6 +258,47 @@ describe('forensic dashboard', () => {
     );
     expect(screen.getByText(/synthetic-trace-content/)).toBeTruthy();
     expect(container.querySelector('script')).toBeNull();
+    expect(
+      container.querySelectorAll('[role="option"][tabindex="-1"]'),
+    ).toHaveLength(container.querySelectorAll('.event-chip').length);
+    expect(
+      screen.getAllByText(/Fact|Success|Failure|Capture gap/).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('offers labelled adaptive case navigation without a horizontal tab strip', () => {
+    renderWorkbench();
+    expect(
+      screen.getByRole('complementary', { name: 'Case navigation' }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText('View case evidence')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Timeline' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Findings 1' })).toBeTruthy();
+  });
+
+  it('bounds raw evidence previews before rendering source data', async () => {
+    const largeEvent = {
+      ...events[0]!,
+      event: {
+        ...events[0]!.event,
+        rawPayload: { output: 'x'.repeat(100_000) },
+      },
+    } as StoredEvent;
+    render(
+      <Inspector
+        sessionId={session.id}
+        selected={largeEvent}
+        events={[largeEvent]}
+        artifacts={[]}
+        findings={[]}
+        onSelect={() => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'raw' }));
+    expect(
+      screen.getByLabelText('Safe raw event preview').textContent?.length,
+    ).toBeLessThan(50_100);
+    expect(screen.getByText(/safe display limit/)).toBeTruthy();
   });
 
   it('supports keyboard evidence navigation, findings jumps, coverage, and annotations', async () => {

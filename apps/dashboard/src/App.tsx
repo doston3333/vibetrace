@@ -5,7 +5,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { Link, Outlet, useParams } from '@tanstack/react-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import {
   api,
@@ -38,6 +38,121 @@ import {
   type TimelineLane,
 } from './forensics.js';
 
+type WorkbenchView =
+  | 'timeline'
+  | 'diffs'
+  | 'coverage'
+  | 'scorecard'
+  | 'approvals'
+  | 'context'
+  | 'causal'
+  | 'findings'
+  | 'annotations'
+  | 'ai-review';
+
+type NavIconName =
+  | 'timeline'
+  | 'ai'
+  | 'diff'
+  | 'coverage'
+  | 'approval'
+  | 'findings'
+  | 'scorecard'
+  | 'context'
+  | 'causal'
+  | 'annotation';
+
+interface NavigationItem {
+  readonly value: WorkbenchView;
+  readonly label: string;
+  readonly icon: NavIconName;
+  readonly badge?: number;
+}
+
+interface NavigationGroup {
+  readonly label: string;
+  readonly items: readonly NavigationItem[];
+}
+
+function NavIcon({ name }: { readonly name: NavIconName }) {
+  const paths: Record<NavIconName, ReactNode> = {
+    timeline: (
+      <>
+        <path d="M4 6h16M4 12h16M4 18h16" />
+        <path d="M7 4v4M12 10v4M17 16v4" />
+      </>
+    ),
+    ai: (
+      <>
+        <path d="M12 3v18M3 12h18" />
+        <path d="m5 5 14 14M19 5 5 19" />
+      </>
+    ),
+    diff: (
+      <>
+        <path d="m8 5-3 3 3 3M16 5l3 3-3 3M13 4l-2 16" />
+      </>
+    ),
+    coverage: (
+      <>
+        <path d="M4 19V9M10 19V5M16 19v-7M22 19V3" />
+      </>
+    ),
+    approval: (
+      <>
+        <path d="m5 12 4 4L19 6" />
+        <path d="M4 4h16v16H4z" />
+      </>
+    ),
+    findings: (
+      <>
+        <path d="M12 3 3 20h18L12 3Z" />
+        <path d="M12 9v4M12 17h.01" />
+      </>
+    ),
+    scorecard: (
+      <>
+        <path d="M4 19V9M10 19V5M16 19v-7M22 19V3" />
+        <path d="M3 20h19" />
+      </>
+    ),
+    context: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+      </>
+    ),
+    causal: (
+      <>
+        <circle cx="6" cy="6" r="2" />
+        <circle cx="18" cy="12" r="2" />
+        <circle cx="6" cy="18" r="2" />
+        <path d="m8 7 8 4M8 17l8-4" />
+      </>
+    ),
+    annotation: (
+      <>
+        <path d="M5 4h14v16H5z" />
+        <path d="M8 9h8M8 13h6" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      className="nav-icon"
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+
 export function AppShell() {
   return (
     <div className="app-shell">
@@ -50,13 +165,15 @@ export function AppShell() {
           to="/"
           aria-label="VibeTrace session archive"
         >
-          <span>VIBE</span>
-          <strong>TRACE</strong>
+          <span className="brand-glyph" aria-hidden="true">
+            V
+          </span>
+          <strong>VibeTrace</strong>
         </Link>
-        <p>Local evidence recorder · AI session forensics</p>
-        <Link className="masthead-link" to="/evals">
-          Evaluation lab
-        </Link>
+        <nav className="app-nav" aria-label="Primary navigation">
+          <Link to="/">Sessions</Link>
+          <Link to="/evals">Evaluation lab</Link>
+        </nav>
         <div className="local-status">
           <span aria-hidden="true" />
           Encrypted locally
@@ -66,18 +183,6 @@ export function AppShell() {
     </div>
   );
 }
-
-type WorkbenchView =
-  | 'timeline'
-  | 'diffs'
-  | 'coverage'
-  | 'scorecard'
-  | 'approvals'
-  | 'context'
-  | 'causal'
-  | 'findings'
-  | 'annotations'
-  | 'ai-review';
 
 export interface ForensicWorkbenchProps {
   readonly session: SessionSummary;
@@ -135,6 +240,59 @@ export function ForensicWorkbench({
     setSelectedId(id);
     setView('timeline');
   };
+  const navigation: readonly NavigationGroup[] = [
+    {
+      label: 'Review',
+      items: [
+        { value: 'timeline', label: 'Timeline', icon: 'timeline' },
+        { value: 'ai-review', label: 'AI review', icon: 'ai' },
+      ],
+    },
+    {
+      label: 'Evidence',
+      items: [
+        { value: 'diffs', label: 'Diff history', icon: 'diff' },
+        { value: 'coverage', label: 'Coverage', icon: 'coverage' },
+        { value: 'approvals', label: 'Approvals', icon: 'approval' },
+      ],
+    },
+    {
+      label: 'Analysis',
+      items: [
+        {
+          value: 'findings',
+          label: 'Findings',
+          icon: 'findings',
+          badge: findings.length,
+        },
+        ...(scorecard
+          ? [
+              {
+                value: 'scorecard' as const,
+                label: 'Scorecard',
+                icon: 'scorecard' as const,
+              },
+            ]
+          : []),
+        { value: 'context', label: 'Context map', icon: 'context' },
+        { value: 'causal', label: 'Causal graph', icon: 'causal' },
+      ],
+    },
+    {
+      label: 'Record',
+      items: [
+        {
+          value: 'annotations',
+          label: 'Annotations',
+          icon: 'annotation',
+          badge: annotations.length,
+        },
+      ],
+    },
+  ];
+  const currentView = navigation
+    .flatMap((group) => group.items)
+    .find((item) => item.value === view);
 
   return (
     <main id="main-content" className="workbench">
@@ -145,143 +303,190 @@ export function ForensicWorkbench({
         gaps={gaps}
         scorecard={scorecard}
       />
-      <nav className="case-nav" aria-label="Session evidence views">
-        {(
-          [
-            ['timeline', 'Timeline'],
-            ['ai-review', 'AI review'],
-            ['diffs', 'Diff history'],
-            ['coverage', 'Coverage'],
-            ...(scorecard ? ([['scorecard', 'Scorecard']] as const) : []),
-            ['approvals', 'Approvals'],
-            ['context', 'Context map'],
-            ['causal', 'Causal graph'],
-            ['findings', `Findings ${findings.length}`],
-            ['annotations', `Annotations ${annotations.length}`],
-          ] as const
-        ).map(([value, label]) => (
-          <button
-            type="button"
-            aria-current={view === value ? 'page' : undefined}
-            key={value}
-            onClick={() => setView(value)}
+      <div className="case-mobile-context">
+        <a href="/" className="case-back">
+          Back to archive
+        </a>
+        <label>
+          View
+          <select
+            value={view}
+            onChange={(event) => setView(event.target.value as WorkbenchView)}
+            aria-label="View case evidence"
           >
-            {label}
-          </button>
-        ))}
-      </nav>
-      {view === 'timeline' ? (
-        <>
-          <section className="timeline-controls" aria-label="Filter timeline">
-            <label className="search-control">
-              Search observable evidence
-              <input
-                type="search"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Prompt, command, file, or event type"
-              />
-            </label>
-            <label>
-              Lane
-              <select
-                value={lane}
-                onChange={(event) =>
-                  setLane(event.target.value as TimelineLane | 'all')
-                }
-              >
-                <option value="all">All lanes</option>
-                {TIMELINE_LANES.map((value) => (
-                  <option value={value} key={value}>
-                    {value}
+            {navigation.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.items.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                    {item.badge !== undefined ? ` (${item.badge})` : ''}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label>
-              Evidence state
-              <select
-                value={status}
-                onChange={(event) =>
-                  setStatus(event.target.value as typeof status)
-                }
+              </optgroup>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="workbench-layout">
+        <aside className="case-rail" aria-label="Case navigation">
+          <a href="/" className="case-back">
+            Back to archive
+          </a>
+          <div className="case-rail-context">
+            <span>Case</span>
+            <strong>{session.title ?? session.displayName}</strong>
+            <small>{events.length.toLocaleString()} observed events</small>
+          </div>
+          <nav aria-label="Session evidence views">
+            {navigation.map((group) => (
+              <div className="case-nav-group" key={group.label}>
+                <p>{group.label}</p>
+                {group.items.map((item) => (
+                  <button
+                    type="button"
+                    aria-label={
+                      item.badge !== undefined
+                        ? `${item.label} ${item.badge}`
+                        : item.label
+                    }
+                    aria-current={view === item.value ? 'page' : undefined}
+                    key={item.value}
+                    onClick={() => setView(item.value)}
+                  >
+                    <NavIcon name={item.icon} />
+                    <span>{item.label}</span>
+                    {item.badge !== undefined ? (
+                      <b className="nav-badge">{item.badge}</b>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
+        </aside>
+        <section
+          className="workbench-content"
+          aria-label={`${currentView?.label ?? 'Case'} evidence`}
+        >
+          {view === 'timeline' ? (
+            <>
+              <section
+                className="timeline-controls"
+                aria-label="Filter timeline"
               >
-                <option value="all">All states</option>
-                <option value="failed">Failures</option>
-                <option value="gaps">Capture gaps</option>
-              </select>
-            </label>
-            <span className="fact-key">
-              <i /> fact <i /> failure <i /> gap
-            </span>
-          </section>
-          {loadingMore ? (
-            <p className="progress-note" role="status">
-              Reconstructing the remaining event pages…
-            </p>
+                <label className="search-control">
+                  Search observable evidence
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Prompt, command, file, or event type"
+                  />
+                </label>
+                <label>
+                  Lane
+                  <select
+                    value={lane}
+                    onChange={(event) =>
+                      setLane(event.target.value as TimelineLane | 'all')
+                    }
+                  >
+                    <option value="all">All lanes</option>
+                    {TIMELINE_LANES.map((value) => (
+                      <option value={value} key={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Evidence state
+                  <select
+                    value={status}
+                    onChange={(event) =>
+                      setStatus(event.target.value as typeof status)
+                    }
+                  >
+                    <option value="all">All states</option>
+                    <option value="failed">Failures</option>
+                    <option value="gaps">Capture gaps</option>
+                  </select>
+                </label>
+                <span className="fact-key">
+                  <i /> fact <i /> failure <i /> gap
+                </span>
+              </section>
+              {loadingMore ? (
+                <p className="progress-note" role="status">
+                  Reconstructing the remaining event pages…
+                </p>
+              ) : null}
+              <div className="evidence-workspace">
+                <Timeline
+                  items={filtered}
+                  selectedId={selected?.id}
+                  onSelect={setSelectedId}
+                />
+                <Inspector
+                  sessionId={session.id}
+                  selected={selected}
+                  events={events}
+                  artifacts={artifacts}
+                  findings={findings}
+                  onSelect={setSelectedId}
+                />
+              </div>
+            </>
           ) : null}
-          <div className="evidence-workspace">
-            <Timeline
-              items={filtered}
-              selectedId={selected?.id}
-              onSelect={setSelectedId}
-            />
-            <Inspector
-              sessionId={session.id}
-              selected={selected}
+          {view === 'diffs' ? (
+            <DiffHistory
               events={events}
               artifacts={artifacts}
               findings={findings}
-              onSelect={setSelectedId}
+              onSelect={selectEvidence}
             />
-          </div>
-        </>
-      ) : null}
-      {view === 'diffs' ? (
-        <DiffHistory
-          events={events}
-          artifacts={artifacts}
-          findings={findings}
-          onSelect={selectEvidence}
-        />
-      ) : null}
-      {view === 'coverage' ? (
-        <CoveragePanel coverage={coverage} onSelect={selectEvidence} />
-      ) : null}
-      {view === 'scorecard' && scorecard ? (
-        <ScorecardPanel scorecard={scorecard} onSelect={selectEvidence} />
-      ) : null}
-      {view === 'approvals' ? (
-        <ApprovalsPanel events={events} onSelect={selectEvidence} />
-      ) : null}
-      {view === 'context' ? (
-        <ContextMap events={events} onSelect={selectEvidence} />
-      ) : null}
-      {view === 'causal' ? (
-        <CausalGraph
-          events={events}
-          findings={findings}
-          onSelect={selectEvidence}
-        />
-      ) : null}
-      {view === 'findings' ? (
-        <FindingsPanel
-          events={events}
-          findings={findings}
-          onSelect={selectEvidence}
-          onReview={onReviewFinding}
-          savingReview={savingFindingReview}
-        />
-      ) : null}
-      {view === 'annotations' ? (
-        <AnnotationsPanel
-          annotations={annotations}
-          targetId={session.id}
-          saving={savingAnnotation}
-          onSave={onSaveAnnotation}
-        />
-      ) : null}
-      {view === 'ai-review' ? <AiReviewPanel sessionId={session.id} /> : null}
+          ) : null}
+          {view === 'coverage' ? (
+            <CoveragePanel coverage={coverage} onSelect={selectEvidence} />
+          ) : null}
+          {view === 'scorecard' && scorecard ? (
+            <ScorecardPanel scorecard={scorecard} onSelect={selectEvidence} />
+          ) : null}
+          {view === 'approvals' ? (
+            <ApprovalsPanel events={events} onSelect={selectEvidence} />
+          ) : null}
+          {view === 'context' ? (
+            <ContextMap events={events} onSelect={selectEvidence} />
+          ) : null}
+          {view === 'causal' ? (
+            <CausalGraph
+              events={events}
+              findings={findings}
+              onSelect={selectEvidence}
+            />
+          ) : null}
+          {view === 'findings' ? (
+            <FindingsPanel
+              events={events}
+              findings={findings}
+              onSelect={selectEvidence}
+              onReview={onReviewFinding}
+              savingReview={savingFindingReview}
+            />
+          ) : null}
+          {view === 'annotations' ? (
+            <AnnotationsPanel
+              annotations={annotations}
+              targetId={session.id}
+              saving={savingAnnotation}
+              onSave={onSaveAnnotation}
+            />
+          ) : null}
+          {view === 'ai-review' ? (
+            <AiReviewPanel sessionId={session.id} />
+          ) : null}
+        </section>
+      </div>
     </main>
   );
 }
