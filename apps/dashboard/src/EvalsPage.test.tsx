@@ -10,7 +10,7 @@ import { EvalsPage } from './EvalsPage.js';
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
     children,
-    params: _params,
+    params,
     to,
     ...props
   }: {
@@ -18,11 +18,15 @@ vi.mock('@tanstack/react-router', () => ({
     params?: unknown;
     to?: string;
     className?: string;
-  }) => (
-    <a {...props} href={typeof to === 'string' ? to : '/'}>
-      {children}
-    </a>
-  ),
+  }) =>
+    (() => {
+      void params;
+      return (
+        <a {...props} href={typeof to === 'string' ? to : '/'}>
+          {children}
+        </a>
+      );
+    })(),
 }));
 
 vi.mock('./api.js', () => ({

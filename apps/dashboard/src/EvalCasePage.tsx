@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from '@tanstack/react-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { api } from './api.js';
 
@@ -49,8 +49,13 @@ export function EvalCasePage() {
     queryFn: api.evalCases,
     staleTime: 5_000,
   });
-  const [draft, setDraft] = useState('');
+  const [draftOverride, setDraftOverride] = useState<string>();
   const [editing, setEditing] = useState(false);
+  const draft =
+    draftOverride ??
+    (manifestQuery.data === undefined
+      ? ''
+      : JSON.stringify(manifestQuery.data, null, 2));
   const draftResult = useMemo(() => parseDraft(draft), [draft]);
   const updateManifest = useMutation({
     mutationFn: () => {
@@ -59,7 +64,7 @@ export function EvalCasePage() {
       return api.updateEvalCaseManifest(caseId, draftResult.value);
     },
     onSuccess: async (result) => {
-      setDraft(JSON.stringify(result.manifest, null, 2));
+      setDraftOverride(JSON.stringify(result.manifest, null, 2));
       setEditing(false);
       await Promise.all([
         queryClient.invalidateQueries({
@@ -69,11 +74,6 @@ export function EvalCasePage() {
       ]);
     },
   });
-
-  useEffect(() => {
-    if (manifestQuery.data !== undefined && !editing)
-      setDraft(JSON.stringify(manifestQuery.data, null, 2));
-  }, [editing, manifestQuery.data]);
 
   if (manifestQuery.isPending)
     return (
@@ -112,7 +112,7 @@ export function EvalCasePage() {
 
   const formatDraft = (): void => {
     if (draftResult.error === undefined)
-      setDraft(JSON.stringify(draftResult.value, null, 2));
+      setDraftOverride(JSON.stringify(draftResult.value, null, 2));
   };
   const downloadDraft = (): void => {
     const blob = new Blob([draft], { type: 'application/json' });
@@ -286,7 +286,7 @@ export function EvalCasePage() {
           spellCheck={false}
           onChange={(event) => {
             setEditing(true);
-            setDraft(event.target.value);
+            setDraftOverride(event.target.value);
           }}
           rows={24}
         />

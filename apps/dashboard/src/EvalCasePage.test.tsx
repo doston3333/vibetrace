@@ -25,15 +25,19 @@ const { updateEvalCaseManifest } = vi.hoisted(() => ({
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
     children,
-    params: _params,
-    to: _to,
+    params,
+    to,
     ...props
   }: {
     children: ReactNode;
     params?: unknown;
     to?: string;
     className?: string;
-  }) => <a {...props}>{children}</a>,
+  }) => {
+    void params;
+    void to;
+    return <a {...props}>{children}</a>;
+  },
   useParams: () => ({ caseId: 'case-1' }),
 }));
 
