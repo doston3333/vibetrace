@@ -17,6 +17,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@vibetrace/adapter-codex": "workspace:*",
     "@vibetrace/daemon": "workspace:*",
     "@vibetrace/schema": "workspace:*",
     "zod": "4.4.3"

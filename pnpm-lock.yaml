@@ -115,6 +115,9 @@ importers:
 
   packages/adapter-codex-app-server:
     dependencies:
+      '@vibetrace/adapter-codex':
+        specifier: workspace:*
+        version: link:../adapter-codex
       '@vibetrace/daemon':
         specifier: workspace:*
         version: link:../daemon

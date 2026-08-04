@@ -13,6 +13,10 @@ import {
   type SpoolSegment,
 } from '@vibetrace/daemon';
 import {
+  applyCaptureProfilePolicy,
+  readCaptureProfilePolicy,
+} from '@vibetrace/adapter-codex';
+import {
   SCHEMA_VERSION,
   TraceEventSchema,
   createEventId,
@@ -720,11 +724,15 @@ export async function captureAppServerToSpool(
   ) => Promise<string> = writeSegment,
 ): Promise<AppServerCaptureResult> {
   const result = await captureAppServerJsonl(chunks, context);
+  const capturePolicy = await readCaptureProfilePolicy(context.stateDir);
   const paths = spoolPaths(context.stateDir);
   for (const [index, event] of result.events.entries()) {
     const raw = result.raw[index];
     if (!raw) continue;
-    const segment = segmentFor(context, { event, raw });
+    const segment = applyCaptureProfilePolicy(
+      segmentFor(context, { event, raw }),
+      capturePolicy,
+    );
     await write(paths, segment);
   }
   return result;
@@ -830,6 +838,9 @@ export async function runAppServerSession(
     options.cwd,
   );
   const paths = spoolPaths(options.context.stateDir);
+  const capturePolicy = await readCaptureProfilePolicy(
+    options.context.stateDir,
+  );
   const write = options.write ?? writeSegment;
   const iterator = parseAppServerJsonl(
     process.stdout,
@@ -898,7 +909,13 @@ export async function runAppServerSession(
               receivedAt: mapped.raw.receivedAt,
             },
       );
-    await write(paths, segmentFor(activeContext, mapped));
+    await write(
+      paths,
+      applyCaptureProfilePolicy(
+        segmentFor(activeContext, mapped),
+        capturePolicy,
+      ),
+    );
   };
   const next = async (
     durationMs: number,
