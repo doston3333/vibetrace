@@ -2,13 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import {
   chmod,
-  link,
   lstat,
   mkdtemp,
   open,
+  rename,
   readFile,
   rm,
-  unlink,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix } from 'node:path';
@@ -171,9 +170,11 @@ export async function encryptRecordStream(
     output.destroy();
     await handle.close();
     handle = undefined;
-    await link(temporary, destination);
+    // The temporary file lives beside the destination, so rename is atomic on
+    // the supported filesystems and works on Windows without requiring
+    // unprivileged hard-link creation.
+    await rename(temporary, destination);
     await chmod(destination, 0o600);
-    await unlink(temporary);
   } catch (error) {
     output?.destroy();
     await handle?.close().catch(() => undefined);
