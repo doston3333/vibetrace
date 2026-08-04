@@ -35,3 +35,33 @@ Windows.
 
 The unchecked items are environment-dependent release evidence, not claims that
 can be inferred from a single developer workstation.
+
+## Local verification record
+
+Commit `0eaea32` was verified on 2026-08-04 from a clean macOS arm64 checkout
+with Node `v26.4.0`, pnpm `10.33.4`, and npm `11.17.0`. Node 26 is newer than
+the supported release runtimes, so this record supplements rather than replaces
+the CI matrix.
+
+The following commands completed successfully:
+
+```text
+pnpm install --frozen-lockfile
+pnpm lint
+pnpm format:check
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm test:integration   # 11 files, 118 tests
+pnpm test:e2e           # 3 files, 14 tests
+pnpm test:security      # 7 files, 77 tests
+pnpm test:performance   # 7 files, 92 tests
+pnpm pack:smoke
+```
+
+The packed-install smoke test exercised the bundled CLI, isolated temporary
+homes, daemon authentication and lifecycle, dashboard serving, encrypted
+export/import, eval manifest validation, isolated run boundaries, and
+ownership-safe Codex hook uninstall. The remaining checklist items require
+fresh artifacts from the configured Ubuntu, macOS, and Windows CI runners and
+native Codex installations before publishing a release.
