@@ -1427,10 +1427,23 @@ describe('daemon API', () => {
         name: 'Minimal',
         mode: 'minimal',
         settings: { capturePrompts: false, secretDetection: true },
+        activate: true,
       },
     });
     expect(profile.statusCode).toBe(201);
-    expect(profile.json()).toMatchObject({ profile: { mode: 'minimal' } });
+    expect(profile.json()).toMatchObject({
+      profile: { mode: 'minimal' },
+      active: true,
+    });
+    const activeProfile = await daemon.app.inject({
+      method: 'GET',
+      url: '/api/v1/privacy/capture-profile',
+      headers,
+    });
+    expect(activeProfile.statusCode).toBe(200);
+    expect(activeProfile.json()).toMatchObject({
+      policy: { mode: 'minimal', capturePrompts: false },
+    });
     const retention = await daemon.app.inject({
       method: 'POST',
       url: '/api/v1/privacy/retention',

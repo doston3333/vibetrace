@@ -23,19 +23,25 @@ export interface BundleLimits {
   readonly maxCiphertextBytes: number;
   readonly maxPlaintextBytes: number;
   readonly maxRecordBytes: number;
+  /** Maximum aggregate regular-file content that may be staged for one import. */
+  readonly maxStagedBytes?: number;
   readonly maxRecords: number;
   readonly maxHeaderBytes: number;
   readonly maxScryptWorkFactor: number;
 }
 
-export const DEFAULT_BUNDLE_LIMITS: BundleLimits = Object.freeze({
-  maxCiphertextBytes: 1_100_000_000,
-  maxPlaintextBytes: 1_000_000_000,
-  maxRecordBytes: 268_435_456,
-  maxRecords: 100_000,
-  maxHeaderBytes: 65_536,
-  maxScryptWorkFactor: 18,
-});
+export const DEFAULT_BUNDLE_LIMITS: Readonly<Required<BundleLimits>> =
+  Object.freeze({
+    // Keep support for a 100 MB payload while bounding import-time CPU, memory,
+    // and disk use from an untrusted age file.
+    maxCiphertextBytes: 110_000_000,
+    maxPlaintextBytes: 101_000_000,
+    maxRecordBytes: 100_000_000,
+    maxStagedBytes: 100_000_000,
+    maxRecords: 100_000,
+    maxHeaderBytes: 65_536,
+    maxScryptWorkFactor: 18,
+  });
 
 export const BundleRecordHeaderSchema = z
   .object({
@@ -99,6 +105,67 @@ function validatePassphrase(passphrase: string): void {
     throw new Error(
       'Bundle passphrases must be between 10 and 1024 characters.',
     );
+}
+
+function boundedImportLimit(
+  value: number | undefined,
+  fallback: number,
+  maximum: number,
+  name: string,
+): number {
+  const configured = value ?? fallback;
+  if (!Number.isSafeInteger(configured) || configured < 0)
+    throw new Error(
+      `Bundle ${name} limit must be a non-negative safe integer.`,
+    );
+  return Math.min(configured, maximum);
+}
+
+function importLimits(configured: BundleLimits): Required<BundleLimits> {
+  return {
+    maxCiphertextBytes: boundedImportLimit(
+      configured.maxCiphertextBytes,
+      DEFAULT_BUNDLE_LIMITS.maxCiphertextBytes,
+      DEFAULT_BUNDLE_LIMITS.maxCiphertextBytes,
+      'ciphertext size',
+    ),
+    maxPlaintextBytes: boundedImportLimit(
+      configured.maxPlaintextBytes,
+      DEFAULT_BUNDLE_LIMITS.maxPlaintextBytes,
+      DEFAULT_BUNDLE_LIMITS.maxPlaintextBytes,
+      'plaintext size',
+    ),
+    maxRecordBytes: boundedImportLimit(
+      configured.maxRecordBytes,
+      DEFAULT_BUNDLE_LIMITS.maxRecordBytes,
+      DEFAULT_BUNDLE_LIMITS.maxRecordBytes,
+      'record size',
+    ),
+    maxStagedBytes: boundedImportLimit(
+      configured.maxStagedBytes,
+      DEFAULT_BUNDLE_LIMITS.maxStagedBytes,
+      DEFAULT_BUNDLE_LIMITS.maxStagedBytes,
+      'staged size',
+    ),
+    maxRecords: boundedImportLimit(
+      configured.maxRecords,
+      DEFAULT_BUNDLE_LIMITS.maxRecords,
+      DEFAULT_BUNDLE_LIMITS.maxRecords,
+      'record count',
+    ),
+    maxHeaderBytes: boundedImportLimit(
+      configured.maxHeaderBytes,
+      DEFAULT_BUNDLE_LIMITS.maxHeaderBytes,
+      DEFAULT_BUNDLE_LIMITS.maxHeaderBytes,
+      'header size',
+    ),
+    maxScryptWorkFactor: boundedImportLimit(
+      configured.maxScryptWorkFactor,
+      DEFAULT_BUNDLE_LIMITS.maxScryptWorkFactor,
+      DEFAULT_BUNDLE_LIMITS.maxScryptWorkFactor,
+      'age scrypt work factor',
+    ),
+  };
 }
 
 async function validateAgePassphraseHeader(
@@ -207,6 +274,8 @@ class BoundedReader {
       ? next.value
       : Buffer.from(next.value as Uint8Array);
     const chunk = Buffer.from(source);
+    if (this.#total + this.#buffer.length + chunk.length > this.maxTotal)
+      throw new Error('Bundle plaintext exceeds the configured size limit.');
     this.#buffer =
       this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]);
   }
@@ -271,24 +340,15 @@ export async function decryptRecordStream(
   validatePassphrase(passphrase);
   if (!source.toLowerCase().endsWith('.vibetrace.age'))
     throw new Error('Bundle source must end in .vibetrace.age.');
-  const configuredLimits = options.limits ?? DEFAULT_BUNDLE_LIMITS;
-  const limits: BundleLimits = {
-    ...configuredLimits,
-    maxScryptWorkFactor: Math.min(
-      configuredLimits.maxScryptWorkFactor,
-      DEFAULT_BUNDLE_LIMITS.maxScryptWorkFactor,
-    ),
-  };
+  const limits = importLimits(options.limits ?? DEFAULT_BUNDLE_LIMITS);
   const metadata = await lstat(source);
   if (!metadata.isFile() || metadata.isSymbolicLink())
     throw new Error('Bundle source must be a regular non-symlink file.');
   if (metadata.size > limits.maxCiphertextBytes)
     throw new Error('Bundle ciphertext exceeds the configured size limit.');
   await validateAgePassphraseHeader(source, limits);
-  const directory = await mkdtemp(
-    join(options.temporaryRoot ?? tmpdir(), 'vibetrace-import-'),
-  );
-  await chmod(directory, 0o700);
+  let directory: string | undefined;
+  let stagedBytes = 0;
   try {
     const decrypter = new Decrypter();
     decrypter.addPassphrase(passphrase);
@@ -326,6 +386,8 @@ export async function decryptRecordStream(
       paths.add(header.path);
       if (header.byteLength > limits.maxRecordBytes)
         throw new Error('Bundle record exceeds its size limit.');
+      if (header.byteLength > limits.maxStagedBytes - stagedBytes)
+        throw new Error('Bundle staged record budget exceeds its size limit.');
       if (
         index === 0 &&
         (header.kind !== 'manifest' || header.path !== 'manifest.json')
@@ -333,18 +395,25 @@ export async function decryptRecordStream(
         throw new Error('Bundle manifest must be the first record.');
       if (index > 0 && header.kind === 'manifest')
         throw new Error('Bundle contains more than one manifest.');
+      if (!directory) {
+        directory = await mkdtemp(
+          join(options.temporaryRoot ?? tmpdir(), 'vibetrace-import-'),
+        );
+        await chmod(directory, 0o700);
+      }
       const contentPath = join(directory, `record-${index}`);
       const actual = await reader.writeExact(header.byteLength, contentPath);
       if (actual.sha256 !== header.sha256)
         throw new Error(
           'Bundle record content hash does not match its header.',
         );
+      stagedBytes += header.byteLength;
       records.push({ header, contentPath });
     }
     if (records.length === 0) throw new Error('Bundle contains no records.');
-    return { directory, records };
+    return { directory: directory!, records };
   } catch (error) {
-    await rm(directory, { force: true, recursive: true });
+    if (directory) await rm(directory, { force: true, recursive: true });
     throw error;
   }
 }

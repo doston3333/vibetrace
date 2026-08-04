@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CaptureGapPayloadSchema,
+  CaptureProfilePolicySchema,
+  captureProfilePolicy,
   GitSnapshotPayloadSchema,
   RawSourceEventSchema,
   RunFingerprintSchema,
@@ -175,6 +177,24 @@ describe('TraceEventSchema', () => {
         captureOmissions: ['private-path'],
       }).success,
     ).toBe(false);
+  });
+
+  it('resolves safe capture policies without enabling raw environment values', () => {
+    const minimal = captureProfilePolicy('minimal');
+    expect(minimal).toMatchObject({
+      mode: 'minimal',
+      capturePrompts: false,
+      captureToolInputs: false,
+      captureDiffs: false,
+      redactSecrets: true,
+    });
+    const full = captureProfilePolicy('full', {
+      captureRepositorySnapshots: true,
+      captureEnvironmentMetadata: true,
+      captureEnvironmentValues: true,
+    });
+    expect(CaptureProfilePolicySchema.parse(full)).toEqual(full);
+    expect(full).not.toHaveProperty('captureEnvironmentValues');
   });
 });
 

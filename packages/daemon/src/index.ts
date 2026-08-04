@@ -56,8 +56,11 @@ import {
   type StoredNormalizedEvent,
 } from '@vibetrace/storage';
 import {
+  CaptureProfilePolicySchema,
   createUuidV5,
+  captureProfilePolicy,
   TraceEventSchema,
+  type CaptureProfilePolicy,
   type JsonObject,
   type TraceEvent,
 } from '@vibetrace/schema';
@@ -258,6 +261,7 @@ const captureProfileSchema = z
     name: z.string().min(1).max(256),
     mode: z.enum(['minimal', 'standard', 'full']),
     settings: z.record(z.string(), z.unknown()),
+    activate: z.boolean().default(false),
   })
   .strict();
 const retentionPolicySchema = z
@@ -645,6 +649,44 @@ async function writeAtomic(
   }
 }
 
+const CAPTURE_POLICY_FILENAME = 'capture-policy.json';
+
+function capturePolicyPath(stateDir: string): string {
+  return join(stateDir, CAPTURE_POLICY_FILENAME);
+}
+
+async function persistCapturePolicy(
+  stateDir: string,
+  mode: 'minimal' | 'standard' | 'full',
+  settings: Record<string, unknown>,
+): Promise<CaptureProfilePolicy> {
+  const policy = CaptureProfilePolicySchema.parse(
+    captureProfilePolicy(mode, settings),
+  );
+  await writeAtomic(
+    capturePolicyPath(stateDir),
+    `${JSON.stringify(policy)}\n`,
+    0o600,
+  );
+  return policy;
+}
+
+async function ensureCapturePolicy(stateDir: string): Promise<void> {
+  try {
+    const path = capturePolicyPath(stateDir);
+    const metadata = await lstat(path);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size > 16 * 1024
+    )
+      throw new Error('Invalid capture policy.');
+    CaptureProfilePolicySchema.parse(JSON.parse(await readFile(path, 'utf8')));
+  } catch {
+    await persistCapturePolicy(stateDir, 'standard', {});
+  }
+}
+
 async function loadOrCreateToken(stateDir: string): Promise<string> {
   const path = join(stateDir, 'auth-token');
   try {
@@ -761,6 +803,7 @@ export async function startDaemon(
 ): Promise<RunningDaemon> {
   const stateDir = resolveStateDir(options.stateDir);
   await restrictedDirectory(stateDir);
+  await ensureCapturePolicy(stateDir);
   const lockPath = join(stateDir, 'daemon.lock');
   try {
     await mkdir(lockPath, { mode: 0o700 });
@@ -1031,26 +1074,65 @@ export async function startDaemon(
     app.get('/api/v1/privacy/capture-profiles', async () => ({
       profiles: storage.listCaptureProfiles(),
     }));
+    app.get('/api/v1/privacy/capture-profile', async (_request, reply) => {
+      try {
+        return {
+          policy: CaptureProfilePolicySchema.parse(
+            JSON.parse(await readFile(capturePolicyPath(stateDir), 'utf8')),
+          ),
+        };
+      } catch {
+        return reply.code(503).send({ code: 'CAPTURE_POLICY_UNAVAILABLE' });
+      }
+    });
     app.post('/api/v1/privacy/capture-profiles', async (request, reply) => {
       const parsed = captureProfileSchema.safeParse(request.body);
       if (!parsed.success)
         return reply.code(400).send({ code: 'INVALID_CAPTURE_PROFILE' });
       try {
+        const id = parsed.data.id ?? randomUUID();
         storage.createCaptureProfile({
-          id: parsed.data.id ?? randomUUID(),
+          id,
           name: parsed.data.name,
           mode: parsed.data.mode,
           settings: parsed.data.settings as JsonObject,
         });
+        if (parsed.data.activate)
+          await persistCapturePolicy(
+            stateDir,
+            parsed.data.mode,
+            parsed.data.settings,
+          );
         return reply.code(201).send({
-          profile: storage.getCaptureProfile(
-            parsed.data.id ?? parsed.data.name,
-          ),
+          profile: storage.getCaptureProfile(id),
+          active: parsed.data.activate,
         });
       } catch {
         return reply.code(409).send({ code: 'CAPTURE_PROFILE_CONFLICT' });
       }
     });
+    app.post(
+      '/api/v1/privacy/capture-profiles/:id/activate',
+      async (request, reply) => {
+        const parsed = z
+          .object({ id: z.string().min(1).max(128) })
+          .safeParse(request.params);
+        if (!parsed.success)
+          return reply.code(400).send({ code: 'INVALID_CAPTURE_PROFILE' });
+        const profile = storage.getCaptureProfile(parsed.data.id);
+        if (!profile) return reply.code(404).send({ code: 'NOT_FOUND' });
+        try {
+          const policy = await persistCapturePolicy(
+            stateDir,
+            profile.mode,
+            profile.settings,
+          );
+          return { profile, policy, active: true };
+        } catch {
+          return reply.code(400).send({ code: 'INVALID_CAPTURE_PROFILE' });
+        }
+      },
+    );
     app.get('/api/v1/privacy/retention', async () => ({
       policies: storage.listRetentionPolicies(),
     }));

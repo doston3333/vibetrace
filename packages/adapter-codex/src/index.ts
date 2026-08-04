@@ -26,12 +26,15 @@ import {
 } from '@vibetrace/daemon';
 import {
   GitObjectIdSchema,
+  CaptureProfilePolicySchema,
   SCHEMA_VERSION,
   TraceEventSchema,
+  captureProfilePolicy,
   createEventId,
   createSessionId,
   createTurnId,
   type EventType,
+  type CaptureProfilePolicy,
   type JsonObject,
   type JsonValue,
   type TraceEvent,
@@ -56,12 +59,55 @@ const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const MAX_TRANSCRIPT_LINES = 20_000;
 const MAX_TRANSCRIPT_LINE_BYTES = 1024 * 1024;
 const MANIFEST_VERSION = 1;
+const CAPTURE_POLICY_FILE = 'capture-policy.json';
 
 /** Version of the VibeTrace Codex hook normalizer. */
 export const CODEX_ADAPTER_VERSION = '0.1.0';
 
 /** Oldest Codex CLI release accepted by this adapter. */
 export const CODEX_MIN_VERSION = '0.144.3';
+
+/** The default local policy captures useful observable evidence, but no secrets. */
+export const DEFAULT_CAPTURE_PROFILE_POLICY: CaptureProfilePolicy =
+  CaptureProfilePolicySchema.parse(captureProfilePolicy('standard'));
+
+function capturePolicyPath(stateDir: string): string {
+  return join(stateDir, CAPTURE_POLICY_FILE);
+}
+
+/** Read the effective policy without following a symlink or trusting large input. */
+export async function readCaptureProfilePolicy(
+  stateDir = resolveStateDir(),
+): Promise<CaptureProfilePolicy> {
+  try {
+    const path = capturePolicyPath(stateDir);
+    const metadata = await lstat(path);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size > 16 * 1024
+    )
+      return DEFAULT_CAPTURE_PROFILE_POLICY;
+    return CaptureProfilePolicySchema.parse(
+      JSON.parse(await readFile(path, 'utf8')),
+    );
+  } catch {
+    return DEFAULT_CAPTURE_PROFILE_POLICY;
+  }
+}
+
+/** Persist a non-secret effective policy for the hook process to read quickly. */
+export async function writeCaptureProfilePolicy(
+  stateDir: string,
+  policy: CaptureProfilePolicy,
+): Promise<void> {
+  const parsed = CaptureProfilePolicySchema.parse(policy);
+  await safeDirectory(stateDir, true);
+  await durableAtomicWrite(
+    capturePolicyPath(stateDir),
+    `${JSON.stringify(parsed)}\n`,
+  );
+}
 
 /** Lifecycle events covered by the current public Codex hook contract. */
 export const CODEX_HOOK_EVENTS = [
@@ -671,6 +717,271 @@ function hashText(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+const sensitiveKeyPattern =
+  /(?:password|passwd|secret|token|api[_-]?key|authorization|cookie|credential|private[_-]?key|connection(?:string)?)/iu;
+const environmentKeyPattern = /^(?:env|environment|environ|variables)$/iu;
+const privateKeyPattern =
+  /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)? PRIVATE KEY-----/giu;
+const bearerPattern = /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/giu;
+const basicPattern = /\bBasic\s+[A-Za-z0-9+/=]{12,}/giu;
+const knownTokenPattern =
+  /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{20,})\b/gu;
+const assignmentSecretPattern =
+  /((?:password|passwd|secret|token|api[_-]?key|authorization|cookie|private[_-]?key)\s*[:=]\s*)(["']?)([^\s"',;}]+)\2/giu;
+
+interface SanitizationResult {
+  readonly value: JsonValue;
+  readonly redactions: readonly {
+    readonly path: string;
+    readonly detector: string;
+    readonly replacement: string;
+  }[];
+}
+
+function pointerPart(value: string): string {
+  return value.replaceAll('~', '~0').replaceAll('/', '~1');
+}
+
+function omittedValue(reason: string): string {
+  return `[OMITTED:${reason}]`;
+}
+
+function redactText(
+  input: string,
+  path: string,
+  policy: CaptureProfilePolicy,
+): SanitizationResult {
+  if (!policy.redactSecrets) return { value: input, redactions: [] };
+  let value = input;
+  const redactions: SanitizationResult['redactions'][number][] = [];
+  const replace = (
+    pattern: RegExp,
+    detector: string,
+    replacement = `[REDACTED:${detector}]`,
+  ): void => {
+    if (!pattern.test(value)) return;
+    pattern.lastIndex = 0;
+    value = value.replace(pattern, replacement);
+    redactions.push({ path, detector, replacement });
+  };
+  replace(privateKeyPattern, 'private-key');
+  replace(bearerPattern, 'authorization-header');
+  replace(basicPattern, 'authorization-header');
+  replace(knownTokenPattern, 'known-token');
+  if (assignmentSecretPattern.test(value)) {
+    assignmentSecretPattern.lastIndex = 0;
+    const replacement = '[REDACTED:secret]';
+    value = value.replace(
+      assignmentSecretPattern,
+      (_match, prefix: string, quote: string) =>
+        `${prefix}${quote}${replacement}${quote}`,
+    );
+    redactions.push({
+      path,
+      detector: 'secret-assignment',
+      replacement,
+    });
+  }
+  return { value, redactions };
+}
+
+function shouldOmitField(
+  key: string,
+  eventType: EventType | undefined,
+  policy: CaptureProfilePolicy,
+): string | undefined {
+  const normalized = key.replaceAll('-', '_').toLowerCase();
+  if (
+    environmentKeyPattern.test(normalized) &&
+    !policy.captureEnvironmentMetadata
+  )
+    return 'environment';
+  if (
+    (normalized === 'prompt' ||
+      (normalized === 'content' && eventType === 'message.user')) &&
+    !policy.capturePrompts
+  )
+    return 'profile-minimal';
+  if (
+    (normalized === 'content' || normalized === 'last_assistant_message') &&
+    eventType !== 'message.user' &&
+    !policy.captureMessages
+  )
+    return 'profile-minimal';
+  if (
+    (normalized === 'tool_input' || normalized === 'toolinput') &&
+    !policy.captureToolInputs
+  )
+    return 'profile-minimal';
+  if (
+    (normalized === 'tool_response' ||
+      normalized === 'toolresponse' ||
+      normalized === 'output' ||
+      normalized === 'stdout' ||
+      normalized === 'stderr') &&
+    !policy.captureToolOutputs
+  )
+    return 'profile-minimal';
+  if (
+    (normalized === 'diff' ||
+      normalized === 'cumulativediff' ||
+      normalized === 'patch') &&
+    !policy.captureDiffs
+  )
+    return 'profile-minimal';
+  if (normalized === 'command' && policy.mode === 'minimal')
+    return 'profile-minimal';
+  if (
+    normalized === 'transcript_path' ||
+    normalized === 'agent_transcript_path' ||
+    (normalized === 'cwd' && policy.mode === 'minimal')
+  )
+    return policy.mode === 'minimal' ? 'profile-minimal' : undefined;
+  if (
+    normalized === 'path' &&
+    policy.mode === 'minimal' &&
+    eventType !== 'git.snapshot'
+  )
+    return 'profile-minimal';
+  if (sensitiveKeyPattern.test(normalized)) return 'secret-field';
+  return undefined;
+}
+
+function sanitizeValue(
+  value: JsonValue,
+  path: string,
+  policy: CaptureProfilePolicy,
+  eventType?: EventType,
+  key?: string,
+): SanitizationResult {
+  const omission = key ? shouldOmitField(key, eventType, policy) : undefined;
+  if (omission) {
+    const replacement = omittedValue(omission);
+    return {
+      value: replacement,
+      redactions: [
+        {
+          path,
+          detector: omission,
+          replacement,
+        },
+      ],
+    };
+  }
+  if (typeof value === 'string') return redactText(value, path, policy);
+  if (Array.isArray(value)) {
+    const redactions: SanitizationResult['redactions'][number][] = [];
+    const output = value.map((child, index) => {
+      const result = sanitizeValue(
+        child,
+        `${path}/${index}`,
+        policy,
+        eventType,
+        key,
+      );
+      redactions.push(...result.redactions);
+      return result.value;
+    });
+    return { value: output, redactions };
+  }
+  if (value !== null && typeof value === 'object') {
+    const redactions: SanitizationResult['redactions'][number][] = [];
+    const output: Record<string, JsonValue> = {};
+    for (const [childKey, child] of Object.entries(value)) {
+      const result = sanitizeValue(
+        child,
+        `${path}/${pointerPart(childKey)}`,
+        policy,
+        eventType,
+        childKey,
+      );
+      redactions.push(...result.redactions);
+      output[childKey] = result.value;
+    }
+    return { value: output, redactions };
+  }
+  return { value, redactions: [] };
+}
+
+function sanitizeObject(
+  value: JsonObject,
+  path: string,
+  policy: CaptureProfilePolicy,
+  eventType?: EventType,
+): SanitizationResult {
+  return sanitizeValue(value, path, policy, eventType);
+}
+
+/** Apply a capture policy to every persisted field of one sealed spool segment. */
+export function applyCaptureProfilePolicy(
+  segment: SpoolSegment,
+  policy: CaptureProfilePolicy,
+): SpoolSegment {
+  const eventPayload = sanitizeObject(
+    segment.event.payload as JsonObject,
+    '/payload',
+    policy,
+    segment.event.type,
+  );
+  const rawPayload = sanitizeObject(
+    segment.raw.payload,
+    '/rawPayload',
+    policy,
+    segment.event.type,
+  );
+  const redactions = [
+    ...(segment.event.redactions ?? []),
+    ...eventPayload.redactions,
+    ...rawPayload.redactions,
+  ];
+  const payload = { ...(eventPayload.value as JsonObject) };
+  const artifacts = (segment.artifacts ?? [])
+    .map((artifact) => {
+      const isDiff = artifact.kind === 'git-diff';
+      const isOutput = artifact.kind === 'verification-output';
+      if (
+        (isDiff && !policy.captureDiffs) ||
+        (isOutput && !policy.captureToolOutputs)
+      ) {
+        if (isDiff) delete payload.diffArtifactId;
+        if (isOutput) delete payload.rawOutputArtifactId;
+        return undefined;
+      }
+      const text = sanitizeValue(
+        artifact.content,
+        `/artifacts/${pointerPart(artifact.id)}/content`,
+        policy,
+        segment.event.type,
+        isDiff ? 'diff' : isOutput ? 'output' : undefined,
+      );
+      redactions.push(...text.redactions);
+      return {
+        ...artifact,
+        content: String(text.value),
+        contentHash: hashText(String(text.value)),
+      };
+    })
+    .filter(
+      (artifact): artifact is NonNullable<typeof artifact> =>
+        artifact !== undefined,
+    );
+  return SpoolSegmentSchema.parse({
+    ...segment,
+    project:
+      policy.mode === 'minimal'
+        ? { ...segment.project, displayName: 'Codex workspace' }
+        : segment.project,
+    raw: { ...segment.raw, payload: rawPayload.value as JsonObject },
+    event: {
+      ...segment.event,
+      payload,
+      rawPayload: rawPayload.value as JsonObject,
+      ...(redactions.length > 0 ? { redactions } : {}),
+    },
+    ...(artifacts.length > 0 ? { artifacts } : {}),
+  });
+}
+
 function normalizedSourceVersion(value: string | undefined): string {
   const trimmed = value?.trim();
   return trimmed && trimmed.length <= 128 ? trimmed : 'unknown';
@@ -933,6 +1244,7 @@ export function normalizeCodexHook(
   options: {
     readonly clock?: () => Date;
     readonly sourceVersion?: string;
+    readonly captureProfile?: CaptureProfilePolicy;
   } = {},
 ): SpoolSegment {
   const hook = parseCodexHook(input);
@@ -943,7 +1255,7 @@ export function normalizeCodexHook(
   const turnId = typeof hook.turn_id === 'string' ? hook.turn_id : undefined;
   const toolName =
     typeof hook.tool_name === 'string' ? hook.tool_name : undefined;
-  return baseSegment(
+  const segment = baseSegment(
     {
       sourceSessionId: hook.session_id,
       cwd: hook.cwd,
@@ -962,6 +1274,10 @@ export function normalizeCodexHook(
       ...(mapped.status ? { status: mapped.status } : {}),
       subtype: hook.hook_event_name,
     },
+  );
+  return applyCaptureProfilePolicy(
+    segment,
+    options.captureProfile ?? DEFAULT_CAPTURE_PROFILE_POLICY,
   );
 }
 
@@ -1723,6 +2039,7 @@ export interface CollectCodexHookOptions {
   readonly stateDir?: string;
   readonly clock?: () => Date;
   readonly sourceVersion?: string;
+  readonly captureProfile?: CaptureProfilePolicy;
   readonly enrichTranscript?: boolean;
   /** Enable bounded repository/fingerprint enrichment when available. */
   readonly enrichRepository?: boolean;
@@ -1770,6 +2087,7 @@ async function writeRepositoryEnrichment(
   paths: ReturnType<typeof spoolPaths>,
   sourceVersion: string,
   options: CollectCodexHookOptions,
+  policy: CaptureProfilePolicy,
 ): Promise<void> {
   const phase =
     parsed.hook_event_name === 'SessionStart'
@@ -1870,7 +2188,8 @@ async function writeRepositoryEnrichment(
   }
 
   const derived = deriveCodexRepositorySegments(parent, snapshot, fingerprint);
-  for (const segment of derived) await writeSegment(paths, segment);
+  for (const segment of derived)
+    await writeSegment(paths, applyCaptureProfilePolicy(segment, policy));
 
   if (phase === 'baseline' && snapshot.kind === 'snapshot')
     await writeCodexBaselinePointer(stateDir, parsed.session_id, {
@@ -1896,6 +2215,7 @@ export async function collectCodexHook(
   let state: string;
   let sourceVersion: string;
   let paths: ReturnType<typeof spoolPaths>;
+  let capturePolicy: CaptureProfilePolicy;
   try {
     state = resolveStateDir(options.stateDir);
     const manifest = await readCodexInstallManifest(state).catch(
@@ -1904,10 +2224,13 @@ export async function collectCodexHook(
     sourceVersion = normalizedSourceVersion(
       options.sourceVersion ?? manifest?.codexVersion,
     );
+    capturePolicy =
+      options.captureProfile ?? (await readCaptureProfilePolicy(state));
     parsed = parseCodexHook(JSON.parse(text));
     segment = normalizeCodexHook(parsed, {
       clock: options.clock,
       sourceVersion,
+      captureProfile: capturePolicy,
     });
     paths = spoolPaths(state);
     await writeSegment(paths, segment);
@@ -1923,14 +2246,21 @@ export async function collectCodexHook(
       parsed.hook_event_name === 'PostToolUse'
     )
       for (const derived of deriveCodexCommandSegments(parsed, segment))
-        await writeSegment(paths, derived);
+        await writeSegment(
+          paths,
+          applyCaptureProfilePolicy(derived, capturePolicy),
+        );
   } catch {
     // Deliberately silent: command enrichment is best-effort only.
   }
 
   try {
     const coverage = deriveCodexApprovalCoverageSegment(parsed, segment);
-    if (coverage) await writeSegment(paths, coverage);
+    if (coverage)
+      await writeSegment(
+        paths,
+        applyCaptureProfilePolicy(coverage, capturePolicy),
+      );
   } catch {
     // Coverage metadata is best-effort and cannot block Codex.
   }
@@ -1943,6 +2273,7 @@ export async function collectCodexHook(
       paths,
       sourceVersion,
       options,
+      capturePolicy,
     );
   } catch {
     // Repository enrichment is bounded, best-effort evidence.
@@ -1955,24 +2286,27 @@ export async function collectCodexHook(
     )
       await writeSegment(
         paths,
-        baseSegment(
-          {
-            sourceSessionId: parsed.session_id,
-            cwd: parsed.cwd,
-            model: parsed.model,
-            sourceVersion,
-            timestamp: segment.raw.receivedAt,
-          },
-          parsed as JsonObject,
-          `${segment.raw.sourceEventId}:turn-completed`,
-          'turn.completed',
-          'harness',
-          parsed as JsonObject,
-          {
-            turnId: parsed.turn_id,
-            status: 'completed',
-            subtype: 'Stop',
-          },
+        applyCaptureProfilePolicy(
+          baseSegment(
+            {
+              sourceSessionId: parsed.session_id,
+              cwd: parsed.cwd,
+              model: parsed.model,
+              sourceVersion,
+              timestamp: segment.raw.receivedAt,
+            },
+            parsed as JsonObject,
+            `${segment.raw.sourceEventId}:turn-completed`,
+            'turn.completed',
+            'harness',
+            parsed as JsonObject,
+            {
+              turnId: parsed.turn_id,
+              status: 'completed',
+              subtype: 'Stop',
+            },
+          ),
+          capturePolicy,
         ),
       );
   } catch {
@@ -1993,7 +2327,11 @@ export async function collectCodexHook(
         clock: options.clock,
         invocationId: segment.raw.sourceEventId,
       });
-      for (const item of enrichment) await writeSegment(paths, item);
+      for (const item of enrichment)
+        await writeSegment(
+          paths,
+          applyCaptureProfilePolicy(item, capturePolicy),
+        );
     }
   } catch {
     // Transcript enrichment is explicitly non-canonical and best effort.

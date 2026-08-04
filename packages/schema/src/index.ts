@@ -231,6 +231,58 @@ export const CaptureModeSchema = z.enum([
   'unknown',
 ]);
 
+/** User-selectable local capture policy. The policy file contains no secrets. */
+export const CaptureProfileModeSchema = z.enum(['minimal', 'standard', 'full']);
+export type CaptureProfileMode = z.infer<typeof CaptureProfileModeSchema>;
+
+/**
+ * The effective policy read by source collectors before data reaches the
+ * spool. Secret redaction is deliberately not configurable: environment and
+ * credential values are never persisted by default, including in full mode.
+ */
+export const CaptureProfilePolicySchema = z
+  .object({
+    version: z.literal(1),
+    mode: CaptureProfileModeSchema,
+    capturePrompts: z.boolean(),
+    captureMessages: z.boolean(),
+    captureToolInputs: z.boolean(),
+    captureToolOutputs: z.boolean(),
+    captureDiffs: z.boolean(),
+    captureRepositorySnapshots: z.boolean(),
+    captureEnvironmentMetadata: z.boolean(),
+    redactSecrets: z.literal(true),
+  })
+  .strict();
+export type CaptureProfilePolicy = z.infer<typeof CaptureProfilePolicySchema>;
+
+/** Resolve an API profile's user settings into a bounded collector policy. */
+export function captureProfilePolicy(
+  mode: CaptureProfileMode,
+  settings: Record<string, unknown> = {},
+): CaptureProfilePolicy {
+  const minimal = mode === 'minimal';
+  const full = mode === 'full';
+  const enabled = (name: string, fallback: boolean): boolean =>
+    typeof settings[name] === 'boolean' ? settings[name] : fallback;
+  return {
+    version: 1,
+    mode,
+    capturePrompts: minimal ? false : enabled('capturePrompts', true),
+    captureMessages: minimal ? false : enabled('captureMessages', true),
+    captureToolInputs: minimal ? false : enabled('captureToolInputs', true),
+    captureToolOutputs: minimal ? false : enabled('captureToolOutputs', true),
+    captureDiffs: minimal ? false : enabled('captureDiffs', true),
+    captureRepositorySnapshots: full
+      ? enabled('captureRepositorySnapshots', true)
+      : false,
+    captureEnvironmentMetadata: full
+      ? enabled('captureEnvironmentMetadata', true)
+      : false,
+    redactSecrets: true,
+  };
+}
+
 /** Data that the adapter could not observe. */
 export const CaptureGapDataClassSchema = z.enum([
   'prompts',

@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -51,13 +58,18 @@ async function preparedRecord(
 
 async function encrypted(
   directory: string,
-  record: PreparedRecord,
+  record: PreparedRecord | readonly PreparedRecord[],
   name: string = crypto.randomUUID(),
 ): Promise<string> {
   const destination = join(directory, `${name}.vibetrace.age`);
-  await encryptRecordStream([record], destination, PASSPHRASE, {
-    scryptWorkFactor: 10,
-  });
+  await encryptRecordStream(
+    Array.isArray(record) ? record : [record],
+    destination,
+    PASSPHRASE,
+    {
+      scryptWorkFactor: 10,
+    },
+  );
   return destination;
 }
 
@@ -164,6 +176,37 @@ describe('bounded age record codec', () => {
         temporaryRoot: directory,
       }),
     ).rejects.toThrow('content hash');
+  });
+
+  it('supports 100 MB records while bounding aggregate staged content before writes', async () => {
+    expect(DEFAULT_BUNDLE_LIMITS.maxRecordBytes).toBeGreaterThanOrEqual(
+      100_000_000,
+    );
+    expect(DEFAULT_BUNDLE_LIMITS.maxStagedBytes).toBeGreaterThanOrEqual(
+      100_000_000,
+    );
+
+    const directory = await root();
+    const manifest = await preparedRecord(directory);
+    const events = await preparedRecord(directory, {
+      kind: 'events',
+      path: 'events.ndjson',
+    });
+    const source = await encrypted(directory, [manifest, events], 'aggregate');
+    await expect(
+      decryptRecordStream(source, PASSPHRASE, {
+        temporaryRoot: directory,
+        limits: {
+          ...DEFAULT_BUNDLE_LIMITS,
+          maxStagedBytes: manifest.header.byteLength,
+        },
+      }),
+    ).rejects.toThrow('staged record budget');
+    expect(
+      (await readdir(directory)).some((name) =>
+        name.startsWith('vibetrace-import-'),
+      ),
+    ).toBe(false);
   });
 
   it('rejects excessive age scrypt work before invoking the expensive key derivation', async () => {

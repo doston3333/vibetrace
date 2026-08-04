@@ -16,6 +16,7 @@ import { promisify } from 'node:util';
 
 import { importSpool, spoolPaths, startDaemon } from '@vibetrace/daemon';
 import { MemoryKeyProvider, Storage } from '@vibetrace/storage';
+import { captureProfilePolicy } from '@vibetrace/schema';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type {
@@ -37,10 +38,12 @@ import {
   normalizeCodexHook,
   parseCodexHook,
   readCodexInstallManifest,
+  readCaptureProfilePolicy,
   readCodexBaselinePointer,
   removeCodexBaselinePointer,
   uninstallCodexHooks,
   writeCodexBaselinePointer,
+  writeCaptureProfilePolicy,
 } from './index.js';
 import {
   CODEX_0_144_3_SESSION_FIXTURES,
@@ -493,6 +496,33 @@ describe('Codex hook contracts', () => {
         tool_response: { output: 'object output is valid' },
       }).hook_event_name,
     ).toBe('PostToolUse');
+  });
+
+  it('applies privacy profiles before data reaches the spool', () => {
+    const minimalInput = fixture('UserPromptSubmit');
+    minimalInput.prompt =
+      'ship this change token=sk-test-secret-value-1234567890';
+    const minimal = normalizeCodexHook(minimalInput, {
+      captureProfile: captureProfilePolicy('minimal'),
+      sourceVersion: '0.144.3',
+    });
+    expect(JSON.stringify(minimal)).not.toContain('sk-test-secret-value');
+    expect(minimal.event.payload).toMatchObject({
+      content: '[OMITTED:profile-minimal]',
+    });
+
+    const standardInput = fixture('PostToolUse');
+    standardInput.tool_response = {
+      output: 'Authorization: Bearer secret-bearer-value-123456789',
+      environment: { DATABASE_PASSWORD: 'do-not-persist' },
+    };
+    const standard = normalizeCodexHook(standardInput, {
+      captureProfile: captureProfilePolicy('standard'),
+      sourceVersion: '0.144.3',
+    });
+    expect(JSON.stringify(standard)).not.toContain('secret-bearer-value');
+    expect(JSON.stringify(standard)).not.toContain('do-not-persist');
+    expect(standard.event.redactions?.length).toBeGreaterThan(0);
   });
 
   it('normalizes structured PostToolUse failure and decline outcomes', () => {
@@ -980,6 +1010,30 @@ describe('collector repository and verification enrichment', () => {
 });
 
 describe('silent spool collector', () => {
+  it('reads the active profile from an owner-only policy file', async () => {
+    const stateDir = await directory();
+    await writeCaptureProfilePolicy(stateDir, captureProfilePolicy('minimal'));
+    expect(await readCaptureProfilePolicy(stateDir)).toMatchObject({
+      mode: 'minimal',
+      capturePrompts: false,
+    });
+    await expect(
+      collectCodexHook(
+        JSON.stringify({
+          ...fixture('UserPromptSubmit'),
+          prompt: 'private prompt',
+        }),
+        { stateDir, enrichTranscript: false },
+      ),
+    ).resolves.toBe(true);
+    const files = await readdir(spoolPaths(stateDir).incoming);
+    const content = await readFile(
+      join(spoolPaths(stateDir).incoming, files[0] as string),
+      'utf8',
+    );
+    expect(content).not.toContain('private prompt');
+  });
+
   it('captures with the cached install version while the daemon is unavailable', async () => {
     const stateDir = await directory();
     const codexHome = await directory();
