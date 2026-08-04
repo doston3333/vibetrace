@@ -12,27 +12,38 @@ function requireText(source, requirement, file) {
     throw new Error(`Release configuration missing ${requirement} in ${file}.`);
 }
 
+function requireMatrixPair(source, os, node, file) {
+  const escapedOs = os.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const escapedNode = node.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const pair = new RegExp(
+    `- os: ${escapedOs}\\s+node: ${escapedNode}(?:\\s|$)`,
+    'mu',
+  );
+  if (!pair.test(source))
+    throw new Error(
+      `Release configuration missing ${os} / Node ${node} in ${file}.`,
+    );
+}
+
 const ci = await workflow('ci.yml');
 const native = await workflow('native-smoke.yml');
 const release = await workflow('release-gate.yml');
 
-for (const requirement of [
-  'ubuntu-latest',
-  'node: 22.12.0',
-  'node: 24',
-  'macos-14-large',
-  'macos-14',
-  'windows-latest',
+for (const [os, node] of [
+  ['ubuntu-latest', '22.12.0'],
+  ['ubuntu-latest', '24'],
+  ['macos-14-large', '24'],
+  ['macos-14', '24'],
+  ['windows-latest', '24'],
 ])
-  requireText(ci, requirement, 'ci.yml');
-for (const requirement of [
-  'ubuntu-latest',
-  'macos-14-large',
-  'macos-14',
-  'windows-latest',
-  'node: 24',
+  requireMatrixPair(ci, os, node, 'ci.yml');
+for (const [os, node] of [
+  ['ubuntu-latest', '24'],
+  ['macos-14-large', '24'],
+  ['macos-14', '24'],
+  ['windows-latest', '24'],
 ])
-  requireText(native, requirement, 'native-smoke.yml');
+  requireMatrixPair(native, os, node, 'native-smoke.yml');
 
 requireText(
   native,
