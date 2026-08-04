@@ -943,8 +943,8 @@ export function analyzeSession(
   rules: readonly DiagnosticRule[] = DIAGNOSTIC_RULES,
 ): AnalysisResult {
   if (input.length === 0) throw new Error('Cannot analyze an empty session.');
-  const events = input
-    .map((event) => TraceEventSchema.parse(event))
+  const events = TraceEventSchema.array()
+    .parse(input)
     .sort(
       (left, right) =>
         left.sequence - right.sequence || left.id.localeCompare(right.id),
