@@ -39,7 +39,7 @@ can be inferred from a single developer workstation.
 
 ## Local verification record
 
-Commit `2c7c55e` was verified on 2026-08-04 from a clean macOS arm64 checkout
+Commit `d4ed49d` was verified on 2026-08-04 from a clean macOS arm64 checkout
 with Node `v26.4.0`, pnpm `10.33.4`, and npm `11.17.0`. Node 26 is newer than
 the supported release runtimes, so this record supplements rather than replaces
 the CI matrix.
@@ -76,10 +76,11 @@ Ubuntu x64 CI runner is still required for supported-platform evidence.
 The native smoke harness was repeated on the final bundled CLI on macOS arm64
 with Codex `0.144.3` and Node `v24.18.0`: 12 hook events plus 33 app-server
 events, each carrying the expected adapter and source version. The app-server
-report included lifecycle events, rich command/message mappings, and explicit
-capture gaps; the run also verified wrong-passphrase rejection and recovery
-with the correct local envelope. This is supplementary evidence because the
-release runtime matrix still requires independent Linux and Windows runners.
+report included lifecycle events, the requested agent-message sentinel, rich
+command/message mappings, and explicit capture gaps; the run also verified
+wrong-passphrase rejection and recovery with the correct local envelope. This
+is supplementary evidence because the release runtime matrix still requires
+independent Linux and Windows runners.
 
 The packed-install smoke test exercises the bundled CLI, isolated temporary
 homes, daemon authentication and lifecycle, dashboard serving, encrypted
