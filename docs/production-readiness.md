@@ -38,7 +38,7 @@ can be inferred from a single developer workstation.
 
 ## Local verification record
 
-Commit `7706f02` was verified on 2026-08-04 from a clean macOS arm64 checkout
+Commit `be7fdcc` was verified on 2026-08-04 from a clean macOS arm64 checkout
 with Node `v26.4.0`, pnpm `10.33.4`, and npm `11.17.0`. Node 26 is newer than
 the supported release runtimes, so this record supplements rather than replaces
 the CI matrix.
