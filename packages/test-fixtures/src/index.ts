@@ -137,6 +137,21 @@ function scenarioEvent(
     type: EventType;
   };
 
+  if (scenario === 'subagent-activity' && sequence % 100 === 2) {
+    return {
+      payload: { subagentId: `subagent-${Math.floor(sequence / 100) + 1}` },
+      source: 'harness',
+      type: 'subagent.started',
+    };
+  }
+  if (scenario === 'subagent-activity' && sequence % 100 === 3) {
+    return {
+      payload: { subagentId: `subagent-${Math.floor(sequence / 100) + 1}` },
+      source: 'harness',
+      type: 'subagent.completed',
+    };
+  }
+
   if (sequence === 2) {
     if (scenario === 'failed-command') {
       return {
@@ -166,13 +181,6 @@ function scenarioEvent(
         type: 'context.compaction.started',
       };
     }
-    if (scenario === 'subagent-activity') {
-      return {
-        payload: { subagentId: 'subagent-1' },
-        source: 'harness',
-        type: 'subagent.started',
-      };
-    }
     if (scenario === 'code-change-tests') {
       return {
         payload: {
@@ -196,13 +204,6 @@ function scenarioEvent(
       payload: { reason: 'Summary written.' },
       source: 'harness',
       type: 'context.compaction.completed',
-    };
-  }
-  if (scenario === 'subagent-activity' && sequence === 3) {
-    return {
-      payload: { subagentId: 'subagent-1' },
-      source: 'harness',
-      type: 'subagent.completed',
     };
   }
   return base;

@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -649,6 +650,39 @@ describe('encrypted Storage', () => {
       10_000,
     );
     expect(storage.searchEvents(sessionId, 'needle 9999')).toHaveLength(1);
+    storage.close();
+  }, 20_000);
+
+  it('indexes and lists 10,000 sessions', async () => {
+    const path = await stateDirectory();
+    const storage = await Storage.initialize({
+      stateDir: path,
+      keyProvider: new MemoryKeyProvider(),
+    });
+    storage.createProject({ id: 'project', displayName: 'Project' });
+    const startedAt = performance.now();
+    storage.transaction(() => {
+      for (let index = 1; index <= 10_000; index += 1) {
+        storage.createSession({
+          id: createSessionId('performance-fixture', `session-${index}`),
+          projectId: 'project',
+          source: 'performance-fixture',
+          sourceSessionId: `session-${index}`,
+          startedAt: new Date(
+            Date.parse('2026-01-01T00:00:00.000Z') + index,
+          ).toISOString(),
+          status: 'completed',
+          captureMode: 'standard',
+        });
+      }
+    });
+
+    const sessions = storage.listSessions(false, 10_000);
+    const elapsed = performance.now() - startedAt;
+    expect(sessions).toHaveLength(10_000);
+    expect(sessions[0]?.sourceSessionId).toBe('session-10000');
+    expect(sessions.at(-1)?.sourceSessionId).toBe('session-1');
+    expect(elapsed).toBeLessThan(10_000);
     storage.close();
   }, 20_000);
 

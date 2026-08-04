@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { performance } from 'node:perf_hooks';
 
 import { TraceEventSchema } from '@vibetrace/schema';
 
@@ -120,5 +121,29 @@ describe('createSyntheticTrace', () => {
         }),
       ),
     );
+  });
+
+  it('models at least 100 independently paired subagent branches', () => {
+    const startedAt = performance.now();
+    const trace = createSyntheticTrace({
+      eventCount: 20000,
+      scenario: 'subagent-activity',
+      seed: 31,
+    });
+    const elapsed = performance.now() - startedAt;
+    const started = new Set(
+      trace.events
+        .filter((event) => event.type === 'subagent.started')
+        .map((event) => event.payload.subagentId),
+    );
+    const completed = new Set(
+      trace.events
+        .filter((event) => event.type === 'subagent.completed')
+        .map((event) => event.payload.subagentId),
+    );
+
+    expect(started.size).toBeGreaterThanOrEqual(100);
+    expect(completed).toEqual(started);
+    expect(elapsed).toBeLessThan(3_000);
   });
 });

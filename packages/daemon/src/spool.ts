@@ -22,6 +22,7 @@ import {
 import { createSessionId, createTurnId } from '@vibetrace/schema';
 import {
   StorageImportConflictError,
+  restrictDirectoriesToCurrentUser,
   type ImportedEventInput,
   type Storage,
 } from '@vibetrace/storage';
@@ -234,6 +235,17 @@ export async function ensureSpool(paths: SpoolPaths): Promise<void> {
       throw new Error('Spool directory is unsafe.');
     await chmod(path, 0o700);
   }
+}
+
+/** Migrate every spool directory to the platform's owner-only boundary. */
+export async function hardenSpool(paths: SpoolPaths): Promise<void> {
+  await ensureSpool(paths);
+  await restrictDirectoriesToCurrentUser([
+    paths.root,
+    paths.incoming,
+    paths.archive,
+    paths.quarantine,
+  ]);
 }
 
 async function syncDirectory(path: string): Promise<void> {

@@ -1,5 +1,5 @@
 import { createHash, hkdfSync, randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir } from 'node:fs/promises';
+import { lstat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3-multiple-ciphers';
@@ -21,6 +21,7 @@ import {
   writePassphraseEnvelope,
 } from './keys.js';
 import { runMigrations } from './migrations.js';
+import { restrictDirectoryToCurrentUser } from './permissions.js';
 
 export { BlobStore, type BlobInfo } from './blobs.js';
 export {
@@ -29,6 +30,10 @@ export {
   type KeyProvider,
 } from './keys.js';
 export { migrations, type SqlMigration } from './migrations.js';
+export {
+  restrictDirectoriesToCurrentUser,
+  restrictDirectoryToCurrentUser,
+} from './permissions.js';
 export * from './schema.js';
 
 /** A clock injection point for deterministic storage tests. */
@@ -382,7 +387,7 @@ export class Storage {
     const stateStatus = await lstat(options.stateDir);
     if (!stateStatus.isDirectory() || stateStatus.isSymbolicLink())
       throw new Error('Encrypted storage directory is unsafe.');
-    await chmod(options.stateDir, 0o700);
+    await restrictDirectoryToCurrentUser(options.stateDir);
     const dbPath = join(options.stateDir, 'state.db');
     let databaseExists = false;
     try {

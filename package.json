@@ -13,7 +13,12 @@
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "build": "pnpm -r --if-present build"
+    "build": "pnpm -r --if-present build",
+    "test:integration": "node scripts/run-gate.mjs integration",
+    "test:e2e": "node scripts/run-gate.mjs e2e",
+    "test:security": "node scripts/run-gate.mjs security",
+    "test:performance": "node scripts/run-gate.mjs performance",
+    "pack:smoke": "node scripts/pack-smoke.mjs"
   },
   "devDependencies": {
     "@vibetrace/cli": "workspace:*",

@@ -20,11 +20,15 @@ import {
   resolveStateDir,
 } from '@vibetrace/daemon';
 
-export const cliVersion = '0.0.0';
+export const cliVersion = '0.1.0';
 
 export interface CliDependencies {
   readonly stateDir?: () => string;
-  readonly spawn?: (command: string, args: readonly string[]) => void;
+  readonly spawn?: (
+    command: string,
+    args: readonly string[],
+    standardInput?: string,
+  ) => void;
   readonly openBrowser?: (url: string) => void;
   readonly output?: (line: string) => void;
   readonly fetch?: typeof fetch;
@@ -153,8 +157,21 @@ async function descriptorWithToken(
   }
 }
 
-function defaultSpawn(command: string, args: readonly string[]): void {
-  spawn(command, [...args], { detached: true, stdio: 'ignore' }).unref();
+function defaultSpawn(
+  command: string,
+  args: readonly string[],
+  standardInput?: string,
+): void {
+  const child = spawn(command, [...args], {
+    detached: true,
+    stdio: [
+      standardInput === undefined ? 'ignore' : 'pipe',
+      'ignore',
+      'ignore',
+    ],
+  });
+  if (standardInput !== undefined) child.stdin?.end(`${standardInput}\n`);
+  child.unref();
 }
 
 function defaultOpen(url: string): void {
@@ -184,16 +201,27 @@ async function waitForReady(
 
 async function start(
   stateDir: string,
-  spawnDaemon: (command: string, args: readonly string[]) => void,
+  spawnDaemon: (
+    command: string,
+    args: readonly string[],
+    standardInput?: string,
+  ) => void,
   request: typeof fetch,
+  storagePassphrase?: string,
 ): Promise<void> {
   if (await descriptorWithToken(stateDir, request)) return;
   await recoverStaleState(stateDir);
-  const runPath = join(
-    dirname(fileURLToPath(import.meta.url)),
-    '../../daemon/dist/run.js',
+  const runPath = join(dirname(fileURLToPath(import.meta.url)), 'daemon.js');
+  spawnDaemon(
+    process.execPath,
+    [
+      runPath,
+      ...(storagePassphrase === undefined
+        ? []
+        : ['--storage-passphrase-stdin']),
+    ],
+    storagePassphrase,
   );
-  spawnDaemon(process.execPath, [runPath]);
 }
 
 /** Creates the VibeTrace foundation CLI program. */
@@ -258,10 +286,37 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
   program
     .command('start')
     .description('Start the local VibeTrace daemon.')
-    .action(async () => {
-      await start(stateDir(), spawnDaemon, request);
-      output('VibeTrace daemon start requested.');
-    });
+    .option(
+      '--storage-passphrase',
+      'Prompt for a passphrase when the OS keyring is unavailable.',
+    )
+    .option(
+      '--storage-passphrase-stdin',
+      'Read the storage passphrase from standard input.',
+    )
+    .action(
+      async (options: {
+        storagePassphrase?: boolean;
+        storagePassphraseStdin?: boolean;
+      }) => {
+        if (options.storagePassphrase && options.storagePassphraseStdin)
+          throw new Error('Choose only one storage passphrase input method.');
+        let storagePassphrase: string | undefined;
+        if (options.storagePassphrase)
+          storagePassphrase = await secret('Storage passphrase: ');
+        if (options.storagePassphraseStdin) {
+          const value = await stdin(4_096);
+          storagePassphrase = value?.replace(/[\r\n]+$/, '');
+        }
+        if (
+          (options.storagePassphrase || options.storagePassphraseStdin) &&
+          !storagePassphrase
+        )
+          throw new Error('Storage passphrase is empty or too large.');
+        await start(stateDir(), spawnDaemon, request, storagePassphrase);
+        output('VibeTrace daemon start requested.');
+      },
+    );
   program
     .command('status')
     .description('Report whether the local daemon is healthy.')
@@ -379,6 +434,10 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       'Restore JSON pointers only in this derived export view.',
       [],
     )
+    .option(
+      '--passphrase-stdin',
+      'Read the bundle passphrase from standard input.',
+    )
     .action(
       async (
         session: string,
@@ -386,6 +445,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           profile: string;
           output?: string;
           restore: string[];
+          passphraseStdin?: boolean;
         },
       ) => {
         const profile = exportProfile(options.profile, options.restore);
@@ -401,10 +461,18 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         });
         output(JSON.stringify(previewResult.preview.manifest, undefined, 2));
         output(`Manifest SHA-256: ${previewResult.preview.manifestHash}`);
-        const passphrase = await secret('Bundle passphrase: ');
-        const confirmation = await secret('Confirm passphrase: ');
-        if (passphrase !== confirmation)
-          throw new Error('Bundle passphrases do not match.');
+        let passphrase: string;
+        if (options.passphraseStdin) {
+          const value = await stdin(4_096);
+          passphrase = value?.replace(/[\r\n]+$/, '') ?? '';
+          if (!passphrase)
+            throw new Error('Bundle passphrase is empty or too large.');
+        } else {
+          passphrase = await secret('Bundle passphrase: ');
+          const confirmation = await secret('Confirm passphrase: ');
+          if (passphrase !== confirmation)
+            throw new Error('Bundle passphrases do not match.');
+        }
         const result = await api<{
           bundle: { destination: string; manifestHash: string };
         }>('/exports', {
@@ -424,9 +492,20 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
   program
     .command('import <bundle>')
     .description('Decrypt, validate, and import a portable VibeTrace bundle.')
-    .action(async (bundle: string) => {
+    .option(
+      '--passphrase-stdin',
+      'Read the bundle passphrase from standard input.',
+    )
+    .action(async (bundle: string, options: { passphraseStdin?: boolean }) => {
       const source = resolve(bundle);
-      const passphrase = await secret('Bundle passphrase: ');
+      const value = options.passphraseStdin
+        ? await stdin(4_096)
+        : await secret('Bundle passphrase: ');
+      const passphrase = options.passphraseStdin
+        ? (value?.replace(/[\r\n]+$/, '') ?? '')
+        : value;
+      if (!passphrase)
+        throw new Error('Bundle passphrase is empty or too large.');
       const result = await api<{
         import: {
           sessionId: string;

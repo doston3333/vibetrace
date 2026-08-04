@@ -31,19 +31,25 @@ import {
   type ImportBundleOptions,
 } from '@vibetrace/bundle';
 import { analyzeAndPersist } from '@vibetrace/diagnostics';
-import { Storage, type StoredNormalizedEvent } from '@vibetrace/storage';
+import {
+  Storage,
+  restrictDirectoryToCurrentUser,
+  type StoredNormalizedEvent,
+} from '@vibetrace/storage';
 import { z } from 'zod';
 
 import {
-  ensureSpool,
+  hardenSpool,
   importSegments,
   spoolPaths,
   type SpoolImportOptions,
 } from './spool.js';
+export { restrictDirectoryToCurrentUser } from '@vibetrace/storage';
 
 export {
   SpoolSegmentSchema,
   ensureSpool,
+  hardenSpool,
   spoolPaths,
   writeSegment,
   type SpoolPaths,
@@ -163,6 +169,7 @@ export interface DaemonClock {
 export interface DaemonOptions {
   readonly stateDir?: string;
   readonly storage?: Storage;
+  readonly storagePassphrase?: string;
   readonly clock?: DaemonClock;
   readonly dashboardDir?: string;
   readonly spoolFaults?: SpoolImportOptions;
@@ -355,7 +362,7 @@ async function restrictedDirectory(path: string): Promise<void> {
   const metadata = await lstat(path);
   if (!metadata.isDirectory() || metadata.isSymbolicLink())
     throw new Error('VibeTrace state directory is unsafe.');
-  await chmod(path, 0o700);
+  await restrictDirectoryToCurrentUser(path);
 }
 
 async function writeAtomic(
@@ -511,7 +518,14 @@ export async function startDaemon(
   let app: FastifyInstance | undefined;
   let importTimer: NodeJS.Timeout | undefined;
   try {
-    const storage = options.storage ?? (await Storage.open({ stateDir }));
+    const storage =
+      options.storage ??
+      (await Storage.open({
+        stateDir,
+        ...(options.storagePassphrase
+          ? { passphrase: options.storagePassphrase }
+          : {}),
+      }));
     openedStorage = storage;
     const bundleOperations: BundleOperations = options.bundleOperations ?? {
       preview: createBundlePreview,
@@ -519,21 +533,25 @@ export async function startDaemon(
       import: importBundle,
     };
     const token = await loadOrCreateToken(stateDir);
-    await ensureSpool(spoolPaths(stateDir));
+    await hardenSpool(spoolPaths(stateDir));
     app = fastify({ logger: false, bodyLimit: 1_048_576 });
     await app.register(cookie);
     let dashboardAvailable = false;
     {
-      const dashboardDir =
-        options.dashboardDir ??
-        join(
-          fileURLToPath(new URL('../../..', import.meta.url)),
-          'apps',
-          'dashboard',
-          'dist',
-        );
-      const dashboard = await lstat(dashboardDir).catch(() => undefined);
-      if (dashboard?.isDirectory() && !dashboard.isSymbolicLink()) {
+      const dashboardCandidates = options.dashboardDir
+        ? [options.dashboardDir]
+        : [
+            fileURLToPath(new URL('./dashboard', import.meta.url)),
+            join(
+              fileURLToPath(new URL('../../..', import.meta.url)),
+              'apps',
+              'dashboard',
+              'dist',
+            ),
+          ];
+      for (const dashboardDir of dashboardCandidates) {
+        const dashboard = await lstat(dashboardDir).catch(() => undefined);
+        if (!dashboard?.isDirectory() || dashboard.isSymbolicLink()) continue;
         await app.register(fastifyStatic, {
           root: dashboardDir,
           prefix: '/',
@@ -541,6 +559,7 @@ export async function startDaemon(
           wildcard: false,
         });
         dashboardAvailable = true;
+        break;
       }
     }
     const tickets = new Map<string, Ticket>();

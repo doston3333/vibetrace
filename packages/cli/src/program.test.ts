@@ -105,6 +105,41 @@ describe('createProgram', () => {
     expect(outputs).toContain('running');
   });
 
+  it('passes a headless storage passphrase only over daemon standard input', async () => {
+    const state = await mkdtemp(join(tmpdir(), 'vibetrace-cli-headless-'));
+    directories.push(state);
+    const spawned: Array<{
+      command: string;
+      args: readonly string[];
+      standardInput?: string;
+    }> = [];
+    const outputs: string[] = [];
+    const passphrase = 'headless test passphrase';
+    const program = createProgram({
+      stateDir: () => state,
+      fetch: (async () => new Response('{}', { status: 503 })) as typeof fetch,
+      readStdin: async () => `${passphrase}\n`,
+      spawn: (command, args, standardInput) =>
+        spawned.push({
+          command,
+          args,
+          ...(standardInput === undefined ? {} : { standardInput }),
+        }),
+      output: (line) => outputs.push(line),
+    });
+    await program.parseAsync([
+      'node',
+      'vibetrace',
+      'start',
+      '--storage-passphrase-stdin',
+    ]);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]?.args).toContain('--storage-passphrase-stdin');
+    expect(spawned[0]?.args.join(' ')).not.toContain(passphrase);
+    expect(spawned[0]?.standardInput).toBe(passphrase);
+    expect(outputs.join('\n')).not.toContain(passphrase);
+  });
+
   it('routes install, uninstall, doctor, and the silent hidden collector', async () => {
     const outputs: string[] = [];
     const installCalls: Array<{ dryRun?: boolean }> = [];

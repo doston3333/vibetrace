@@ -15,7 +15,9 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 
 import {
+  hardenSpool,
   readDescriptor,
+  restrictDirectoryToCurrentUser,
   resolveStateDir,
   spoolPaths,
   SpoolSegmentSchema,
@@ -1368,7 +1370,10 @@ export async function installCodexHooks(
 
   await safeDirectory(home, true);
   await safeDirectory(state, true);
+  await restrictDirectoryToCurrentUser(home);
+  await restrictDirectoryToCurrentUser(state);
   await safeDirectory(join(state, 'integrations'), true);
+  await hardenSpool(spoolPaths(state));
   await assertOptionalRegularFile(manifestPath(state));
   let backupPath: string | undefined;
   try {
@@ -2022,9 +2027,9 @@ function doctorCheck(
 
 async function probeSpool(stateDir: string): Promise<void> {
   await safeDirectory(stateDir, true);
+  await restrictDirectoryToCurrentUser(stateDir);
   const paths = spoolPaths(stateDir);
-  await safeDirectory(paths.root, true);
-  await safeDirectory(paths.incoming, true);
+  await hardenSpool(paths);
   const probe = join(paths.incoming, `.doctor-${randomUUID()}.tmp`);
   const handle = await open(probe, 'wx', 0o600);
   try {

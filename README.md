@@ -12,6 +12,7 @@ The current MVP foundation includes the canonical trace schema and deterministic
 - [Capture modes and gaps](docs/architecture/capture-modes.md)
 - [Privacy and encryption](docs/architecture/privacy.md)
 - [Portable encrypted bundles](docs/architecture/portable-bundles.md)
+- [Release gate](docs/release.md)
 - [Deterministic diagnostic rules](docs/diagnostics/rules.md)
 - [Diagnostic fixture precision/recall report](docs/diagnostics/precision-recall.md)
 - [ADR 0001: Local-first](docs/decisions/0001-local-first.md)
@@ -27,7 +28,21 @@ The current MVP foundation includes the canonical trace schema and deterministic
 ## Requirements
 
 - Node.js 22.12.0 or later
-- pnpm 10.33.4
+- macOS 14+ (x64 or arm64), glibc-based Linux (x64), or Windows 11 (x64)
+- pnpm 10.33.4 for source development only
+
+## Install
+
+Install the public CLI package and confirm the bundled command is available:
+
+```bash
+npm install --global @vibetrace/cli
+vibetrace --version
+```
+
+The npm package contains the CLI, loopback daemon, and compiled dashboard. It
+does not install a login service; `vibetrace open` starts the daemon when
+needed.
 
 ## Workspace layout
 
@@ -58,25 +73,25 @@ pnpm build
 Preview and install the Codex integration, then approve the exact handler definitions in Codex with `/hooks`:
 
 ```bash
-pnpm exec vibetrace init codex --dry-run
-pnpm exec vibetrace init codex
-pnpm exec vibetrace doctor
+vibetrace init codex --dry-run
+vibetrace init codex
+vibetrace doctor
 ```
 
 Captured hooks write directly to the local spool even when the daemon is stopped. Start and open the local dashboard separately:
 
 ```bash
-pnpm exec vibetrace start
-pnpm exec vibetrace open
+vibetrace start
+vibetrace open
 ```
 
 List and inspect sessions, or preview and create an encrypted scrubbed bundle:
 
 ```bash
-pnpm exec vibetrace sessions list
-pnpm exec vibetrace sessions show <session-id>
-pnpm exec vibetrace export <session-id> --profile share-safe --output trace.vibetrace.age
-pnpm exec vibetrace import trace.vibetrace.age
+vibetrace sessions list
+vibetrace sessions show <session-id>
+vibetrace export <session-id> --profile share-safe --output trace.vibetrace.age
+vibetrace import trace.vibetrace.age
 ```
 
 Export prints the exact versioned manifest before hidden passphrase entry. The manifest hash is submitted with the export request, so a changed session requires a new preview. Portable bundles have no plaintext mode.
@@ -84,9 +99,19 @@ Export prints the exact versioned manifest before hidden passphrase entry. The m
 Remove only the exact manifest-owned handlers with:
 
 ```bash
-pnpm exec vibetrace uninstall codex --dry-run
-pnpm exec vibetrace uninstall codex
+vibetrace uninstall codex --dry-run
+vibetrace uninstall codex
 ```
+
+On headless Linux without a usable keyring, unlock storage without placing the
+passphrase in process arguments or environment variables:
+
+```bash
+printf '%s\n' "$VIBETRACE_STORAGE_PASSPHRASE" | vibetrace start --storage-passphrase-stdin
+```
+
+The named shell variable is only an example owned by the calling shell;
+VibeTrace does not read storage passphrases from the environment.
 
 Start the dashboard during development:
 

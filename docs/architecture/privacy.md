@@ -4,7 +4,7 @@ VibeTrace is local-first: it requires no account, cloud upload, or telemetry by 
 
 ## Encryption at rest
 
-The MVP storage design uses SQLCipher for the local SQLite database and encrypted content-addressed blobs for large artifacts. The database key and blob-encryption key material are obtained from the operating-system keyring when available. If a supported keyring is unavailable, the user supplies a passphrase-derived fallback; raw passphrases are never persisted.
+The MVP storage design uses SQLCipher for the local SQLite database and encrypted content-addressed blobs for large artifacts. The database key and blob-encryption key material are obtained from the operating-system keyring when available. If a supported keyring is unavailable, the user supplies a passphrase-derived fallback; raw passphrases are never persisted. VibeTrace state boundaries use owner-only POSIX modes and protected, current-user-only Windows ACLs.
 
 Keys, browser tickets, and local API tokens must be redacted from logs and diagnostics. Backups and exports require their own explicit encryption and redaction policy; no export is implied by local persistence.
 
