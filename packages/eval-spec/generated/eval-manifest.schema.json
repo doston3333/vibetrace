@@ -98,6 +98,20 @@
             "maxLength": 16384
           }
         },
+        "corrections": {
+          "maxItems": 1000,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          }
+        },
+        "expectedOutcome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
         "inferredFields": {
           "maxItems": 10000,
           "type": "array",
@@ -216,6 +230,31 @@
     "success": {
       "type": "object",
       "properties": {
+        "commands": {
+          "maxItems": 10000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16384
+              },
+              "category": {
+                "type": "string",
+                "enum": ["test", "lint", "build", "typecheck"]
+              },
+              "sourceEventId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              }
+            },
+            "required": ["command"],
+            "additionalProperties": false
+          }
+        },
         "assertions": {
           "minItems": 1,
           "maxItems": 10000,
@@ -363,6 +402,14 @@
                 "additionalProperties": false
               }
             ]
+          }
+        },
+        "inferredFields": {
+          "maxItems": 10000,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^\\/"
           }
         }
       },

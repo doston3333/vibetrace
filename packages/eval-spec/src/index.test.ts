@@ -197,9 +197,134 @@ describe('eval manifest schema', () => {
       now: '2026-01-01T00:01:00.000Z',
     });
     expect(manifest.task.prompt).toBe('Fix the authorization flow.');
-    expect(manifest.task.inferredFields).toEqual([]);
+    expect(manifest.task.inferredFields).toEqual([
+      '/task/corrections',
+      '/task/constraints',
+      '/task/expectedOutcome',
+    ]);
     expect(manifest.sourceEvidence.eventIds).toEqual([eventId, events[1]?.id]);
     expect(manifest.sourceEvidence.captureGapIds).toEqual([]);
     expect(manifest.capturedFailure?.onsetEventId).toBe(events[1]?.id);
+    expect(manifest.capturedFailure?.category).toBe('unknown');
+    expect(manifest.success.inferredFields).toEqual([
+      '/success/commands',
+      '/success/assertions',
+    ]);
+  });
+
+  it('extracts corrections, constraints, verification, and fingerprint evidence', () => {
+    const commandId = createEventId({
+      adapter: 'fixture',
+      sourceSessionId: 'session-1',
+      sourceEventId: 'command-1',
+      sourceSequence: 2,
+      type: 'command.completed',
+    });
+    const correctionId = createEventId({
+      adapter: 'fixture',
+      sourceSessionId: 'session-1',
+      sourceEventId: 'correction-1',
+      sourceSequence: 3,
+      type: 'message.user',
+    });
+    const events = [
+      TraceEventSchema.parse({
+        ...baseEvent('prompt-2', 1, 'message.user'),
+        payload: {
+          content:
+            'Implement roles.\n- Roles must come from the database.\nExpected outcome: integration tests pass.',
+        },
+      }),
+      TraceEventSchema.parse({
+        ...baseEvent('command-1', 2, 'command.completed'),
+        id: commandId,
+        source: 'tool',
+        payload: {
+          command: 'pnpm test:integration',
+          category: 'test',
+          exitCode: 0,
+        },
+      }),
+      TraceEventSchema.parse({
+        ...baseEvent('correction-1', 3, 'message.user'),
+        id: correctionId,
+        payload: { content: 'Keep existing JWT behavior compatible.' },
+      }),
+    ];
+    const manifest = manifestFromSession({
+      id: createSessionId('eval', 'derived-2'),
+      name: 'Derived extraction case',
+      sessionId,
+      repository: { baseCommit: 'a'.repeat(40) },
+      events,
+      runFingerprint: {
+        source: 'codex',
+        clientSurface: 'exec',
+        model: 'gpt-5.6-codex',
+        codexVersion: '0.144.3',
+        instructionHashes: [],
+        lockfileHashes: [],
+        captureOmissions: [],
+        os: 'darwin',
+        architecture: 'arm64',
+        runtimeVersions: { node: '24.0.0' },
+      },
+      now: '2026-01-01T00:01:00.000Z',
+    });
+    expect(manifest.task.corrections).toEqual([
+      'Keep existing JWT behavior compatible.',
+    ]);
+    expect(manifest.task.constraints).toEqual([
+      'Roles must come from the database.',
+      'Keep existing JWT behavior compatible.',
+    ]);
+    expect(manifest.task.expectedOutcome).toBe('integration tests pass.');
+    expect(manifest.success.commands?.[0]).toMatchObject({
+      command: 'pnpm test:integration',
+      category: 'test',
+      sourceEventId: commandId,
+    });
+    expect(manifest.success.assertions).toEqual([
+      {
+        type: 'command_exit_code',
+        command: 'pnpm test:integration',
+        expected: 0,
+      },
+    ]);
+    expect(manifest.sourceEvidence.runFingerprintHash).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(manifest.configuration.environmentFingerprint).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
   });
 });
+
+function baseEvent(
+  sourceEventId: string,
+  sequence: number,
+  type: 'message.user' | 'command.completed',
+) {
+  return {
+    schemaVersion: '0.1.0',
+    id: createEventId({
+      adapter: 'fixture',
+      sourceSessionId: 'session-1',
+      sourceEventId,
+      sourceSequence: sequence,
+      type,
+    }),
+    sessionId,
+    sequence,
+    timestamp: `2026-01-01T00:00:0${sequence}.000Z`,
+    source: type === 'message.user' ? 'user' : 'tool',
+    type,
+    payload: type === 'message.user' ? { content: 'prompt' } : {},
+    rawPayload: {},
+    provenance: {
+      adapter: 'fixture',
+      adapterVersion: '1.0.0',
+      captureMode: 'standard',
+    },
+  };
+}

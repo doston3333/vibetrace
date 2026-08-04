@@ -68,6 +68,8 @@ const taskSchema = z
   .object({
     prompt: z.string().min(1).max(1_000_000),
     constraints: z.array(z.string().min(1).max(16_384)).max(1_000),
+    corrections: z.array(z.string().min(1).max(16_384)).max(1_000).optional(),
+    expectedOutcome: z.string().min(1).max(16_384).optional(),
     inferredFields: z.array(z.string().regex(/^\//)).max(10_000),
   })
   .strict();
@@ -287,6 +289,14 @@ const humanRatingAssertionSchema = z
   })
   .strict();
 
+const successCommandSchema = z
+  .object({
+    command: z.string().min(1).max(16_384),
+    category: z.enum(['test', 'lint', 'build', 'typecheck']).optional(),
+    sourceEventId: z.string().uuid().optional(),
+  })
+  .strict();
+
 export const SuccessAssertionSchema = z.discriminatedUnion('type', [
   commandAssertionSchema,
   testCommandAssertionSchema,
@@ -308,7 +318,9 @@ export const EvalManifestSchema = z
     configuration: configurationSchema,
     success: z
       .object({
+        commands: z.array(successCommandSchema).max(10_000).optional(),
         assertions: z.array(SuccessAssertionSchema).min(1).max(10_000),
+        inferredFields: z.array(z.string().regex(/^\//)).max(10_000).optional(),
       })
       .strict(),
     capturedFailure: z
@@ -348,6 +360,88 @@ function canonicalJson(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+function eventText(event: TraceEvent): string {
+  const payload = event.payload as Record<string, unknown>;
+  for (const key of ['content', 'message', 'text', 'output']) {
+    if (typeof payload[key] === 'string' && payload[key].length > 0)
+      return payload[key];
+  }
+  return '';
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function observedConstraints(texts: readonly string[]): string[] {
+  const constraints: string[] = [];
+  for (const text of texts) {
+    for (const line of text.split(/\r?\n/u)) {
+      const normalized = line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/u, '').trim();
+      if (
+        normalized.length > 0 &&
+        normalized.length <= 16_384 &&
+        /\b(?:must|should|required|need to|do not|don't|keep|ensure|return exactly)\b/iu.test(
+          normalized,
+        )
+      )
+        constraints.push(normalized);
+    }
+  }
+  return unique(constraints);
+}
+
+function observedExpectedOutcome(texts: readonly string[]): string | undefined {
+  for (const text of [...texts].reverse()) {
+    const match =
+      /(?:expected outcome|success means|should result in|return exactly)\s*[:-]?\s*(.{1,16384})/iu.exec(
+        text,
+      );
+    if (match?.[1]) return match[1].trim();
+  }
+  return undefined;
+}
+
+type VerificationCategory = 'test' | 'lint' | 'build' | 'typecheck';
+
+function verificationCommand(
+  event: TraceEvent,
+):
+  | { readonly command: string; readonly category?: VerificationCategory }
+  | undefined {
+  const payload = event.payload as Record<string, unknown>;
+  const command = typeof payload.command === 'string' ? payload.command : '';
+  if (!command) return undefined;
+  const category = typeof payload.category === 'string' ? payload.category : '';
+  return ['test', 'lint', 'build', 'typecheck'].includes(category)
+    ? { command, category: category as VerificationCategory }
+    : event.type === 'test.completed' ||
+        event.type === 'lint.completed' ||
+        event.type === 'build.completed' ||
+        event.type === 'typecheck.completed'
+      ? {
+          command,
+          category: event.type.replace(
+            '.completed',
+            '',
+          ) as VerificationCategory,
+        }
+      : undefined;
+}
+
+function failureCategory(event: TraceEvent): string {
+  const payload = event.payload as Record<string, unknown>;
+  if (event.type === 'capture.gap') return 'harness';
+  if (event.type === 'permission.resolved' || event.status === 'declined')
+    return 'human-intervention';
+  if (event.type === 'command.completed' || event.type.endsWith('.completed'))
+    return payload.category === 'test' ? 'verification' : 'tool';
+  if (event.type === 'context.compaction.completed') return 'context';
+  if (event.source === 'agent') return 'model';
+  if (event.source === 'user') return 'prompt';
+  return 'unknown';
 }
 
 /** Stable content hash used by encrypted repositories and portable tooling. */
@@ -407,15 +501,24 @@ export function manifestFromSession(input: {
   readonly now?: string;
 }): EvalManifest {
   const prompts = input.events.filter((event) => event.type === 'message.user');
-  const prompt = prompts
-    .map((event) =>
-      typeof event.payload.content === 'string' ? event.payload.content : '',
-    )
-    .filter(Boolean)
-    .at(0);
+  const promptTexts = prompts.map(eventText).filter(Boolean);
+  const prompt = promptTexts.at(0);
+  const correctionTexts = [
+    ...promptTexts.slice(1),
+    ...input.events
+      .filter((event) => event.type === 'user.steered')
+      .map(eventText)
+      .filter(Boolean),
+  ];
+  const constraints = observedConstraints(promptTexts);
+  const expectedOutcome = observedExpectedOutcome(promptTexts);
   const gaps = input.events.filter((event) => event.type === 'capture.gap');
   const sourceEventIds = input.events.map((event) => event.id);
-  const inferredFields = prompt ? [] : ['/task/prompt'];
+  const inferredFields: string[] = [];
+  if (!prompt) inferredFields.push('/task/prompt');
+  if (correctionTexts.length === 0) inferredFields.push('/task/corrections');
+  if (constraints.length === 0) inferredFields.push('/task/constraints');
+  if (!expectedOutcome) inferredFields.push('/task/expectedOutcome');
   const configuration = {
     ...(input.runFingerprint?.model
       ? { model: input.runFingerprint.model }
@@ -423,26 +526,118 @@ export function manifestFromSession(input: {
     ...(input.runFingerprint?.codexVersion
       ? { codexVersion: input.runFingerprint.codexVersion }
       : {}),
+    ...(input.runFingerprint?.approvalPolicy
+      ? { approvalPolicy: input.runFingerprint.approvalPolicy }
+      : {}),
+    ...(input.runFingerprint?.sandboxPolicy
+      ? { sandboxPolicy: input.runFingerprint.sandboxPolicy }
+      : {}),
+    ...(input.runFingerprint?.networkPolicy
+      ? { networkPolicy: input.runFingerprint.networkPolicy }
+      : {}),
     skills:
       input.runFingerprint?.instructionHashes
         .filter((item) => item.kind === 'skill')
         .map((item) => ({ name: item.sha256, sha256: item.sha256 })) ?? [],
     instructionHashes:
       input.runFingerprint?.instructionHashes.map((item) => item.sha256) ?? [],
-    inferredFields: input.runFingerprint ? [] : ['/configuration'],
+    ...(input.runFingerprint
+      ? {
+          environmentFingerprint: hashEvalJson({
+            os: input.runFingerprint.os,
+            architecture: input.runFingerprint.architecture,
+            runtimeVersions: input.runFingerprint.runtimeVersions,
+            lockfileHashes: input.runFingerprint.lockfileHashes,
+          }),
+        }
+      : {}),
+    inferredFields: input.runFingerprint
+      ? []
+      : [
+          '/configuration/model',
+          '/configuration/codexVersion',
+          '/configuration/skills',
+          '/configuration/instructionHashes',
+          '/configuration/environmentFingerprint',
+        ],
   };
+  const observedCommands = input.events
+    .map((event) => ({ event, verification: verificationCommand(event) }))
+    .filter(
+      (
+        value,
+      ): value is {
+        readonly event: TraceEvent;
+        readonly verification: {
+          readonly command: string;
+          readonly category?: VerificationCategory;
+        };
+      } => value.verification !== undefined,
+    );
+  const commandEntries = unique(
+    observedCommands.map((value) => value.verification.command),
+  ).map((command) => {
+    const first = observedCommands.find(
+      (value) => value.verification.command === command,
+    );
+    return {
+      command,
+      ...(first?.verification.category
+        ? { category: first.verification.category }
+        : {}),
+      ...(first ? { sourceEventId: first.event.id } : {}),
+    };
+  });
+  const inferredSuccessFields = commandEntries.length
+    ? []
+    : ['/success/commands'];
+  const observedAssertions = observedCommands
+    .map(({ event, verification }) => {
+      const payload = event.payload as Record<string, unknown>;
+      const exitCode =
+        typeof payload.exitCode === 'number' &&
+        Number.isInteger(payload.exitCode)
+          ? payload.exitCode
+          : undefined;
+      return exitCode === undefined
+        ? undefined
+        : {
+            type: 'command_exit_code' as const,
+            command: verification.command,
+            expected: exitCode,
+          };
+    })
+    .filter(
+      (
+        value,
+      ): value is {
+        readonly type: 'command_exit_code';
+        readonly command: string;
+        readonly expected: number;
+      } => value !== undefined,
+    );
   const assertions = input.successAssertions?.length
     ? [...input.successAssertions]
-    : [
-        {
-          type: 'human_rating' as const,
-          prompt: 'Did the session achieve the requested outcome?',
-          minimum: 0,
-        },
-      ];
+    : observedAssertions.length
+      ? unique(
+          observedAssertions.map((assertion) => JSON.stringify(assertion)),
+        ).map((assertion) => JSON.parse(assertion) as SuccessAssertion)
+      : [
+          {
+            type: 'human_rating' as const,
+            prompt: 'Did the session achieve the requested outcome?',
+            minimum: 0,
+          },
+        ];
   const failure = input.events.find(
-    (event) => event.type === 'error' || event.status === 'failed',
+    (event) =>
+      event.type === 'error' ||
+      event.status === 'failed' ||
+      (event.type === 'command.completed' &&
+        (event.payload as Record<string, unknown>).exitCode !== 0),
   );
+  if (input.successAssertions === undefined && commandEntries.length === 0)
+    inferredSuccessFields.push('/success/assertions');
   return createEvalManifest(
     {
       id: input.id,
@@ -451,6 +646,9 @@ export function manifestFromSession(input: {
       sourceEvidence: {
         eventIds: sourceEventIds,
         artifactBlobHashes: [],
+        ...(input.runFingerprint
+          ? { runFingerprintHash: hashEvalJson(input.runFingerprint) }
+          : {}),
         captureGapIds: gaps.map((event) => event.id),
       },
       repository: input.repository,
@@ -458,15 +656,23 @@ export function manifestFromSession(input: {
         prompt:
           prompt ??
           'Review and complete the captured task; the original prompt was not observed.',
-        constraints: [],
+        constraints,
+        ...(correctionTexts.length > 0 ? { corrections: correctionTexts } : {}),
+        ...(expectedOutcome ? { expectedOutcome } : {}),
         inferredFields,
       },
       configuration,
-      success: { assertions },
+      success: {
+        ...(commandEntries.length ? { commands: commandEntries } : {}),
+        assertions,
+        ...(inferredSuccessFields.length
+          ? { inferredFields: inferredSuccessFields }
+          : {}),
+      },
       ...(failure
         ? {
             capturedFailure: {
-              category: 'unknown',
+              category: failureCategory(failure),
               onsetEventId: failure.id,
             },
           }
