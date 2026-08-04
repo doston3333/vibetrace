@@ -91,6 +91,22 @@ importers:
         specifier: 8.2.0
         version: 8.2.0(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.5)
 
+  packages/adapter-claude-code:
+    dependencies:
+      '@vibetrace/adapter-sdk':
+        specifier: workspace:*
+        version: link:../adapter-sdk
+      '@vibetrace/schema':
+        specifier: workspace:*
+        version: link:../schema
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+
   packages/adapter-codex:
     dependencies:
       '@vibetrace/daemon':

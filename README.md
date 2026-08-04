@@ -56,6 +56,7 @@ needed.
 - `apps/dashboard` — React and Vite forensic dashboard
 - `packages/adapter-codex` — versioned Codex hook, installer, doctor, and transcript adapter
 - `packages/adapter-codex-app-server` — opt-in full-fidelity Codex app-server JSONL adapter
+- `packages/adapter-claude-code` — named Claude Code lifecycle-hook adapter
 - `packages/adapter-generic-jsonl` — bounded generic agent JSONL adapter
 - `packages/adapter-otel` — opt-in OpenTelemetry enrichment adapter
 - `packages/adapter-sdk` — source-adapter capability and conformance contracts

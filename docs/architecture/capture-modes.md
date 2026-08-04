@@ -57,6 +57,11 @@ silently treated as equivalent:
 - `generic-jsonl-agent` validates a source-neutral JSONL envelope while
   preserving unknown fields in raw payloads. Its SDK boundary applies the same
   capture profile and secret detector as the Codex collector.
+- `claude-code` is the named second coding-agent adapter. It consumes the
+  documented Claude Code command-hook JSONL envelope, normalizes lifecycle,
+  prompt, tool, permission, compaction, subagent, instruction, file-change,
+  and stop/failure events, and turns unsupported or malformed hook frames into
+  explicit gaps. It is capture-only and does not alter Claude Code decisions.
 - `opentelemetry` accepts approved usage or explicitly tagged VibeTrace events;
   prompt bodies remain excluded unless the daemon is explicitly configured to
   allow them. The daemon still applies the active profile and secret detector
