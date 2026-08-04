@@ -43,7 +43,7 @@ can be inferred from a single developer workstation.
 
 ## Local verification record
 
-Commit `d4ed49d` was verified on 2026-08-04 from a clean macOS arm64 checkout
+Commit `daa2ecf` was verified on 2026-08-04 from a clean macOS arm64 checkout
 with Node `v26.4.0`, pnpm `10.33.4`, and npm `11.17.0`. Node 26 is newer than
 the supported release runtimes, so this record supplements rather than replaces
 the CI matrix.
@@ -56,6 +56,8 @@ pnpm lint
 pnpm format:check
 pnpm schema:check
 pnpm release:config-check
+pnpm test:release-candidate-check   # 3 tests
+pnpm release:candidate-check --tag v0.1.0 --check-published
 pnpm typecheck
 pnpm test
 pnpm build
@@ -65,6 +67,15 @@ pnpm test:security      # 7 files, 89 tests
 pnpm test:performance   # 7 files, 98 tests
 pnpm pack:smoke
 ```
+
+A full-history Gitleaks scan reported zero findings after applying the single
+fingerprint-specific false-positive exception for the intentional redaction
+fixture. `pnpm audit --prod` also reported zero known vulnerabilities across
+the production dependency graph. An independent read-only security pass found
+one release-path issue, mutable GitHub Action references, which was remediated
+with reviewed full-SHA pins before the commands above were rerun. This evidence
+does not replace a professional penetration test or the remaining native
+platform sign-off.
 
 A separate local Node `v24.19.0` run also passed lint, formatting, typecheck,
 the complete workspace test suite, build, and packed-install smoke after the
