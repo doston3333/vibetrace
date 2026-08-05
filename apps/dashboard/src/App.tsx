@@ -296,13 +296,6 @@ export function ForensicWorkbench({
 
   return (
     <main id="main-content" className="workbench">
-      <SessionOverview
-        session={session}
-        events={events}
-        findings={findings}
-        gaps={gaps}
-        scorecard={scorecard}
-      />
       <div className="case-mobile-context">
         <a href="/" className="case-back">
           Back to archive
@@ -364,128 +357,137 @@ export function ForensicWorkbench({
             ))}
           </nav>
         </aside>
-        <section
-          className="workbench-content"
-          aria-label={`${currentView?.label ?? 'Case'} evidence`}
-        >
-          {view === 'timeline' ? (
-            <>
-              <section
-                className="timeline-controls"
-                aria-label="Filter timeline"
-              >
-                <label className="search-control">
-                  Search observable evidence
-                  <input
-                    type="search"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Prompt, command, file, or event type"
+        <div className="workbench-main">
+          <SessionOverview
+            session={session}
+            events={events}
+            findings={findings}
+            gaps={gaps}
+            scorecard={scorecard}
+          />
+          <section
+            className={`workbench-content${view === 'timeline' ? ' is-timeline' : ''}`}
+            aria-label={`${currentView?.label ?? 'Case'} evidence`}
+          >
+            {view === 'timeline' ? (
+              <>
+                <section
+                  className="timeline-controls"
+                  aria-label="Filter timeline"
+                >
+                  <label className="search-control">
+                    Search observable evidence
+                    <input
+                      type="search"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Prompt, command, file, or event type"
+                    />
+                  </label>
+                  <label>
+                    Lane
+                    <select
+                      value={lane}
+                      onChange={(event) =>
+                        setLane(event.target.value as TimelineLane | 'all')
+                      }
+                    >
+                      <option value="all">All lanes</option>
+                      {TIMELINE_LANES.map((value) => (
+                        <option value={value} key={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Evidence state
+                    <select
+                      value={status}
+                      onChange={(event) =>
+                        setStatus(event.target.value as typeof status)
+                      }
+                    >
+                      <option value="all">All states</option>
+                      <option value="failed">Failures</option>
+                      <option value="gaps">Capture gaps</option>
+                    </select>
+                  </label>
+                  <span className="fact-key">
+                    <i /> fact <i /> failure <i /> gap
+                  </span>
+                </section>
+                {loadingMore ? (
+                  <p className="progress-note" role="status">
+                    Reconstructing the remaining event pages…
+                  </p>
+                ) : null}
+                <div className="evidence-workspace">
+                  <Timeline
+                    items={filtered}
+                    selectedId={selected?.id}
+                    onSelect={setSelectedId}
                   />
-                </label>
-                <label>
-                  Lane
-                  <select
-                    value={lane}
-                    onChange={(event) =>
-                      setLane(event.target.value as TimelineLane | 'all')
-                    }
-                  >
-                    <option value="all">All lanes</option>
-                    {TIMELINE_LANES.map((value) => (
-                      <option value={value} key={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Evidence state
-                  <select
-                    value={status}
-                    onChange={(event) =>
-                      setStatus(event.target.value as typeof status)
-                    }
-                  >
-                    <option value="all">All states</option>
-                    <option value="failed">Failures</option>
-                    <option value="gaps">Capture gaps</option>
-                  </select>
-                </label>
-                <span className="fact-key">
-                  <i /> fact <i /> failure <i /> gap
-                </span>
-              </section>
-              {loadingMore ? (
-                <p className="progress-note" role="status">
-                  Reconstructing the remaining event pages…
-                </p>
-              ) : null}
-              <div className="evidence-workspace">
-                <Timeline
-                  items={filtered}
-                  selectedId={selected?.id}
-                  onSelect={setSelectedId}
-                />
-                <Inspector
-                  sessionId={session.id}
-                  selected={selected}
-                  events={events}
-                  artifacts={artifacts}
-                  findings={findings}
-                  onSelect={setSelectedId}
-                />
-              </div>
-            </>
-          ) : null}
-          {view === 'diffs' ? (
-            <DiffHistory
-              events={events}
-              artifacts={artifacts}
-              findings={findings}
-              onSelect={selectEvidence}
-            />
-          ) : null}
-          {view === 'coverage' ? (
-            <CoveragePanel coverage={coverage} onSelect={selectEvidence} />
-          ) : null}
-          {view === 'scorecard' && scorecard ? (
-            <ScorecardPanel scorecard={scorecard} onSelect={selectEvidence} />
-          ) : null}
-          {view === 'approvals' ? (
-            <ApprovalsPanel events={events} onSelect={selectEvidence} />
-          ) : null}
-          {view === 'context' ? (
-            <ContextMap events={events} onSelect={selectEvidence} />
-          ) : null}
-          {view === 'causal' ? (
-            <CausalGraph
-              events={events}
-              findings={findings}
-              onSelect={selectEvidence}
-            />
-          ) : null}
-          {view === 'findings' ? (
-            <FindingsPanel
-              events={events}
-              findings={findings}
-              onSelect={selectEvidence}
-              onReview={onReviewFinding}
-              savingReview={savingFindingReview}
-            />
-          ) : null}
-          {view === 'annotations' ? (
-            <AnnotationsPanel
-              annotations={annotations}
-              targetId={session.id}
-              saving={savingAnnotation}
-              onSave={onSaveAnnotation}
-            />
-          ) : null}
-          {view === 'ai-review' ? (
-            <AiReviewPanel sessionId={session.id} />
-          ) : null}
-        </section>
+                  <Inspector
+                    sessionId={session.id}
+                    selected={selected}
+                    events={events}
+                    artifacts={artifacts}
+                    findings={findings}
+                    onSelect={setSelectedId}
+                  />
+                </div>
+              </>
+            ) : null}
+            {view === 'diffs' ? (
+              <DiffHistory
+                events={events}
+                artifacts={artifacts}
+                findings={findings}
+                onSelect={selectEvidence}
+              />
+            ) : null}
+            {view === 'coverage' ? (
+              <CoveragePanel coverage={coverage} onSelect={selectEvidence} />
+            ) : null}
+            {view === 'scorecard' && scorecard ? (
+              <ScorecardPanel scorecard={scorecard} onSelect={selectEvidence} />
+            ) : null}
+            {view === 'approvals' ? (
+              <ApprovalsPanel events={events} onSelect={selectEvidence} />
+            ) : null}
+            {view === 'context' ? (
+              <ContextMap events={events} onSelect={selectEvidence} />
+            ) : null}
+            {view === 'causal' ? (
+              <CausalGraph
+                events={events}
+                findings={findings}
+                onSelect={selectEvidence}
+              />
+            ) : null}
+            {view === 'findings' ? (
+              <FindingsPanel
+                events={events}
+                findings={findings}
+                onSelect={selectEvidence}
+                onReview={onReviewFinding}
+                savingReview={savingFindingReview}
+              />
+            ) : null}
+            {view === 'annotations' ? (
+              <AnnotationsPanel
+                annotations={annotations}
+                targetId={session.id}
+                saving={savingAnnotation}
+                onSave={onSaveAnnotation}
+              />
+            ) : null}
+            {view === 'ai-review' ? (
+              <AiReviewPanel sessionId={session.id} />
+            ) : null}
+          </section>
+        </div>
       </div>
     </main>
   );

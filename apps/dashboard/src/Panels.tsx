@@ -52,13 +52,6 @@ export function SessionOverview({
   readonly scorecard?: SessionScorecard;
 }) {
   const primary = orderedFindings(findings)[0];
-  const failed = events.filter(
-    (item) =>
-      item.event.status === 'failed' ||
-      (typeof (item.event.payload as { exitCode?: unknown }).exitCode ===
-        'number' &&
-        (item.event.payload as { exitCode: number }).exitCode !== 0),
-  ).length;
   const measuredDimensions = scorecard?.dimensions
     .filter((dimension) => dimension.score !== null)
     .slice(0, 3);
@@ -69,18 +62,14 @@ export function SessionOverview({
     <section className="session-overview" aria-labelledby="session-title">
       <div className="case-heading">
         <div>
-          <p className="eyebrow">
-            Case file · {session.source} · {session.captureMode} capture
-          </p>
           <h1 id="session-title">{session.title ?? session.displayName}</h1>
           <p className="case-metadata">
-            {session.model ?? 'Model not exposed'} ·{' '}
-            {formatDuration(session.startedAt, session.endedAt)} ·{' '}
-            {new Date(session.startedAt).toLocaleString()}
+            {session.model ?? 'Model not exposed'} · {session.source} ·{' '}
+            {formatDuration(session.startedAt, session.endedAt)}
           </p>
         </div>
         <div className="outcome-stamp" data-status={session.status}>
-          <span>Observed result</span>
+          <span>Observed</span>
           <strong>{session.status.replaceAll('_', ' ')}</strong>
         </div>
       </div>
@@ -90,10 +79,6 @@ export function SessionOverview({
           <dd>
             {Math.max(session.eventCount, events.length).toLocaleString()}
           </dd>
-        </div>
-        <div>
-          <dt>Failures</dt>
-          <dd>{failed.toLocaleString()}</dd>
         </div>
         <div>
           <dt>Capture gaps</dt>
@@ -108,51 +93,23 @@ export function SessionOverview({
       </dl>
       {primary ? (
         <div className="primary-hypothesis">
-          <span>
-            {primary.ruleId === 'ai-analyzer'
-              ? `Primary ${aiFindingLabel(primary)}`
-              : 'Primary deterministic finding'}
-          </span>
-          <strong>{primary.title}</strong>
-          <details>
-            <summary>Review supporting analysis</summary>
-            <p>{primary.impact ?? primary.explanation}</p>
-          </details>
+          <span>Primary finding</span>
+          <strong title={primary.title}>{primary.title}</strong>
         </div>
       ) : (
         <div className="primary-hypothesis is-empty">
-          <span>Analysis status</span>
-          <strong>No deterministic finding has been persisted yet.</strong>
-          <p>
-            The timeline remains facts-first; absence of a finding is not a
-            quality claim.
-          </p>
+          <span>Analysis</span>
+          <strong>No persisted deterministic finding.</strong>
         </div>
       )}
       {scorecard ? (
-        <section
+        <span
           className="overview-scorecard"
-          aria-label="Independent scorecard dimensions"
+          aria-label="Independent scorecard summary"
         >
-          <div>
-            <span className="eyebrow">Independent scorecard evidence</span>
-            <small>
-              Not a universal quality score · v{scorecard.schemaVersion}
-            </small>
-          </div>
-          <div className="overview-scorecard-grid">
-            {measuredDimensions?.map((dimension) => (
-              <div key={dimension.id}>
-                <span>{dimension.label}</span>
-                <strong>{dimension.score}/100 measured</strong>
-              </div>
-            ))}
-            <div className="overview-awaiting">
-              <span>Awaiting evidence</span>
-              <strong>{awaitingDimensions ?? 0} dimensions</strong>
-            </div>
-          </div>
-        </section>
+          Scorecard: {measuredDimensions?.length ?? 0} measured ·{' '}
+          {awaitingDimensions ?? 0} awaiting
+        </span>
       ) : null}
     </section>
   );
