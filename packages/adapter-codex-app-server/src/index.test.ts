@@ -318,7 +318,9 @@ describe('Codex app-server adapter', () => {
       prompt: 'Run the fixture.',
       context: { ...context, sourceSessionId: 'temporary-session' },
       spawn(executable, args, cwd) {
-        expect(executable).toBe('codex');
+        expect(executable).toBe(
+          process.platform === 'win32' ? 'codex.exe' : 'codex',
+        );
         expect(args).toEqual(['app-server', '--stdio']);
         expect(cwd).toBe('/repo');
         return { stdin, stdout };
