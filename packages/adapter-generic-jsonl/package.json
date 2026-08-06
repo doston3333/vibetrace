@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/adapter-generic-jsonl",
   "version": "0.1.0",
+  "private": true,
   "description": "Generic bounded JSONL coding-agent adapter for VibeTrace integrations and conformance fixtures.",
   "type": "module",
   "exports": {

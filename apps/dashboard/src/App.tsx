@@ -33,7 +33,7 @@ import {
 import { Timeline } from './Timeline.js';
 import {
   buildTimelineModel,
-  matchesEvent,
+  createEventMatcher,
   TIMELINE_LANES,
   type TimelineLane,
 } from './forensics.js';
@@ -230,7 +230,7 @@ export function ForensicWorkbench({
   const [status, setStatus] = useState<'all' | 'failed' | 'gaps'>('all');
   const model = useMemo(() => buildTimelineModel(events), [events]);
   const filtered = useMemo(
-    () => model.filter((item) => matchesEvent(item, { search, lane, status })),
+    () => model.filter(createEventMatcher({ search, lane, status })),
     [lane, model, search, status],
   );
   const selected =

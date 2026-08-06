@@ -1184,6 +1184,30 @@ textarea::placeholder {
   grid-template-columns: repeat(2, 1fr);
 }
 
+.copyable-id dd {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.copyable-id code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.copyable-id button {
+  flex: none;
+}
+
+.evidence-links code,
+.causal-evidence code,
+.scorecard-evidence code {
+  display: block;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
 .fact-grid > div {
   border-bottom: 1px solid var(--rule);
   padding: var(--space-md) 0;

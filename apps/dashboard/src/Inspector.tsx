@@ -97,6 +97,31 @@ function JsonPreview({
   );
 }
 
+function CopyableId({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}) {
+  return (
+    <div className="copyable-id">
+      <dt>{label}</dt>
+      <dd>
+        <code>{value}</code>
+        <button
+          type="button"
+          aria-label={`Copy ${label.toLowerCase()}`}
+          title={`Copy ${label.toLowerCase()}`}
+          onClick={() => void navigator.clipboard?.writeText(value)}
+        >
+          Copy
+        </button>
+      </dd>
+    </div>
+  );
+}
+
 function ArtifactText({
   sessionId,
   artifact,
@@ -225,6 +250,8 @@ export function Inspector({
                 'No friendly preview is available.'}
             </p>
             <dl className="fact-grid">
+              <CopyableId label="Canonical event ID" value={selected.id} />
+              <CopyableId label="Raw event ID" value={selected.rawEventId} />
               <div>
                 <dt>Canonical type</dt>
                 <dd>{selected.type}</dd>

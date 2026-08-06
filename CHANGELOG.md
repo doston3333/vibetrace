@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fixed Windows owner-only ACL setup without relying on PowerShell security
+  cmdlet autoloading and optimized the 20,000-event dashboard path.
+- Added a real Chromium handoff/evidence smoke gate, strict daemon response
+  security headers, and visible canonical/raw evidence IDs.
+- Validated Codex app-server `0.146.1` and updated native release evidence.
+- Hardened package privacy, community templates, npm bootstrap guidance, and
+  GitHub release controls for the first public release.
 - Hardened release publishing with SHA-pinned actions, history-aware secret
   scanning, an exact-tag CLI candidate gate, and OIDC npm trusted publishing.
 - Enforced LF checkout behavior across operating systems and moved macOS CI to

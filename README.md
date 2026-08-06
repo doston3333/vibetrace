@@ -2,7 +2,24 @@
 
 VibeTrace is a local-first, open-source forensic debugger and evaluation lab for AI coding sessions.
 
-The production foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, Codex lifecycle-hook and app-server capture, a named Claude Code adapter, generic JSONL and opt-in OpenTelemetry adapters, a responsive forensic dashboard, evidence-linked deterministic findings and opt-in two-provider AI synthesis, annotations, isolated evaluation runs, deterministic comparison summaries, and previewed scrubbed bundles encrypted with standard age passphrase encryption.
+This repository is preparing its first public release. The implementation
+includes the canonical trace schema and deterministic fixtures, encrypted local
+SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon,
+Codex lifecycle-hook and app-server capture, a named Claude Code adapter,
+generic JSONL and opt-in OpenTelemetry adapters, a responsive forensic
+dashboard, evidence-linked deterministic findings and opt-in two-provider AI
+synthesis, annotations, isolated evaluation runs, deterministic comparison
+summaries, and previewed scrubbed bundles encrypted with standard age
+passphrase encryption.
+
+## Release status
+
+| Surface                 | Status                                                                |
+| ----------------------- | --------------------------------------------------------------------- |
+| Source repository       | Public pre-release; APIs and storage formats may still change         |
+| `@vibetrace/cli` on npm | Not published yet; do not rely on the global-install command below    |
+| Supported release gate  | Ubuntu, macOS Intel/arm64, and Windows CI plus native Codex smoke     |
+| Network behavior        | Local-only by default; optional AI analysis requires explicit consent |
 
 ## Documentation
 
@@ -30,6 +47,7 @@ The production foundation includes the canonical trace schema and deterministic 
 - [ADR 0005: Encryption at rest](docs/decisions/0005-encryption-at-rest.md)
 - [ADR 0006: Dual AI analysis providers](docs/decisions/0006-dual-ai-analysis-providers.md)
 - [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
 - [Security policy](SECURITY.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
 - [Apache-2.0 license](LICENSE)
@@ -42,7 +60,16 @@ The production foundation includes the canonical trace schema and deterministic 
 
 ## Install
 
-Install the public CLI package and confirm the bundled command is available:
+Until `@vibetrace/cli` is visible on npm, run it from a source checkout:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @vibetrace/cli build
+pnpm exec vibetrace --version
+```
+
+After the first npm release is published, install the public CLI package and
+confirm the bundled command is available:
 
 ```bash
 npm install --global @vibetrace/cli

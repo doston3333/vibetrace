@@ -201,7 +201,7 @@ export function ScorecardPanel({
               >
                 {item.evidenceEventIds.map((id) => (
                   <button type="button" key={id} onClick={() => onSelect(id)}>
-                    Evidence {id.slice(0, 8)}
+                    Evidence <code>{id}</code>
                   </button>
                 ))}
               </div>
@@ -429,6 +429,7 @@ export function CausalGraph({
                       <span>#{item.sequence}</span>
                       <strong>{eventTitle(item.event)}</strong>
                       <small>{item.type}</small>
+                      <code>{item.id}</code>
                     </button>
                   ))}
                 </div>
@@ -526,7 +527,8 @@ export function FindingsPanel({
                           {relation} ·{' '}
                           {observed
                             ? `#${observed.sequence} ${eventTitle(observed.event)}`
-                            : eventId.slice(0, 8)}
+                            : 'Unresolved event'}
+                          <code>{eventId}</code>
                         </button>
                       );
                     })}

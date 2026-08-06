@@ -110,3 +110,11 @@ as Linux and Windows, emits metadata-only provenance evidence, and uploads one
 artifact per native runner. `.github/workflows/release-gate.yml` invokes that
 workflow together with the full CI matrix for version tags or manual release
 verification.
+
+On 2026-08-06, a supplemental macOS arm64 native smoke passed against the
+published Codex CLI `0.146.1` on Node `v26.4.0`: 12 lifecycle-hook events and
+35 app-server events were captured with matching source-version provenance,
+including 34 events on the resolved app-server thread plus one explicit
+provisional capture gap. Wrong-passphrase rejection and recovery also passed.
+This current-contract evidence supplements, but does not replace, the required
+hosted Node 24 evidence from Ubuntu, both macOS architectures, and Windows.

@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/bundle",
   "version": "0.1.0",
+  "private": true,
   "description": "Derived redaction views and encrypted portable VibeTrace bundles.",
   "type": "module",
   "exports": {

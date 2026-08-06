@@ -349,6 +349,20 @@ const SAFE_ARTIFACT_MEDIA_TYPES = new Set([
   'text/x-diff',
   'text/x-patch',
 ]);
+const DASHBOARD_CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'none'",
+  "connect-src 'self'",
+  "font-src 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'none'",
+  "img-src 'self' data:",
+  "object-src 'none'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+].join('; ');
+const BROWSER_HANDOFF_SCRIPT =
+  'const p=new URLSearchParams(location.search),h=p.get("handoff");if(h){fetch("/api/v1/auth/browser-session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({handoffToken:h})}).then(r=>{if(r.ok)location.replace(location.pathname+location.hash)})}';
 
 /** The on-disk, secret-free description of one daemon instance. */
 export interface DaemonDescriptor {
@@ -955,6 +969,15 @@ export async function startDaemon(
     const token = await loadOrCreateToken(stateDir);
     await hardenSpool(spoolPaths(stateDir));
     app = fastify({ logger: false, bodyLimit: 32 * 1024 * 1024 });
+    app.addHook('onSend', async (_request, reply) => {
+      reply
+        .header('content-security-policy', DASHBOARD_CONTENT_SECURITY_POLICY)
+        .header('cross-origin-opener-policy', 'same-origin')
+        .header('cross-origin-resource-policy', 'same-origin')
+        .header('referrer-policy', 'no-referrer')
+        .header('x-content-type-options', 'nosniff')
+        .header('x-frame-options', 'DENY');
+    });
     app.addContentTypeParser(
       'application/octet-stream',
       { parseAs: 'buffer', bodyLimit: 16 * 1024 * 1024 },
@@ -2405,9 +2428,16 @@ export async function startDaemon(
       return reply
         .type('text/html')
         .send(
-          '<!doctype html><meta charset="utf-8"><script>const p=new URLSearchParams(location.search),h=p.get("handoff");if(h){fetch("/api/v1/auth/browser-session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({handoffToken:h})}).then(r=>{if(r.ok)location.replace(location.pathname+location.hash)})}</script>',
+          '<!doctype html><meta charset="utf-8"><script src="/browser-handoff.js" defer></script>',
         );
     };
+    app.get('/browser-handoff.js', async (_request, reply) =>
+      reply
+        .header('cache-control', 'no-store')
+        .type('application/javascript')
+        .send(BROWSER_HANDOFF_SCRIPT),
+    );
+    app.get('/favicon.ico', async (_request, reply) => reply.code(204).send());
     app.get('/', serveDashboard);
     app.get('/sessions/*', serveDashboard);
     const address = await app.listen({ host: '127.0.0.1', port: 0 });

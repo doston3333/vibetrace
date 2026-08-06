@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/eval-spec",
   "version": "0.1.0",
+  "private": true,
   "description": "Versioned, reviewable VibeTrace evaluation manifests.",
   "type": "module",
   "exports": {

@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/daemon",
   "version": "0.1.0",
+  "private": true,
   "description": "Loopback-only local ingest daemon for VibeTrace.",
   "type": "module",
   "exports": {

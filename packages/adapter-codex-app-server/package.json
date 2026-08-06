@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/adapter-codex-app-server",
   "version": "0.1.0",
+  "private": true,
   "description": "Capture-only Codex app-server JSONL adapter for VibeTrace.",
   "type": "module",
   "exports": {

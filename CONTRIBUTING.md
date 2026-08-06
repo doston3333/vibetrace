@@ -22,4 +22,7 @@ pnpm test
 pnpm build
 ```
 
-Report security vulnerabilities privately according to the [security policy](SECURITY.md). By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+See [SUPPORT.md](SUPPORT.md) for questions and issue-routing guidance. Report
+security vulnerabilities privately according to the [security
+policy](SECURITY.md). By participating, you agree to follow the [Code of
+Conduct](CODE_OF_CONDUCT.md).

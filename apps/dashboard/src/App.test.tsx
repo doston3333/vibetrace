@@ -26,8 +26,8 @@ import type {
 } from './api.js';
 import {
   buildTimelineModel,
+  createEventMatcher,
   eventDetail,
-  matchesEvent,
   safeDisplayText,
 } from './forensics.js';
 
@@ -196,8 +196,8 @@ describe('forensic dashboard', () => {
   it('builds and filters the 20,000-event timeline within a bounded interaction budget', () => {
     const started = performance.now();
     const model = buildTimelineModel(events);
-    const matches = model.filter((item) =>
-      matchesEvent(item, {
+    const matches = model.filter(
+      createEventMatcher({
         search: 'pnpm test',
         lane: 'all',
         status: 'all',
@@ -235,6 +235,8 @@ describe('forensic dashboard', () => {
       screen.getByRole('heading', { name: 'Evidence timeline' }),
     ).toBeTruthy();
     expect(screen.getByText('20,000 observable events')).toBeTruthy();
+    expect(screen.getByText(events[0]!.id)).toBeTruthy();
+    expect(screen.getByText(events[0]!.rawEventId)).toBeTruthy();
     expect(
       screen.getByRole('listbox', { name: /Use arrow keys/ }),
     ).toBeTruthy();

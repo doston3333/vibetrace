@@ -629,6 +629,28 @@ describe('daemon API', () => {
     });
     expect(deepLink.statusCode).toBe(200);
     expect(deepLink.headers['content-type']).toContain('text/html');
+    expect(deepLink.headers['content-security-policy']).toContain(
+      "script-src 'self'",
+    );
+    expect(deepLink.headers['x-frame-options']).toBe('DENY');
+    expect(deepLink.headers['x-content-type-options']).toBe('nosniff');
+    expect(deepLink.headers['referrer-policy']).toBe('no-referrer');
+    const handoffPage = await daemon.app.inject({ method: 'GET', url: '/' });
+    expect(handoffPage.body).toContain('src="/browser-handoff.js"');
+    expect(handoffPage.body).not.toContain('<script>');
+    const handoffScript = await daemon.app.inject({
+      method: 'GET',
+      url: '/browser-handoff.js',
+    });
+    expect(handoffScript.statusCode).toBe(200);
+    expect(handoffScript.headers['cache-control']).toBe('no-store');
+    expect(handoffScript.headers['content-type']).toContain(
+      'application/javascript',
+    );
+    expect(
+      (await daemon.app.inject({ method: 'GET', url: '/favicon.ico' }))
+        .statusCode,
+    ).toBe(204);
     expect(
       (
         await daemon.app.inject({

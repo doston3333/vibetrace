@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/test-fixtures",
   "version": "0.1.0",
+  "private": true,
   "description": "Deterministic synthetic traces for VibeTrace tests and demos.",
   "type": "module",
   "exports": {

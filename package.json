@@ -21,15 +21,17 @@
     "test:release-candidate-check": "node scripts/check-release-candidate.test.mjs",
     "test:integration": "node scripts/run-gate.mjs integration",
     "test:e2e": "node scripts/run-gate.mjs e2e",
+    "test:browser": "pnpm --filter @vibetrace/cli build && playwright test --config playwright.config.ts",
     "test:security": "node scripts/run-gate.mjs security",
     "test:performance": "node scripts/run-gate.mjs performance",
     "pack:smoke": "node scripts/pack-smoke.mjs",
     "native:smoke": "node scripts/native-smoke.mjs"
   },
   "devDependencies": {
-    "@vibetrace/cli": "workspace:*",
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.1",
     "@types/node": "24.13.3",
+    "@vibetrace/cli": "workspace:*",
     "eslint": "10.8.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-react-refresh": "0.5.3",

@@ -63,8 +63,14 @@ describe('Codex app-server adapter', () => {
       schemaVersion: '0.145.0',
       validated: true,
     });
+    expect(resolveAppServerSchema('0.146.1')).toMatchObject({
+      schemaVersion: '0.146.1',
+      validated: true,
+      artifactPath: 'schemas/0.146.1.json',
+    });
     expect(resolveAppServerSchema('0.145.0-beta.1')).toBeUndefined();
     expect(resolveAppServerSchema('0.145.0+build.1')).toBeUndefined();
+    expect(resolveAppServerSchema('0.146.2')).toBeUndefined();
     expect(resolveAppServerSchema('0.147.0')).toBeUndefined();
     expect(() => assertSupportedAppServerVersion('0.144.2')).toThrow(
       'no validated contract',
