@@ -50,6 +50,9 @@ describe('restrictDirectoriesToCurrentUser', () => {
     expect(script).toContain(
       '[System.Security.AccessControl.DirectorySecurity]::new()',
     );
+    expect(script).toContain(
+      '[System.Security.Principal.WindowsIdentity]::GetCurrent().User',
+    );
     expect(script).toContain('$acl.SetAccessRuleProtection($true, $false)');
     expect(script).toContain('[void]$acl.AddAccessRule($rule)');
     expect(script).toContain(

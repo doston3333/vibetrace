@@ -7,7 +7,7 @@ const ACL_TARGETS_VARIABLE = 'VIBETRACE_ACL_TARGETS';
 
 const WINDOWS_OWNER_ONLY_ACL = [
   `$paths = ConvertFrom-Json -InputObject $env:${ACL_TARGETS_VARIABLE};`,
-  '$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name;',
+  '$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User;',
   "$inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit';",
   'foreach ($path in @($paths)) {',
   "if ([string]::IsNullOrWhiteSpace($path)) { throw 'ACL target is missing.' };",

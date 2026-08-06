@@ -125,9 +125,9 @@ async function assertOwnerOnlyWindowsAcl(path) {
   const targetVariable = 'VIBETRACE_SMOKE_ACL_TARGET';
   const script = [
     `$acl = Get-Acl -LiteralPath $env:${targetVariable};`,
-    '$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name;',
-    '$identities = @($acl.Access | ForEach-Object { $_.IdentityReference.Value });',
-    '[PSCustomObject]@{ protected = $acl.AreAccessRulesProtected; current = $current; identities = $identities } | ConvertTo-Json -Compress;',
+    '$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;',
+    '$identities = @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value });',
+    '[PSCustomObject]@{ protected = $acl.AreAccessRulesProtected; currentSid = $current; identitySids = $identities } | ConvertTo-Json -Compress;',
   ].join(' ');
   const result = await run(
     'powershell.exe',
@@ -145,15 +145,15 @@ async function assertOwnerOnlyWindowsAcl(path) {
     },
   );
   const acl = JSON.parse(result.stdout);
-  const identities = Array.isArray(acl.identities)
-    ? acl.identities
-    : [acl.identities];
+  const identities = Array.isArray(acl.identitySids)
+    ? acl.identitySids
+    : [acl.identitySids];
   if (
     acl.protected !== true ||
     identities.length === 0 ||
     identities.some(
       (identity) =>
-        String(identity).toLowerCase() !== String(acl.current).toLowerCase(),
+        String(identity).toLowerCase() !== String(acl.currentSid).toLowerCase(),
     )
   )
     throw new Error(`Directory does not have an owner-only ACL: ${path}`);
