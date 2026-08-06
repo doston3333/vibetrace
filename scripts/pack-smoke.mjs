@@ -124,7 +124,7 @@ async function assertOwnerOnlyWindowsAcl(path) {
   if (process.platform !== 'win32') return;
   const targetVariable = 'VIBETRACE_SMOKE_ACL_TARGET';
   const script = [
-    `$acl = Get-Acl -LiteralPath $env:${targetVariable};`,
+    `$acl = [System.IO.Directory]::GetAccessControl($env:${targetVariable});`,
     '$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;',
     '$identities = @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value });',
     '[PSCustomObject]@{ protected = $acl.AreAccessRulesProtected; currentSid = $current; identitySids = $identities } | ConvertTo-Json -Compress;',
