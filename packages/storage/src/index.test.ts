@@ -1029,13 +1029,15 @@ describe('encrypted Storage', () => {
 
   it('imports and queries 10,000 synthetic events', async () => {
     const { storage, sessionId } = await setup();
-    for (let sequence = 1; sequence <= 10_000; sequence += 1) {
-      const rawId = storage.appendRaw(sessionId, raw(sequence));
-      storage.appendNormalized(
-        event(sessionId, rawId, sequence),
-        'normalizer-v1',
-      );
-    }
+    storage.transaction(() => {
+      for (let sequence = 1; sequence <= 10_000; sequence += 1) {
+        const rawId = storage.appendRaw(sessionId, raw(sequence));
+        storage.appendNormalized(
+          event(sessionId, rawId, sequence),
+          'normalizer-v1',
+        );
+      }
+    });
     expect(storage.listEvents({ sessionId, limit: 10_000 })).toHaveLength(
       10_000,
     );
