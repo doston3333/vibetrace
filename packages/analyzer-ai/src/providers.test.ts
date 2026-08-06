@@ -272,8 +272,13 @@ describe('Codex provider', () => {
     };
     const inspection = capture.inspection();
     expect(inspection?.entries).toEqual(['hypothesis-output-schema.json']);
-    expect(inspection?.directoryMode).toBe(0o700);
-    expect(inspection?.schemaMode).toBe(0o600);
+    // Windows reports synthetic POSIX mode bits through stat(). The process,
+    // schema, and environment isolation assertions below remain portable; exact
+    // owner-only mode bits are meaningful only on POSIX filesystems.
+    if (process.platform !== 'win32') {
+      expect(inspection?.directoryMode).toBe(0o700);
+      expect(inspection?.schemaMode).toBe(0o600);
+    }
     expect(inspection?.schema).toMatchObject({
       required: ['hypotheses'],
       additionalProperties: false,
