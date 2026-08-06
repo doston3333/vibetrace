@@ -42,6 +42,7 @@ const gates = {
     'packages/test-fixtures/src/index.test.ts',
     'packages/storage/src/index.test.ts',
     'packages/enrichment/src/index.test.ts',
+    'packages/adapter-codex/src/index.test.ts',
     'packages/diagnostics/src/index.test.ts',
     'packages/diagnostics/src/scorecard.test.ts',
     'packages/eval-runner/src/index.test.ts',
@@ -62,7 +63,11 @@ const child = spawn(
     '--config',
     join(repositoryDirectory, 'vitest.config.ts'),
   ],
-  { cwd: repositoryDirectory, stdio: 'inherit' },
+  {
+    cwd: repositoryDirectory,
+    stdio: 'inherit',
+    env: { ...process.env, VIBETRACE_TEST_GATE: gate },
+  },
 );
 child.once('error', (error) => {
   throw error;

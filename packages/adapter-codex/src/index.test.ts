@@ -1069,7 +1069,10 @@ describe('silent spool collector', () => {
     expect(segment.raw.sourceVersion).toBe('0.144.3');
   });
 
-  it('keeps p95 atomic collection below 100ms on the local fixture path', async () => {
+  const performanceTest =
+    process.env.VIBETRACE_TEST_GATE === 'performance' ? it : it.skip;
+
+  performanceTest('keeps p95 atomic collection below 100ms', async () => {
     const stateDir = await directory();
     const durations: number[] = [];
     for (let index = 0; index < 25; index += 1) {

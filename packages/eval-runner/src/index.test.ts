@@ -420,9 +420,12 @@ describe('isolated evaluation runner', () => {
       activeCheckout: path,
       patchResolver: async () => patch,
       execute: async ({ cwd }) => {
-        expect(await readFile(join(cwd, 'README.md'), 'utf8')).toBe(
-          'pre-task\n',
-        );
+        expect(
+          (await readFile(join(cwd, 'README.md'), 'utf8')).replaceAll(
+            '\r\n',
+            '\n',
+          ),
+        ).toBe('pre-task\n');
         return undefined;
       },
       humanRatings: { 0: 100 },
