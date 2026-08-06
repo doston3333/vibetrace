@@ -156,7 +156,17 @@ async function assertOwnerOnlyWindowsAcl(path) {
         String(identity).toLowerCase() !== String(acl.currentSid).toLowerCase(),
     )
   )
-    throw new Error(`Directory does not have an owner-only ACL: ${path}`);
+    throw new Error(
+      `Directory does not have an owner-only ACL: ${path} (${JSON.stringify({
+        protected: acl.protected,
+        identityCount: identities.length,
+        currentIdentityMatches: identities.map(
+          (identity) =>
+            String(identity).toLowerCase() ===
+            String(acl.currentSid).toLowerCase(),
+        ),
+      })})`,
+    );
 }
 
 try {
