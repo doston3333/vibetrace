@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restricted native release smoke to an existing ChatGPT Codex login, pinned
+  its default to `gpt-5.6-terra`, and removed the API-credential path from
+  hosted release automation.
 - Fixed Windows owner-only ACL setup without relying on PowerShell security
   cmdlet autoloading and optimized the 20,000-event dashboard path.
 - Added a real Chromium handoff/evidence smoke gate, strict daemon response

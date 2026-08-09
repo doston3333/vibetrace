@@ -57,42 +57,40 @@ budgets for 20,000-event timeline construction, deterministic analysis,
 branches. The 100 MB streaming-blob case has a bounded test timeout and avoids
 constructing a 100 MB input buffer.
 
-To produce native Codex evidence, authenticate the Codex CLI without putting a
-key in arguments, then run the isolated smoke harness. It packs and installs
-the exact local CLI tarball, creates a disposable Git checkout and Codex home,
-executes one read-only lifecycle-hook session and one read-only app-server
-session, verifies captured event provenance through the authenticated daemon
-API, and prints only metadata (never prompts or model output):
+Before tagging, produce native Codex evidence from a maintainer workstation
+that is already signed in to Codex with ChatGPT. The isolated smoke harness
+copies only the bounded local `auth.json` into its temporary Codex home, strips
+credential variables from the child environment, packs and installs the exact
+local CLI tarball, and runs read-only lifecycle-hook and app-server sessions.
+It verifies captured event provenance through the authenticated daemon API and
+prints only metadata (never prompts, model output, or credentials):
 
 ```bash
-printf '%s\n' "$OPENAI_API_KEY" | CODEX_HOME="$TMPDIR/vibetrace-codex-home" codex login --with-api-key
-VIBETRACE_CODEX_AUTH_HOME="$TMPDIR/vibetrace-codex-home" \
+codex login status
+env -u OPENAI_API_KEY -u CODEX_ACCESS_TOKEN \
+  VIBETRACE_CODEX_AUTH_HOME="${CODEX_AUTH_HOME:-$HOME/.codex}" \
+  VIBETRACE_CODEX_MODEL=gpt-5.6-terra \
   VIBETRACE_NATIVE_SMOKE_OUTPUT="$TMPDIR/vibetrace-native-smoke.json" \
-  pnpm native:smoke
+  npm exec --yes --package=@openai/codex@0.146.1 -- \
+  sh -c 'codex --version && codex login status && pnpm native:smoke'
 ```
 
-The reusable `Native Codex smoke` workflow runs this harness on Ubuntu, both
-supported macOS runner architectures, and Windows, and uploads one
-metadata-only evidence artifact per runner. It also verifies that a wrong
-storage passphrase is rejected and that the correct passphrase can unlock the
-same local envelope afterward. It requires the repository's
-`CODEX_OPENAI_API_KEY` secret and is intentionally separate from ordinary
-pull-request CI because it invokes a real model. The `Release gate` workflow
-calls both the full cross-platform CI matrix and this native-smoke workflow for
-version tags or an explicit manual run. The native harness exercises both the
-Codex lifecycle-hook path and the opt-in `codex app-server` path, aggregating
-bounded evidence when a server emits a provisional capture gap before its
-thread identifier is known.
-
-The release workflow is complete only after the CI matrix passes and a native
-Codex smoke session has been recorded on macOS, Linux, and Windows. A local
-pass on one operating system is not evidence for the other two.
+The auth file is never committed, uploaded as a GitHub secret, or included in
+the metadata report. The harness also verifies wrong-passphrase rejection and
+recovery with the correct local envelope. The default smoke model is
+`gpt-5.6-terra`, a current Codex CLI model for ChatGPT sign-in, so a different
+workstation default cannot silently alter the release evidence. Hosted GitHub
+runners deliberately do not invoke a live model because a local ChatGPT Codex
+session cannot be safely transferred to them. Cross-platform behavior remains
+covered by the deterministic Ubuntu, macOS x64/arm64, and Windows CI matrix;
+the maintainer-local smoke is the live Codex acceptance record for the exact
+candidate commit.
 
 ## npm trusted publishing
 
-Version-tag pushes run `.github/workflows/release-gate.yml`. After cross-platform
-verification and the native smoke workflow pass, its release-candidate step
-requires the exact `v<packages/cli version>` tag, validates the public CLI
+Version-tag pushes run `.github/workflows/release-gate.yml`. After
+cross-platform verification passes, its release-candidate step requires the
+exact `v<packages/cli version>` tag, validates the public CLI
 metadata, rejects tracked checkout changes, and confirms that the npm version is
 not already published. The publishing job packs one tarball and publishes that
 same tarball with `npm publish --access public`; it then checks the exact
@@ -103,7 +101,7 @@ these exact trusted-publisher values:
 
 | Setting           | Value                  |
 | ----------------- | ---------------------- |
-| npm user          | `doston3333`           |
+| GitHub owner      | `doston3333`           |
 | GitHub repository | `doston3333/vibetrace` |
 | workflow          | `release-gate.yml`     |
 | environment       | `npm-production`       |
@@ -119,9 +117,9 @@ this automated path can publish later versions.
 
 ### First-publication bootstrap
 
-Do this only after the release PR's cross-platform CI and native Codex evidence
-are green. The bootstrap exists solely to create the npm package so trusted
-publishing can be configured; it is not the stable release.
+Do this only after the release PR's cross-platform CI and maintainer-local
+Codex-auth evidence are green. The bootstrap exists solely to create the npm
+package so trusted publishing can be configured; it is not the stable release.
 
 1. Create a clean temporary checkout at the verified commit. In that checkout,
    set only `packages/cli/package.json` to `0.1.0-bootstrap.0` and build the CLI.
@@ -136,4 +134,4 @@ publishing can be configured; it is not the stable release.
    place; the release workflow then publishes the stable package with OIDC.
 
 Never commit the bootstrap version to `main`, reuse the bootstrap tag as
-`latest`, or bypass the native/cross-platform release gate.
+`latest`, or bypass the Codex-auth/cross-platform release evidence.

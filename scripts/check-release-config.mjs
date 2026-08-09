@@ -73,8 +73,15 @@ function requirePinnedExternalActions(source, file) {
 }
 
 const ci = await workflow('ci.yml');
-const native = await workflow('native-smoke.yml');
 const release = await workflow('release-gate.yml');
+const nativeSmokeScript = await readFile(
+  join(repositoryDirectory, 'scripts', 'native-smoke.mjs'),
+  'utf8',
+);
+const releaseDocumentation = await readFile(
+  join(repositoryDirectory, 'docs', 'release.md'),
+  'utf8',
+);
 const gitleaksIgnore = await readFile(
   join(repositoryDirectory, '.gitleaksignore'),
   'utf8',
@@ -109,14 +116,6 @@ for (const [os, node] of [
   ['windows-latest', '24'],
 ])
   requireMatrixPair(ci, os, node, 'ci.yml');
-for (const [os, node] of [
-  ['ubuntu-latest', '24'],
-  ['macos-15-intel', '24'],
-  ['macos-15', '24'],
-  ['windows-latest', '24'],
-])
-  requireMatrixPair(native, os, node, 'native-smoke.yml');
-
 for (const [file, source, requiredPins] of [
   [
     'ci.yml',
@@ -124,16 +123,6 @@ for (const [file, source, requiredPins] of [
     [
       actionPins.checkout,
       actionPins.gitleaks,
-      actionPins.pnpm,
-      actionPins.setupNode,
-      actionPins.uploadArtifact,
-    ],
-  ],
-  [
-    'native-smoke.yml',
-    native,
-    [
-      actionPins.checkout,
       actionPins.pnpm,
       actionPins.setupNode,
       actionPins.uploadArtifact,
@@ -175,22 +164,35 @@ if (gitleaksIgnore.trim() !== approvedGitleaksIgnore)
   throw new Error(
     'Release configuration requires exactly one narrow gitleaks ignore.',
   );
-requireText(
-  native,
-  'npm install --global @openai/codex@0.146.1',
-  'native-smoke.yml',
-);
-requireText(native, 'VIBETRACE_NATIVE_SMOKE_OUTPUT:', 'native-smoke.yml');
-requireText(native, 'if-no-files-found: error', 'native-smoke.yml');
 requireText(release, 'uses: ./.github/workflows/ci.yml', 'release-gate.yml');
 requireText(
-  release,
-  'uses: ./.github/workflows/native-smoke.yml',
-  'release-gate.yml',
+  nativeSmokeScript,
+  'VIBETRACE_CODEX_AUTH_HOME',
+  'scripts/native-smoke.mjs',
 );
+requireText(nativeSmokeScript, "'gpt-5.6-terra'", 'scripts/native-smoke.mjs');
+requireText(
+  nativeSmokeScript,
+  'delete env.OPENAI_API_KEY',
+  'scripts/native-smoke.mjs',
+);
+requireText(
+  nativeSmokeScript,
+  'delete env.CODEX_ACCESS_TOKEN',
+  'scripts/native-smoke.mjs',
+);
+requireAbsent(nativeSmokeScript, '--with-api-key', 'scripts/native-smoke.mjs');
+requireAbsent(
+  nativeSmokeScript,
+  '--with-access-token',
+  'scripts/native-smoke.mjs',
+);
+requireAbsent(release, 'native-smoke', 'release-gate.yml');
+requireAbsent(release, 'CODEX_OPENAI_API_KEY', 'release-gate.yml');
+requireAbsent(releaseDocumentation, 'CODEX_OPENAI_API_KEY', 'docs/release.md');
 
 const candidate = jobBlock(release, 'release-candidate');
-requireText(candidate, 'needs: [verify, native-smoke]', 'release-gate.yml');
+requireText(candidate, 'needs: verify', 'release-gate.yml');
 requireText(candidate, "github.ref_type == 'tag'", 'release-gate.yml');
 requireText(candidate, 'timeout-minutes: 5', 'release-gate.yml');
 requireText(
@@ -201,7 +203,7 @@ requireText(
 
 const publish = jobBlock(release, 'publish');
 for (const requirement of [
-  'needs: [verify, native-smoke, release-candidate]',
+  'needs: [verify, release-candidate]',
   "needs.release-candidate.outputs.exact_tag == 'true'",
   'runs-on: ubuntu-latest',
   'timeout-minutes: 15',
@@ -232,6 +234,7 @@ process.stdout.write(
       historyAwareGitleaks: true,
       trustedPublishing: true,
       releaseCandidateGate: true,
+      codexAuthOnlyNativeSmoke: true,
       packagePrivacy: true,
     },
     null,
