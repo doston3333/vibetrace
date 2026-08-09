@@ -28,6 +28,7 @@ const checkout = join(temporary, 'checkout');
 const reportPath = process.env.VIBETRACE_NATIVE_SMOKE_OUTPUT
   ? resolve(process.env.VIBETRACE_NATIVE_SMOKE_OUTPUT)
   : undefined;
+const codexModel = process.env.VIBETRACE_CODEX_MODEL?.trim() || 'gpt-5.6-terra';
 const storagePassphrase = `native-smoke-${randomBytes(24).toString('hex')}`;
 const keepTemporary = process.env.VIBETRACE_KEEP_NATIVE_SMOKE === '1';
 
@@ -220,7 +221,7 @@ async function stop(env) {
   }
 }
 
-async function copyCodexAuth(env) {
+async function copyCodexAuth() {
   const authHome = process.env.VIBETRACE_CODEX_AUTH_HOME;
   if (authHome) {
     const source = join(resolve(authHome), 'auth.json');
@@ -238,26 +239,8 @@ async function copyCodexAuth(env) {
       await chmod(join(codexHome, 'auth.json'), 0o600);
     return 'copied-auth-file';
   }
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (apiKey) {
-    await run(codexBinary, ['login', '--with-api-key'], {
-      env,
-      input: `${apiKey}\n`,
-      label: 'codex login',
-    });
-    return 'api-key-stdin';
-  }
-  const accessToken = process.env.CODEX_ACCESS_TOKEN;
-  if (accessToken) {
-    await run(codexBinary, ['login', '--with-access-token'], {
-      env,
-      input: `${accessToken}\n`,
-      label: 'codex login',
-    });
-    return 'access-token-stdin';
-  }
   throw new Error(
-    'Native smoke needs VIBETRACE_CODEX_AUTH_HOME, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN.',
+    'Native smoke needs VIBETRACE_CODEX_AUTH_HOME pointing to an existing Codex login.',
   );
 }
 
@@ -312,7 +295,11 @@ try {
     VIBETRACE_HOME: sourceHome,
     PATH: [pathEntry, process.env.PATH ?? ''].filter(Boolean).join(delimiter),
   };
-  const authMode = await copyCodexAuth(env);
+  // The release acceptance path must use the maintainer's explicit Codex
+  // login, even if credential variables happen to exist in the shell.
+  delete env.OPENAI_API_KEY;
+  delete env.CODEX_ACCESS_TOKEN;
+  const authMode = await copyCodexAuth();
   const codexVersionOutput = (
     await run(codexBinary, ['--version'], { env, label: 'codex --version' })
   ).stdout
@@ -349,8 +336,7 @@ try {
     '-C',
     checkout,
   ];
-  const model = process.env.VIBETRACE_CODEX_MODEL;
-  if (model) codexArgs.push('--model', model);
+  codexArgs.push('--model', codexModel);
   codexArgs.push(prompt);
   const codexRun = await run(codexBinary, codexArgs, {
     env,
@@ -425,6 +411,8 @@ try {
       checkout,
       '--approval-policy',
       'decline',
+      '--model',
+      codexModel,
     ],
     {
       env,
@@ -550,6 +538,7 @@ try {
     architecture: process.arch,
     nodeVersion: process.version,
     codexVersion,
+    codexModel,
     authMode,
     sessionId: session.id,
     eventCount: events.length,

@@ -5,11 +5,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      codex_model:
-        description: Optional Codex model override for native smoke
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -19,18 +14,9 @@ jobs:
     name: Cross-platform verification
     uses: ./.github/workflows/ci.yml
 
-  native-smoke:
-    name: Native Codex evidence
-    needs: verify
-    uses: ./.github/workflows/native-smoke.yml
-    with:
-      codex_model: ${{ inputs.codex_model }}
-    secrets:
-      CODEX_OPENAI_API_KEY: ${{ secrets.CODEX_OPENAI_API_KEY }}
-
   release-candidate:
     name: Release candidate
-    needs: [verify, native-smoke]
+    needs: verify
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -53,7 +39,7 @@ jobs:
 
   publish:
     name: Publish npm package
-    needs: [verify, native-smoke, release-candidate]
+    needs: [verify, release-candidate]
     if: github.event_name == 'push' && needs.release-candidate.outputs.exact_tag == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15

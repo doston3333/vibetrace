@@ -2,9 +2,10 @@
 
 This is the release evidence index for the documented VibeTrace target. A
 capability is marked complete only when the implementation and its required
-verification are both present. Native smoke evidence is intentionally kept as
-an external release artifact; a local Linux pass cannot stand in for macOS or
-Windows.
+verification are both present. Live Codex smoke evidence is intentionally kept
+as a local, metadata-only release artifact so the maintainer's ChatGPT Codex
+session is never uploaded to GitHub. Supported-platform behavior is verified
+separately by deterministic hosted CI.
 
 | Area                                  | Implementation evidence                                                                                                                                                                                                                                                                             | Verification                                                                          |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
@@ -21,14 +22,15 @@ Windows.
 | Optional AI synthesis                 | `packages/analyzer-ai`, fixed taxonomy, direct HTTPS API and isolated Codex providers, ephemeral credentials, digest-bound provenance, evidence verifier, and separate AI finding presentation                                                                                                      | analyzer, daemon, dashboard, storage, bundle, and security tests                      |
 | Evaluation and comparison             | versioned manifests, deterministic session extraction, reviewed encrypted manifest editor/update path, fail-closed Codex execution policies/effective argv, detached worktrees, captured eval sessions, bounded matrix variants/repetitions, summaries, first divergence, and side-by-side evidence | eval-runner, comparison, CLI, dashboard, and packed eval smoke                        |
 | Redaction and portable bundles        | previewed derived views, secret detectors, encrypted age stream, bounded safe import                                                                                                                                                                                                                | bundle security and pack smoke gates                                                  |
-| Release artifact                      | bundled dashboard/daemon npm CLI, explicit macOS x64/arm64 and three-OS CI matrix, SHA-pinned actions, history-aware secret scan, exact-tag candidate gate, and OIDC npm trusted publishing                                                                                                         | `pnpm pack:smoke`, native smoke artifacts, candidate check, and registry verification |
+| Release artifact                      | bundled dashboard/daemon npm CLI, explicit macOS x64/arm64 and three-OS CI matrix, SHA-pinned actions, history-aware secret scan, exact-tag candidate gate, and OIDC npm trusted publishing                                                                                                         | `pnpm pack:smoke`, local Codex-auth smoke, candidate check, and registry verification |
 
 ## Release checklist
 
 - [ ] CI passes on Ubuntu Node 22.12 and 24, macOS Node 24, and Windows Node 24.
-- [ ] One native Codex smoke session is attached for each supported OS.
-- [ ] Keychain-unavailable passphrase unlock and wrong-passphrase recovery are
-      exercised on each release platform.
+- [ ] One maintainer-local native Codex smoke session uses an existing ChatGPT
+      Codex login at the exact candidate commit.
+- [ ] The local native smoke verifies keychain-unavailable passphrase unlock
+      and wrong-passphrase recovery.
 - [ ] The exact npm tarball passes initialization, capture, dashboard, export,
       import, evaluation, and ownership-safe uninstall from clean temporary homes.
 - [ ] Security review signs off on archive traversal, symlink, hard-link,
@@ -38,8 +40,8 @@ Windows.
       the `npm publish` action; the package has already completed npm's required
       first-publication bootstrap if applicable.
 
-The unchecked items are environment-dependent release evidence, not claims that
-can be inferred from a single developer workstation.
+The unchecked items are environment-dependent release evidence. The local live
+model smoke and hosted platform matrix prove different parts of the release.
 
 ## Local verification record
 
@@ -95,26 +97,20 @@ events, each carrying the expected adapter and source version. The app-server
 report included lifecycle events, the requested agent-message sentinel, rich
 command/message mappings, and explicit capture gaps; the run also verified
 wrong-passphrase rejection and recovery with the correct local envelope. This
-is supplementary evidence because the release runtime matrix still requires
-independent Linux and Windows runners.
+is live-model evidence paired with, but not a replacement for, independent
+Linux and Windows deterministic CI runners.
 
 The packed-install smoke test exercises the bundled CLI, isolated temporary
 homes, daemon authentication and lifecycle, dashboard serving, encrypted
 export/import, a real clean-worktree eval run with effective policy assertions,
-and ownership-safe Codex hook uninstall. The remaining checklist items require
-fresh artifacts from the configured Ubuntu, macOS, and Windows CI runners and
-native Codex installations before publishing a release. The reusable
-`.github/workflows/native-smoke.yml` workflow runs
-`scripts/native-smoke.mjs` on both supported macOS runner architectures as well
-as Linux and Windows, emits metadata-only provenance evidence, and uploads one
-artifact per native runner. `.github/workflows/release-gate.yml` invokes that
-workflow together with the full CI matrix for version tags or manual release
-verification.
+and ownership-safe Codex hook uninstall. `.github/workflows/release-gate.yml`
+runs the full deterministic platform matrix for version tags; live Codex
+acceptance stays on the authenticated maintainer workstation.
 
 On 2026-08-06, a supplemental macOS arm64 native smoke passed against the
 published Codex CLI `0.146.1` on Node `v26.4.0`: 12 lifecycle-hook events and
 35 app-server events were captured with matching source-version provenance,
 including 34 events on the resolved app-server thread plus one explicit
 provisional capture gap. Wrong-passphrase rejection and recovery also passed.
-This current-contract evidence supplements, but does not replace, the required
-hosted Node 24 evidence from Ubuntu, both macOS architectures, and Windows.
+This current-contract evidence supplements, but does not replace, hosted Node
+24 evidence from Ubuntu, both macOS architectures, and Windows.
