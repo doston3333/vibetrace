@@ -15,6 +15,7 @@ import { userEvent } from '@testing-library/user-event';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { ForensicWorkbench } from './App.js';
+import { Inspector } from './Inspector.js';
 import { FindingsPanel } from './Panels.js';
 import type {
   CoverageDatum,
@@ -25,7 +26,8 @@ import type {
 } from './api.js';
 import {
   buildTimelineModel,
-  matchesEvent,
+  createEventMatcher,
+  eventDetail,
   safeDisplayText,
 } from './forensics.js';
 
@@ -194,8 +196,8 @@ describe('forensic dashboard', () => {
   it('builds and filters the 20,000-event timeline within a bounded interaction budget', () => {
     const started = performance.now();
     const model = buildTimelineModel(events);
-    const matches = model.filter((item) =>
-      matchesEvent(item, {
+    const matches = model.filter(
+      createEventMatcher({
         search: 'pnpm test',
         lane: 'all',
         status: 'all',
@@ -208,6 +210,23 @@ describe('forensic dashboard', () => {
     expect(safeDisplayText('\u001b[31m-removed\n+added\u001b[0m')).toBe(
       '-removed\n+added',
     );
+    expect(eventDetail(events[0]!.event)).not.toMatch(/^\s*\{/u);
+    const duplicate = {
+      ...events[0]!,
+      id: 'duplicate-agent-message',
+      type: 'message.agent',
+      event: {
+        ...events[0]!.event,
+        id: 'duplicate-agent-message',
+        type: 'message.agent',
+        source: 'agent',
+        payload: {
+          content: 'Repeated final answer.',
+          duplicateOfEventId: events[0]!.id,
+        },
+      },
+    } as StoredEvent;
+    expect(buildTimelineModel([...events, duplicate])).toHaveLength(20_000);
   });
 
   it('renders a virtualized five-lane workbench and keeps untrusted markup inert', async () => {
@@ -216,6 +235,8 @@ describe('forensic dashboard', () => {
       screen.getByRole('heading', { name: 'Evidence timeline' }),
     ).toBeTruthy();
     expect(screen.getByText('20,000 observable events')).toBeTruthy();
+    expect(screen.getByText(events[0]!.id)).toBeTruthy();
+    expect(screen.getByText(events[0]!.rawEventId)).toBeTruthy();
     expect(
       screen.getByRole('listbox', { name: /Use arrow keys/ }),
     ).toBeTruthy();
@@ -239,6 +260,47 @@ describe('forensic dashboard', () => {
     );
     expect(screen.getByText(/synthetic-trace-content/)).toBeTruthy();
     expect(container.querySelector('script')).toBeNull();
+    expect(
+      container.querySelectorAll('[role="option"][tabindex="-1"]'),
+    ).toHaveLength(container.querySelectorAll('.event-chip').length);
+    expect(
+      screen.getAllByText(/Fact|Success|Failure|Capture gap/).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('offers labelled adaptive case navigation without a horizontal tab strip', () => {
+    renderWorkbench();
+    expect(
+      screen.getByRole('complementary', { name: 'Case navigation' }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText('View case evidence')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Timeline' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Findings 1' })).toBeTruthy();
+  });
+
+  it('bounds raw evidence previews before rendering source data', async () => {
+    const largeEvent = {
+      ...events[0]!,
+      event: {
+        ...events[0]!.event,
+        rawPayload: { output: 'x'.repeat(100_000) },
+      },
+    } as StoredEvent;
+    render(
+      <Inspector
+        sessionId={session.id}
+        selected={largeEvent}
+        events={[largeEvent]}
+        artifacts={[]}
+        findings={[]}
+        onSelect={() => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'raw' }));
+    expect(
+      screen.getByLabelText('Safe raw event preview').textContent?.length,
+    ).toBeLessThan(50_100);
+    expect(screen.getByText(/safe display limit/)).toBeTruthy();
   });
 
   it('supports keyboard evidence navigation, findings jumps, coverage, and annotations', async () => {
@@ -258,7 +320,8 @@ describe('forensic dashboard', () => {
     expect(review).toHaveBeenCalledWith('finding-1', {
       decision: 'confirmed',
     });
-    await user.click(screen.getByRole('button', { name: 'View evidence' }));
+    expect(screen.queryByRole('button', { name: 'Reopen review' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: /Supports/ }));
     expect(
       screen.getByRole('heading', { name: 'Evidence timeline' }),
     ).toBeTruthy();
@@ -300,6 +363,7 @@ describe('forensic dashboard', () => {
   it('labels AI hypotheses separately from deterministic findings', () => {
     render(
       <FindingsPanel
+        events={events}
         findings={[
           {
             ...findings[0]!,
@@ -312,7 +376,35 @@ describe('forensic dashboard', () => {
         onReview={async () => undefined}
       />,
     );
-    expect(screen.getByText(/AI hypothesis · review required/)).toBeTruthy();
-    expect(document.querySelector('[data-kind="ai-hypothesis"]')).toBeTruthy();
+    expect(
+      screen.getByText(/AI problem hypothesis · review required/),
+    ).toBeTruthy();
+    expect(document.querySelector('[data-kind="ai-problem"]')).toBeTruthy();
+  });
+
+  it('presents capture limitations separately and only reopens closed reviews', () => {
+    render(
+      <FindingsPanel
+        events={events}
+        findings={[
+          {
+            ...findings[0]!,
+            id: 'finding-capture',
+            ruleId: 'ai-analyzer',
+            findingKind: 'capture_limitation',
+            title: 'Shell exit status was not exposed',
+            impact: 'Command success cannot be established.',
+            state: 'rejected',
+          },
+        ]}
+        onSelect={() => undefined}
+        onReview={async () => undefined}
+      />,
+    );
+    expect(
+      document.querySelector('[data-kind="capture-limitation"]'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reopen review' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'confirmed' })).toBeNull();
   });
 });

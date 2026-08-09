@@ -1,7 +1,7 @@
 # Release gate
 
-VibeTrace publishes the production local-first CLI as the `@vibetrace/cli`
-npm package. The package contains the command-line entry point, loopback
+VibeTrace's release workflow publishes the local-first CLI as the
+`@vibetrace/cli` npm package. The package contains the command-line entry point, loopback
 daemon, compiled dashboard assets, source adapters, isolated eval runner, and
 comparison tooling. The SQLCipher-compatible database and OS keyring bindings
 remain platform-native npm dependencies.
@@ -32,6 +32,7 @@ pnpm test
 pnpm build
 pnpm test:integration
 pnpm test:e2e
+pnpm test:browser
 pnpm test:security
 pnpm test:performance
 pnpm pack:smoke
@@ -43,6 +44,12 @@ daemon authentication and lifecycle, dashboard serving, encrypted export and
 import, a clean-worktree eval run with a mock Codex executable and effective
 policy assertions, and ownership-safe hook uninstall. It uses isolated
 VibeTrace and Codex homes and removes them afterward.
+
+`pnpm test:browser` builds the bundled CLI/dashboard, starts a real isolated
+loopback daemon, redeems a single-use browser handoff in Chromium, navigates
+from the session archive into evidence, verifies canonical/raw IDs and
+filtering, and fails on browser console or page errors. CI retains its trace,
+screenshot, and video on failure.
 
 `pnpm test:performance` combines scale fixtures with explicit elapsed-time
 budgets for 20,000-event timeline construction, deterministic analysis,
@@ -109,3 +116,24 @@ the workflow can publish. In particular, npm cannot configure a trusted
 publisher for a package that has not yet been published, so the first public
 publication must be completed through npm’s approved bootstrap process before
 this automated path can publish later versions.
+
+### First-publication bootstrap
+
+Do this only after the release PR's cross-platform CI and native Codex evidence
+are green. The bootstrap exists solely to create the npm package so trusted
+publishing can be configured; it is not the stable release.
+
+1. Create a clean temporary checkout at the verified commit. In that checkout,
+   set only `packages/cli/package.json` to `0.1.0-bootstrap.0` and build the CLI.
+2. Run `npm pack --dry-run` and inspect the file list, then create the tarball
+   with `pnpm --filter @vibetrace/cli pack --pack-destination <private-temp-dir>`.
+3. From a maintainer workstation authenticated with npm 2FA, publish that exact
+   tarball with `npm publish <tarball> --access public --tag bootstrap`.
+4. Confirm `npm view @vibetrace/cli@0.1.0-bootstrap.0 version`, then configure
+   the trusted publisher values above and remove any temporary automation token.
+5. Leave the repository's stable version at `0.1.0`. Push `v0.1.0` only after
+   the trusted publisher and `npm-production` environment protections are in
+   place; the release workflow then publishes the stable package with OIDC.
+
+Never commit the bootstrap version to `main`, reuse the bootstrap tag as
+`latest`, or bypass the native/cross-platform release gate.

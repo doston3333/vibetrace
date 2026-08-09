@@ -11,6 +11,33 @@ import type {
 } from './api.js';
 import { eventDetail, eventTitle, formatDuration } from './forensics.js';
 
+function aiFindingLabel(finding: Finding): string {
+  if (finding.ruleId !== 'ai-analyzer') return 'Deterministic finding';
+  const provider =
+    finding.analyzerProvider === 'direct-api'
+      ? 'Direct API'
+      : finding.analyzerProvider === 'codex'
+        ? 'Codex'
+        : 'AI';
+  const kind =
+    finding.findingKind === 'capture_limitation'
+      ? 'capture limitation'
+      : 'problem hypothesis';
+  return `${provider} ${kind}${finding.analyzerModel ? ` · ${finding.analyzerModel}` : ''} · review required`;
+}
+
+function orderedFindings(findings: readonly Finding[]): readonly Finding[] {
+  const severity = { high: 0, medium: 1, low: 2 } as const;
+  return [...findings].sort(
+    (left, right) =>
+      (left.findingKind === 'capture_limitation' ? 1 : 0) -
+        (right.findingKind === 'capture_limitation' ? 1 : 0) ||
+      (severity[left.severity as keyof typeof severity] ?? 3) -
+        (severity[right.severity as keyof typeof severity] ?? 3) ||
+      left.id.localeCompare(right.id),
+  );
+}
+
 export function SessionOverview({
   session,
   events,
@@ -24,29 +51,25 @@ export function SessionOverview({
   readonly gaps: number;
   readonly scorecard?: SessionScorecard;
 }) {
-  const failed = events.filter(
-    (item) =>
-      item.event.status === 'failed' ||
-      (typeof (item.event.payload as { exitCode?: unknown }).exitCode ===
-        'number' &&
-        (item.event.payload as { exitCode: number }).exitCode !== 0),
+  const primary = orderedFindings(findings)[0];
+  const measuredDimensions = scorecard?.dimensions
+    .filter((dimension) => dimension.score !== null)
+    .slice(0, 3);
+  const awaitingDimensions = scorecard?.dimensions.filter(
+    (dimension) => dimension.score === null,
   ).length;
   return (
     <section className="session-overview" aria-labelledby="session-title">
       <div className="case-heading">
         <div>
-          <p className="eyebrow">
-            Case file · {session.source} · {session.captureMode} capture
-          </p>
           <h1 id="session-title">{session.title ?? session.displayName}</h1>
-          <p>
-            {session.model ?? 'Model not exposed'} ·{' '}
-            {formatDuration(session.startedAt, session.endedAt)} ·{' '}
-            {new Date(session.startedAt).toLocaleString()}
+          <p className="case-metadata">
+            {session.model ?? 'Model not exposed'} · {session.source} ·{' '}
+            {formatDuration(session.startedAt, session.endedAt)}
           </p>
         </div>
         <div className="outcome-stamp" data-status={session.status}>
-          <span>Observed result</span>
+          <span>Observed</span>
           <strong>{session.status.replaceAll('_', ' ')}</strong>
         </div>
       </div>
@@ -56,10 +79,6 @@ export function SessionOverview({
           <dd>
             {Math.max(session.eventCount, events.length).toLocaleString()}
           </dd>
-        </div>
-        <div>
-          <dt>Failures</dt>
-          <dd>{failed.toLocaleString()}</dd>
         </div>
         <div>
           <dt>Capture gaps</dt>
@@ -72,50 +91,25 @@ export function SessionOverview({
           </dd>
         </div>
       </dl>
-      {findings[0] ? (
+      {primary ? (
         <div className="primary-hypothesis">
-          <span>
-            {findings[0].ruleId === 'ai-analyzer'
-              ? 'Primary AI hypothesis · review required'
-              : 'Primary deterministic finding'}
-          </span>
-          <strong>{findings[0].title}</strong>
-          <p>{findings[0].explanation}</p>
+          <span>Primary finding</span>
+          <strong title={primary.title}>{primary.title}</strong>
         </div>
       ) : (
         <div className="primary-hypothesis is-empty">
-          <span>Analysis status</span>
-          <strong>No deterministic finding has been persisted yet.</strong>
-          <p>
-            The timeline remains facts-first; absence of a finding is not a
-            quality claim.
-          </p>
+          <span>Analysis</span>
+          <strong>No persisted deterministic finding.</strong>
         </div>
       )}
       {scorecard ? (
-        <section
+        <span
           className="overview-scorecard"
-          aria-label="Independent scorecard dimensions"
+          aria-label="Independent scorecard summary"
         >
-          <div>
-            <span className="eyebrow">Independent scorecard dimensions</span>
-            <small>
-              Not a universal quality score · v{scorecard.schemaVersion}
-            </small>
-          </div>
-          <div className="overview-scorecard-grid">
-            {scorecard.dimensions.map((dimension) => (
-              <div key={dimension.id}>
-                <span>{dimension.label}</span>
-                <strong>
-                  {dimension.score === null
-                    ? 'Unknown'
-                    : `${dimension.score}/100`}
-                </strong>
-              </div>
-            ))}
-          </div>
-        </section>
+          Scorecard: {measuredDimensions?.length ?? 0} measured ·{' '}
+          {awaitingDimensions ?? 0} awaiting
+        </span>
       ) : null}
     </section>
   );
@@ -186,7 +180,7 @@ export function ScorecardPanel({
         <h2 id="scorecard-title">Session scorecard</h2>
         <p>
           Independent evidence dimensions, not a universal quality score. A
-          blank value means the required observable signal was not captured.
+          value is Unknown when the required observable signal was not captured.
         </p>
       </header>
       <div className="scorecard-grid">
@@ -207,7 +201,7 @@ export function ScorecardPanel({
               >
                 {item.evidenceEventIds.map((id) => (
                   <button type="button" key={id} onClick={() => onSelect(id)}>
-                    Evidence {id.slice(0, 8)}
+                    Evidence <code>{id}</code>
                   </button>
                 ))}
               </div>
@@ -405,50 +399,41 @@ export function CausalGraph({
           <p>Run deterministic analysis or review the timeline manually.</p>
         </div>
       ) : (
-        <div className="causal-graph" role="list">
-          {findings.map((finding) => {
+        <div className="causal-graph">
+          {orderedFindings(findings).map((finding, index) => {
             const evidence = finding.evidenceEventIds
               .map((id) => events.find((event) => event.id === id))
               .filter((event): event is StoredEvent => event !== undefined);
-            const first = evidence[0];
-            const last = evidence.at(-1);
             return (
-              <article
+              <details
                 className="causal-chain"
                 key={finding.id}
-                role="listitem"
+                open={index === 0}
               >
-                <button
-                  type="button"
-                  onClick={() => first && onSelect(first.id)}
-                >
-                  <span>Observed evidence</span>
-                  <strong>
-                    {first ? eventTitle(first.event) : 'Unavailable event'}
-                  </strong>
-                </button>
-                <span className="causal-arrow" aria-hidden="true">
-                  ↓
-                </span>
-                <div className="causal-finding">
-                  <span>
-                    {finding.ruleId === 'ai-analyzer'
-                      ? 'AI hypothesis · review required'
-                      : 'Deterministic finding'}
-                  </span>
+                <summary>
+                  <span>{aiFindingLabel(finding)}</span>
                   <strong>{finding.title}</strong>
-                  <p>{finding.explanation}</p>
+                  <em>{evidence.length} linked events</em>
+                </summary>
+                <p>{finding.impact ?? finding.explanation}</p>
+                <div
+                  className="causal-evidence"
+                  aria-label={`Evidence for ${finding.title}`}
+                >
+                  {evidence.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      onClick={() => onSelect(item.id)}
+                    >
+                      <span>#{item.sequence}</span>
+                      <strong>{eventTitle(item.event)}</strong>
+                      <small>{item.type}</small>
+                      <code>{item.id}</code>
+                    </button>
+                  ))}
                 </div>
-                <span className="causal-arrow" aria-hidden="true">
-                  ↓
-                </span>
-                <button type="button" onClick={() => last && onSelect(last.id)}>
-                  <span>Related terminal evidence</span>
-                  <strong>
-                    {last ? eventTitle(last.event) : 'No linked terminal event'}
-                  </strong>
-                </button>
-              </article>
+              </details>
             );
           })}
         </div>
@@ -458,11 +443,13 @@ export function CausalGraph({
 }
 
 export function FindingsPanel({
+  events,
   findings,
   onSelect,
   onReview,
   savingReview,
 }: {
+  readonly events: readonly StoredEvent[];
   readonly findings: readonly Finding[];
   readonly onSelect: (id: string) => void;
   readonly onReview: (
@@ -485,48 +472,74 @@ export function FindingsPanel({
       </header>
       <div className="finding-list">
         {findings.length > 0 ? (
-          findings.map((finding, index) => (
+          orderedFindings(findings).map((finding, index) => (
             <article
               key={finding.id}
               data-severity={finding.severity}
               data-kind={
-                finding.ruleId === 'ai-analyzer'
-                  ? 'ai-hypothesis'
-                  : 'deterministic'
+                finding.findingKind === 'capture_limitation'
+                  ? 'capture-limitation'
+                  : finding.ruleId === 'ai-analyzer'
+                    ? 'ai-problem'
+                    : 'deterministic'
               }
             >
               <span className="finding-number">
                 F-{String(index + 1).padStart(2, '0')}
               </span>
-              <div>
-                <p className="finding-meta">
-                  {finding.ruleId === 'ai-analyzer'
-                    ? 'AI hypothesis · review required'
-                    : 'Deterministic'}{' '}
-                  · {finding.category} · {finding.severity} · {finding.ruleId}
-                </p>
-                <h3>{finding.title}</h3>
-                <p>{finding.explanation}</p>
-                <p className="recommendation">
-                  <strong>Recommendation:</strong> {finding.recommendation}
-                </p>
-                <div className="evidence-links">
-                  {finding.evidenceEventIds.map((eventId) => (
-                    <button
-                      type="button"
-                      key={eventId}
-                      onClick={() => onSelect(eventId)}
-                    >
-                      View evidence
-                    </button>
-                  ))}
+              <details open={index === 0}>
+                <summary>
+                  <span className="finding-meta">
+                    {aiFindingLabel(finding)} · {finding.category} ·{' '}
+                    {finding.severity}
+                  </span>
+                  <h3>{finding.title}</h3>
+                  {finding.impact ? <span>{finding.impact}</span> : null}
+                </summary>
+                <div className="finding-body">
+                  <p>{finding.explanation}</p>
+                  <p className="recommendation">
+                    <strong>Recommendation:</strong> {finding.recommendation}
+                  </p>
+                  <div
+                    className="evidence-links"
+                    aria-label={`Evidence for ${finding.title}`}
+                  >
+                    {[
+                      ...finding.evidenceEventIds.map((eventId) => ({
+                        eventId,
+                        relation: 'Supports',
+                      })),
+                      ...finding.counterevidenceEventIds.map((eventId) => ({
+                        eventId,
+                        relation: 'Counters',
+                      })),
+                    ].map(({ eventId, relation }) => {
+                      const observed = events.find(
+                        (item) => item.id === eventId,
+                      );
+                      return (
+                        <button
+                          type="button"
+                          key={`${relation}-${eventId}`}
+                          onClick={() => onSelect(eventId)}
+                        >
+                          {relation} ·{' '}
+                          {observed
+                            ? `#${observed.sequence} ${eventTitle(observed.event)}`
+                            : 'Unresolved event'}
+                          <code>{eventId}</code>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <FindingReviewControls
+                    finding={finding}
+                    saving={savingReview === finding.id}
+                    onReview={onReview}
+                  />
                 </div>
-                <FindingReviewControls
-                  finding={finding}
-                  saving={savingReview === finding.id}
-                  onReview={onReview}
-                />
-              </div>
+              </details>
             </article>
           ))
         ) : (
@@ -567,7 +580,10 @@ function FindingReviewControls({
         Human review · <strong>{finding.state}</strong>
       </span>
       <div>
-        {(['confirmed', 'rejected', 'open'] as const).map((decision) => (
+        {(finding.state === 'open'
+          ? (['confirmed', 'rejected'] as const)
+          : (['open'] as const)
+        ).map((decision) => (
           <button
             type="button"
             key={decision}
@@ -575,7 +591,7 @@ function FindingReviewControls({
             aria-pressed={finding.state === decision}
             onClick={() => onReview(finding.id, { decision })}
           >
-            {decision === 'open' ? 'Reopen' : decision}
+            {decision === 'open' ? 'Reopen review' : decision}
           </button>
         ))}
       </div>

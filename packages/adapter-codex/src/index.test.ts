@@ -14,7 +14,13 @@ import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
-import { importSpool, spoolPaths, startDaemon } from '@vibetrace/daemon';
+import {
+  importSpool,
+  spoolPaths,
+  SpoolSegmentSchema,
+  startDaemon,
+  type SpoolSegment,
+} from '@vibetrace/daemon';
 import { MemoryKeyProvider, Storage } from '@vibetrace/storage';
 import { captureProfilePolicy } from '@vibetrace/schema';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -1063,7 +1069,10 @@ describe('silent spool collector', () => {
     expect(segment.raw.sourceVersion).toBe('0.144.3');
   });
 
-  it('keeps p95 atomic collection below 100ms on the local fixture path', async () => {
+  const performanceTest =
+    process.env.VIBETRACE_TEST_GATE === 'performance' ? it : it.skip;
+
+  performanceTest('keeps p95 atomic collection below 100ms', async () => {
     const stateDir = await directory();
     const durations: number[] = [];
     for (let index = 0; index < 25; index += 1) {
@@ -1308,6 +1317,83 @@ describe('versioned transcript enrichment', () => {
         name.endsWith('.jsonl'),
       ),
     ).toHaveLength(3);
+  });
+
+  it('uses bounded transcript metadata for current hook provenance', async () => {
+    const stateDir = await directory();
+    const path = join(await directory(), 'rollout.jsonl');
+    await writeRollout(path, [
+      {
+        ...CODEX_ROLLOUT_V1_FIXTURE[0],
+        payload: {
+          ...CODEX_ROLLOUT_V1_FIXTURE[0].payload,
+          cli_version: '0.146.0',
+        },
+      },
+    ]);
+    const start = {
+      ...fixture('SessionStart'),
+      session_id: 'session-transcript',
+      transcript_path: path,
+    };
+    expect(
+      await collectCodexHook(JSON.stringify(start), {
+        stateDir,
+        enrichRepository: false,
+      }),
+    ).toBe(true);
+    const files = (await readdir(spoolPaths(stateDir).incoming)).filter(
+      (name) => name.endsWith('.jsonl'),
+    );
+    const captured = JSON.parse(
+      await readFile(join(spoolPaths(stateDir).incoming, files[0]!), 'utf8'),
+    ) as SpoolSegment;
+    expect(captured.raw.sourceVersion).toBe('0.146.0');
+    expect(captured.event.provenance.sourceVersion).toBe('0.146.0');
+  });
+
+  it('marks an exact Stop/transcript duplicate without discarding raw evidence', async () => {
+    const stateDir = await directory();
+    const path = join(await directory(), 'rollout.jsonl');
+    await writeRollout(path);
+    const stop = {
+      ...fixture('Stop'),
+      session_id: 'session-transcript',
+      transcript_path: path,
+      last_assistant_message: 'Visible final answer.',
+    };
+    expect(
+      await collectCodexHook(JSON.stringify(stop), {
+        stateDir,
+        sourceVersion: '0.144.3',
+        enrichRepository: false,
+      }),
+    ).toBe(true);
+    const segments = await Promise.all(
+      (await readdir(spoolPaths(stateDir).incoming))
+        .filter((name) => name.endsWith('.jsonl'))
+        .map(async (name) =>
+          SpoolSegmentSchema.parse(
+            JSON.parse(
+              await readFile(join(spoolPaths(stateDir).incoming, name), 'utf8'),
+            ),
+          ),
+        ),
+    );
+    const stopMessage = segments.find(
+      (item) =>
+        item.event.subtype === 'Stop' && item.event.type === 'message.agent',
+    );
+    const transcript = segments.find((item) =>
+      item.event.subtype?.endsWith('.duplicate'),
+    );
+    expect(transcript?.event.payload).toMatchObject({
+      content: 'Visible final answer.',
+      duplicateOfEventId: stopMessage?.event.id,
+    });
+    expect(transcript?.raw.payload).toMatchObject({
+      future_row: { retained: true },
+    });
   });
 });
 

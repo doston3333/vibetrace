@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -79,6 +79,27 @@ const gitleaksIgnore = await readFile(
   join(repositoryDirectory, '.gitleaksignore'),
   'utf8',
 );
+const packageDirectories = await readdir(
+  join(repositoryDirectory, 'packages'),
+  {
+    withFileTypes: true,
+  },
+);
+for (const directory of packageDirectories) {
+  if (!directory.isDirectory()) continue;
+  const manifest = JSON.parse(
+    await readFile(
+      join(repositoryDirectory, 'packages', directory.name, 'package.json'),
+      'utf8',
+    ),
+  );
+  if (manifest.name === '@vibetrace/cli') {
+    if (manifest.private === true)
+      throw new Error('The public CLI package must not be private.');
+  } else if (manifest.private !== true) {
+    throw new Error(`${manifest.name ?? directory.name} must be private.`);
+  }
+}
 
 for (const [os, node] of [
   ['ubuntu-latest', '22.12.0'],
@@ -105,6 +126,7 @@ for (const [file, source, requiredPins] of [
       actionPins.gitleaks,
       actionPins.pnpm,
       actionPins.setupNode,
+      actionPins.uploadArtifact,
     ],
   ],
   [
@@ -130,6 +152,13 @@ for (const [file, source, requiredPins] of [
 const gitleaks = jobBlock(ci, 'gitleaks');
 requireText(gitleaks, 'fetch-depth: 0', 'ci.yml gitleaks job');
 requireText(gitleaks, actionPins.gitleaks, 'ci.yml gitleaks job');
+const browserE2e = jobBlock(ci, 'browser-e2e');
+requireText(
+  browserE2e,
+  'pnpm exec playwright install --with-deps chromium',
+  'ci.yml browser-e2e job',
+);
+requireText(browserE2e, 'pnpm test:browser', 'ci.yml browser-e2e job');
 requireText(
   gitleaks,
   'GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}',
@@ -148,7 +177,7 @@ if (gitleaksIgnore.trim() !== approvedGitleaksIgnore)
   );
 requireText(
   native,
-  'npm install --global @openai/codex@0.144.3',
+  'npm install --global @openai/codex@0.146.1',
   'native-smoke.yml',
 );
 requireText(native, 'VIBETRACE_NATIVE_SMOKE_OUTPUT:', 'native-smoke.yml');
@@ -203,6 +232,7 @@ process.stdout.write(
       historyAwareGitleaks: true,
       trustedPublishing: true,
       releaseCandidateGate: true,
+      packagePrivacy: true,
     },
     null,
     2,

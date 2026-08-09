@@ -17,6 +17,13 @@ const LANE_LABELS = {
   verification: 'Verification',
 } as const;
 
+const TONE_LABELS = {
+  neutral: 'Fact',
+  success: 'Success',
+  failure: 'Failure',
+  gap: 'Capture gap',
+} as const;
+
 /** A fixed-row virtualized evidence timeline with roving keyboard selection. */
 export function Timeline({ items, selectedId, onSelect }: TimelineProps) {
   const scroll = useRef<HTMLDivElement>(null);
@@ -49,7 +56,7 @@ export function Timeline({ items, selectedId, onSelect }: TimelineProps) {
   if (items.length === 0)
     return (
       <div className="timeline-empty" role="status">
-        <span aria-hidden="true">∅</span>
+        <span aria-hidden="true">No events</span>
         <strong>No evidence matches these filters.</strong>
         <p>Clear a filter to return to the full observable timeline.</p>
       </div>
@@ -115,27 +122,34 @@ export function Timeline({ items, selectedId, onSelect }: TimelineProps) {
                   <time dateTime={item.timestamp}>
                     {formatClock(item.timestamp)}
                   </time>
-                  {TIMELINE_LANES.map((lane) => (
-                    <div className="lane-cell" key={lane} data-lane={lane}>
-                      {item.lane === lane ? (
-                        <button
-                          id={`timeline-${item.id}`}
-                          type="button"
-                          role="option"
-                          aria-selected={item.id === selectedId}
-                          className="event-chip"
-                          data-tone={item.tone}
-                          onClick={() => onSelect(item.id)}
-                        >
-                          <span className="event-sequence">
-                            #{item.sequence}
-                          </span>
-                          <strong>{item.title}</strong>
-                          <small>{item.detail || item.type}</small>
-                        </button>
-                      ) : null}
-                    </div>
-                  ))}
+                  <div
+                    className={`lane-cell lane-${item.lane}`}
+                    data-lane={item.lane}
+                  >
+                    <button
+                      id={`timeline-${item.id}`}
+                      type="button"
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={item.id === selectedId}
+                      aria-label={`${TONE_LABELS[item.tone]} · ${LANE_LABELS[item.lane]} · event ${item.sequence}: ${item.title}`}
+                      className="event-chip"
+                      data-tone={item.tone}
+                      onClick={() => onSelect(item.id)}
+                    >
+                      <span className="event-meta">
+                        <span className="event-sequence">#{item.sequence}</span>
+                        <span className="event-lane">
+                          {LANE_LABELS[item.lane]}
+                        </span>
+                        <span className="event-state">
+                          {TONE_LABELS[item.tone]}
+                        </span>
+                      </span>
+                      <strong>{item.title}</strong>
+                      <small>{item.detail || item.type}</small>
+                    </button>
+                  </div>
                 </div>
               );
             })}

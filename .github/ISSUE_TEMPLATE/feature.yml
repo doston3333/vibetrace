@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a focused improvement consistent with VibeTrace's local-first mission.
+title: '[Feature]: '
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem or missing forensic evidence should be addressed?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe the behavior and how a user would verify it.
+    validations:
+      required: true
+  - type: textarea
+    id: trust
+    attributes:
+      label: Privacy, security, and evidence implications
+      description: Note network access, untrusted input, capture gaps, and evidence-ID effects.
+    validations:
+      required: true

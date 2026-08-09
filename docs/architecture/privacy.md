@@ -27,6 +27,22 @@ already stored are not rewritten.
 
 The Fastify API binds only to loopback or a local Unix socket. It requires a random local authentication token. A browser obtains access through an authenticated, short-lived, one-time ticket and a separate single-use handoff token. The handoff URL is stripped with `history.replaceState`/navigation immediately after the cookie exchange; neither token is logged or persisted by VibeTrace.
 
+## Opt-in AI analysis egress
+
+AI review is disabled until the user starts a run. Both supported providers send
+the bounded session dossier to a remote model: direct API sends it to the exact
+HTTPS host shown in the consent control, while Codex sends it through the
+user's installed and authenticated Codex CLI. VibeTrace has no background AI
+upload, hosted service key, local-model mode, or telemetry path.
+
+Direct API keys remain request-scoped. The dashboard keeps the key only in
+component memory, clears it after a successful run, and sends it to the
+authenticated loopback daemon. The daemon forwards it in one Authorization
+header, does not log it, and has no credential persistence field. Findings and
+encrypted bundles store only provider, model, analyzer version, and a prompt
+digest. The Codex child environment omits API-key, token, password, secret,
+credential, and auth variables.
+
 ## Trust boundaries
 
 - Imported traces, prompts, terminal output, diffs, and tool payloads are untrusted content.
@@ -35,5 +51,6 @@ The Fastify API binds only to loopback or a local Unix socket. It requires a ran
 - Redaction produces a derived export view; it never changes the private raw event or encrypted local original.
 - Portable bundles are always passphrase-encrypted with standard age encryption and contain only the records named by the approved manifest.
 - Capture gaps make unavailable sensitive or non-sensitive data explicit without inventing it.
+- AI analysis never begins without a provider choice; direct API additionally requires explicit disclosure consent for the displayed HTTPS host.
 
 See [portable encrypted bundles](portable-bundles.md) for the export/import boundary, [overview](overview.md) for the storage and API flow, and [ADR 0005](../decisions/0005-encryption-at-rest.md) for the decision record.

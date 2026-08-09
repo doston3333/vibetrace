@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/eval-runner",
   "version": "0.1.0",
+  "private": true,
   "description": "Isolated, shell-free VibeTrace evaluation execution and success checks.",
   "type": "module",
   "exports": {

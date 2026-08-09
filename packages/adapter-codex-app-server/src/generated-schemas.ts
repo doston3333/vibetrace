@@ -4,6 +4,7 @@ export const CODEX_APP_SERVER_VALIDATED_VERSIONS = [
   '0.144.3',
   '0.145.0',
   '0.146.0',
+  '0.146.1',
 ] as const;
 
 export const APP_SERVER_SCHEMA_ARTIFACTS = {
@@ -61,6 +62,31 @@ export const APP_SERVER_SCHEMA_ARTIFACTS = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     $id: 'https://vibetrace.dev/schemas/codex-app-server/0.146.0.json',
     title: 'Codex app-server 0.146.0 JSON-RPC envelope',
+    type: 'object',
+    properties: {
+      id: {
+        type: ['string', 'integer'],
+      },
+      method: {
+        type: 'string',
+        minLength: 1,
+      },
+      params: {
+        type: 'object',
+        additionalProperties: true,
+      },
+      result: {},
+      error: {
+        type: 'object',
+        additionalProperties: true,
+      },
+    },
+    additionalProperties: true,
+  },
+  '0.146.1': {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    $id: 'https://vibetrace.dev/schemas/codex-app-server/0.146.1.json',
+    title: 'Codex app-server 0.146.1 JSON-RPC envelope',
     type: 'object',
     properties: {
       id: {

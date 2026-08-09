@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/adapter-sdk",
   "version": "0.1.0",
+  "private": true,
   "description": "Stable source-adapter capability and conformance interfaces for VibeTrace.",
   "type": "module",
   "exports": {

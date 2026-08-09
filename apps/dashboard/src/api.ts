@@ -47,11 +47,16 @@ export interface Finding {
   readonly sessionId: string;
   readonly ruleId: string;
   readonly detectorVersion: string;
+  readonly analyzerProvider?: 'direct-api' | 'codex';
+  readonly analyzerModel?: string;
+  readonly promptDigest?: string;
+  readonly findingKind?: 'problem' | 'capture_limitation';
   readonly category: string;
   readonly severity: string;
   readonly confidence?: number;
   readonly title: string;
   readonly explanation: string;
+  readonly impact?: string;
   readonly recommendation: string;
   readonly evidenceEventIds: readonly string[];
   readonly counterevidenceEventIds: readonly string[];
@@ -64,31 +69,6 @@ export interface Finding {
   };
 }
 
-export type AiHypothesisCategory =
-  | 'prompt'
-  | 'context'
-  | 'instruction_or_skill'
-  | 'model'
-  | 'harness'
-  | 'tool'
-  | 'environment'
-  | 'verification'
-  | 'human_intervention'
-  | 'unknown';
-
-export interface AiHypothesisDraft {
-  readonly id: string;
-  readonly category: AiHypothesisCategory;
-  readonly title: string;
-  readonly explanation: string;
-  readonly recommendation?: string;
-  readonly confidence: number;
-  readonly evidenceEventIds: readonly string[];
-  readonly counterEvidenceEventIds?: readonly string[];
-  readonly counterevidenceEventIds?: readonly string[];
-  readonly recommendedExperiment?: string;
-}
-
 export interface AiPromptResponse {
   readonly analyzerVersion: string;
   readonly promptDigest: string;
@@ -98,6 +78,27 @@ export interface AiPromptResponse {
     readonly tools: readonly [];
     readonly networkAllowed: false;
   };
+}
+
+export type AiAnalysisRequest =
+  | {
+      readonly provider: 'direct-api';
+      readonly endpoint: string;
+      readonly apiKey: string;
+      readonly model: string;
+      readonly consent: true;
+    }
+  | {
+      readonly provider: 'codex';
+      readonly model?: string;
+    };
+
+export interface AiAnalysisResponse {
+  readonly analyzerVersion: string;
+  readonly promptDigest: string;
+  readonly provider: 'direct-api' | 'codex';
+  readonly model?: string;
+  readonly hypotheses: readonly Finding[];
 }
 
 export interface Annotation {
@@ -336,17 +337,13 @@ export const api = {
       `/api/v1/sessions/${encodeURIComponent(id)}/ai-prompt`,
     );
   },
-  async submitAiFindings(
+  async runAiAnalysis(
     id: string,
-    input: {
-      readonly analyzerVersion: string;
-      readonly promptDigest: string;
-      readonly hypotheses: readonly AiHypothesisDraft[];
-    },
-  ): Promise<{ readonly hypotheses: readonly Finding[] }> {
+    input: AiAnalysisRequest,
+  ): Promise<AiAnalysisResponse> {
     const response = await jsonRequest<{
-      analysis: { hypotheses: readonly Finding[] };
-    }>(`/api/v1/sessions/${encodeURIComponent(id)}/ai-findings`, {
+      analysis: AiAnalysisResponse;
+    }>(`/api/v1/sessions/${encodeURIComponent(id)}/ai-analyze`, {
       method: 'POST',
       body: JSON.stringify(input),
     });

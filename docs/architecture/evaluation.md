@@ -95,8 +95,9 @@ total runs; no active checkout is reused as an execution worktree.
 Eval manifests, prompts, tool output, and model output are untrusted data.
 Imported manifests are schema-validated before persistence, and captured text
 is never interpolated into a shell. The optional AI analyzer receives a bounded
-read-only prompt with no tools or network access and can persist only
-structured hypotheses whose evidence IDs exist in the local session. The
-dashboard's copy/paste review workflow binds the provider response to the
-current prompt digest and analyzer version; stale responses are rejected before
-findings are replaced.
+untrusted-data prompt and can persist only structured hypotheses whose evidence
+IDs exist in the local session. Direct API analysis is inference-only and
+receives no tools. Codex analysis uses a shell-free ephemeral subprocess, empty
+working directory, read-only sandbox, sanitized environment, and strict output
+schema. Provider, model, analyzer version, and prompt digest are persisted as
+non-secret provenance before findings are presented for human review.

@@ -4,7 +4,10 @@
 
 Please do not report suspected vulnerabilities in public issues, discussions, or pull requests.
 
-Once GitHub private vulnerability reporting is enabled for this repository, use that channel to submit a private report. Until then, contact the repository maintainers through a private channel you already have with them, and include a concise description, affected version or commit, reproduction steps, and potential impact. Do not include secrets or sensitive trace content unless it is necessary and safely redacted.
+Use [GitHub private vulnerability reporting](https://github.com/doston3333/vibetrace/security/advisories/new) to submit a private report. Include a concise description, affected version or commit, reproduction steps, and potential impact. Do not include secrets or sensitive trace content unless it is necessary and safely redacted.
+
+Public releases receive security fixes. The current unreleased development
+branch receives fixes on a best-effort basis; no older release line exists yet.
 
 ## Scope
 

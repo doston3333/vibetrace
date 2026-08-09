@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/enrichment",
   "version": "0.1.0",
+  "private": true,
   "description": "Deterministic, local repository and command enrichment for VibeTrace.",
   "type": "module",
   "exports": {

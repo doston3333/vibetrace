@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/adapter-codex",
   "version": "0.1.0",
+  "private": true,
   "description": "Safe Codex hooks collector and configuration adapter for VibeTrace.",
   "type": "module",
   "exports": {

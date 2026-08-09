@@ -2,7 +2,11 @@
 
 VibeTrace is a local-first forensic debugger for observable Codex coding sessions.
 
-Requires Node.js 22.12 or later. Install the CLI, preview the exact Codex hook changes, then approve them in Codex with `/hooks`:
+Requires Node.js 22.12 or later. The package instructions below apply once the
+requested version is visible on npm; before the first release, use the source
+checkout instructions in the repository README. Preview the exact Codex hook
+changes, then open an interactive Codex CLI session and approve them with
+`/hooks`:
 
 ```bash
 npm install --global @vibetrace/cli
@@ -11,6 +15,9 @@ vibetrace init codex
 vibetrace doctor
 vibetrace open
 ```
+
+This standard hook integration captures Codex CLI sessions. It does not
+capture sessions started in the Codex desktop app.
 
 For opt-in full-fidelity Codex Lab capture, use `--approval-policy prompt` to
 review each server approval request. The prompt policy shows bounded,

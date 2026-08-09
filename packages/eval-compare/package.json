@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/eval-compare",
   "version": "0.1.0",
+  "private": true,
   "description": "Deterministic evaluation comparison and first-divergence analysis.",
   "type": "module",
   "exports": {

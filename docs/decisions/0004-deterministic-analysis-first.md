@@ -1,6 +1,6 @@
 # ADR 0004: Deterministic analysis first
 
-Status: Accepted
+Status: Accepted; AI-provider portion amended by ADR 0006
 
 ## Context
 
@@ -8,7 +8,7 @@ Diagnoses need transparent, reproducible evidence. Model-generated conclusions c
 
 ## Decision
 
-Initial analysis uses deterministic rules with stable rule IDs, versions, fixtures, clear recommendations, and concrete evidence event IDs. Optional AI-assisted synthesis is a separate, provider-neutral, tool-free boundary and cannot replace deterministic findings.
+Initial analysis uses deterministic rules with stable rule IDs, versions, fixtures, clear recommendations, and concrete evidence event IDs. Optional AI-assisted synthesis remains a separate evidence-verified boundary and cannot rewrite deterministic findings. ADR 0006 defines its direct API and isolated Codex providers.
 
 ## Consequences
 

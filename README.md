@@ -2,7 +2,24 @@
 
 VibeTrace is a local-first, open-source forensic debugger and evaluation lab for AI coding sessions.
 
-The production foundation includes the canonical trace schema and deterministic fixtures, encrypted local SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon, Codex lifecycle-hook and app-server capture, a named Claude Code adapter, generic JSONL and opt-in OpenTelemetry adapters, a responsive forensic dashboard, evidence-linked deterministic and optional tool-free AI findings, annotations, isolated evaluation runs, deterministic comparison summaries, and previewed scrubbed bundles encrypted with standard age passphrase encryption.
+This repository is preparing its first public release. The implementation
+includes the canonical trace schema and deterministic fixtures, encrypted local
+SQLite/blob storage, a crash-safe spool, an authenticated loopback daemon,
+Codex lifecycle-hook and app-server capture, a named Claude Code adapter,
+generic JSONL and opt-in OpenTelemetry adapters, a responsive forensic
+dashboard, evidence-linked deterministic findings and opt-in two-provider AI
+synthesis, annotations, isolated evaluation runs, deterministic comparison
+summaries, and previewed scrubbed bundles encrypted with standard age
+passphrase encryption.
+
+## Release status
+
+| Surface                 | Status                                                                |
+| ----------------------- | --------------------------------------------------------------------- |
+| Source repository       | Public pre-release; APIs and storage formats may still change         |
+| `@vibetrace/cli` on npm | Not published yet; do not rely on the global-install command below    |
+| Supported release gate  | Ubuntu, macOS Intel/arm64, and Windows CI plus native Codex smoke     |
+| Network behavior        | Local-only by default; optional AI analysis requires explicit consent |
 
 ## Documentation
 
@@ -11,6 +28,7 @@ The production foundation includes the canonical trace schema and deterministic 
 - [Canonical event schema](docs/architecture/event-schema.md)
 - [Capture modes and gaps](docs/architecture/capture-modes.md)
 - [Privacy and encryption](docs/architecture/privacy.md)
+- [AI analysis providers and trust boundaries](docs/architecture/ai-analysis.md)
 - [Portable encrypted bundles](docs/architecture/portable-bundles.md)
 - [Release gate](docs/release.md)
 - [Production-readiness matrix](docs/production-readiness.md)
@@ -27,7 +45,9 @@ The production foundation includes the canonical trace schema and deterministic 
 - [ADR 0003: Codex-first capture](docs/decisions/0003-codex-first-capture.md)
 - [ADR 0004: Deterministic analysis first](docs/decisions/0004-deterministic-analysis-first.md)
 - [ADR 0005: Encryption at rest](docs/decisions/0005-encryption-at-rest.md)
+- [ADR 0006: Dual AI analysis providers](docs/decisions/0006-dual-ai-analysis-providers.md)
 - [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
 - [Security policy](SECURITY.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
 - [Apache-2.0 license](LICENSE)
@@ -40,7 +60,16 @@ The production foundation includes the canonical trace schema and deterministic 
 
 ## Install
 
-Install the public CLI package and confirm the bundled command is available:
+Until `@vibetrace/cli` is visible on npm, run it from a source checkout:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @vibetrace/cli build
+pnpm exec vibetrace --version
+```
+
+After the first npm release is published, install the public CLI package and
+confirm the bundled command is available:
 
 ```bash
 npm install --global @vibetrace/cli
@@ -60,7 +89,7 @@ needed.
 - `packages/adapter-generic-jsonl` — bounded generic agent JSONL adapter
 - `packages/adapter-otel` — opt-in OpenTelemetry enrichment adapter
 - `packages/adapter-sdk` — source-adapter capability and conformance contracts
-- `packages/analyzer-ai` — provider-neutral, tool-free structured analyzer boundary
+- `packages/analyzer-ai` — direct API and isolated Codex structured analyzer providers
 - `packages/bundle` — derived redaction views and bounded standard-age portable bundles
 - `packages/cli` — the `vibetrace` command-line interface
 - `packages/daemon` — authenticated loopback API and crash-safe spool importer
@@ -88,13 +117,18 @@ pnpm build
 
 ## Local use
 
-Preview and install the Codex integration, then approve the exact handler definitions in Codex with `/hooks`:
+Preview and install the Codex integration, then open an interactive **Codex
+CLI** session and approve the exact handler definitions with `/hooks`:
 
 ```bash
 vibetrace init codex --dry-run
 vibetrace init codex
 vibetrace doctor
 ```
+
+Standard lifecycle-hook capture currently supports the Codex CLI. The Codex
+desktop app does not emit this hook stream and is not captured by
+`vibetrace init codex`.
 
 Captured hooks write directly to the local spool even when the daemon is stopped. Start and open the local dashboard separately:
 
@@ -104,10 +138,16 @@ vibetrace open
 ```
 
 For optional model-assisted diagnosis, open a session and choose **AI review**.
-The dashboard prepares a bounded prompt locally; you copy it to a provider you
-approve and paste back the JSON response. VibeTrace does not call a provider or
-send trace data over the network, and it rejects responses whose analyzer
-version, prompt digest, or evidence IDs no longer match the session.
+Choose either **Use Codex** to run an ephemeral read-only Codex analysis with
+the existing local sign-in, or **Use direct API** to call an OpenAI-compatible
+HTTPS chat-completions endpoint with a per-run key. Both choices are explicit
+network egress: preview the bounded evidence prompt before running. Direct API
+keys remain in browser/process memory for that request and are never stored.
+The analyzer returns at most five material problems or capture limitations;
+praise and neutral observations are excluded. Every item is rejected unless
+its evidence IDs belong to the session, and severity remains independent from
+model confidence. Persisted findings record only provider, model, analyzer
+version, and prompt digest as non-secret provenance.
 
 List and inspect sessions, or preview and create an encrypted scrubbed bundle:
 

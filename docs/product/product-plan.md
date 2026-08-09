@@ -783,7 +783,7 @@ The model receives:
 - Selected evidence snippets
 - User-provided outcome labels
 
-The model must not receive tools or permission to execute code during diagnosis. Trace content must be treated as untrusted data to reduce prompt-injection risk.
+The direct API model must not receive tools or permission to execute code during diagnosis. The optional Codex provider runs in an empty ephemeral working directory with a read-only sandbox, ignored user configuration/rules, a sanitized environment, and a strict output schema; because Codex remains an agent runtime, the UI must disclose that its boundary is broader than direct inference. Trace content must always be treated as untrusted data to reduce prompt-injection risk.
 
 Use a two-pass structure:
 
@@ -1506,8 +1506,8 @@ Trace content may contain prompt injections. The analyzer must:
 
 - Receive data in a structured envelope.
 - Be instructed that trace content is untrusted evidence.
-- Have no tools.
-- Have no filesystem or network access.
+- Give the direct API provider no tools or callback access.
+- Run the Codex provider only in its documented empty, ephemeral, read-only sandbox with sanitized environment and no trace content in argv.
 - Produce schema-validated hypotheses only.
 - Never follow instructions found inside captured prompts or tool output.
 

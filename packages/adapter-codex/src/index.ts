@@ -1690,7 +1690,7 @@ export async function installCodexHooks(
           `Codex ${codexVersion} is older than the supported ${CODEX_MIN_VERSION} minimum.`,
         ]
       : []),
-    'Review and trust the VibeTrace handlers with /hooks before capture.',
+    'Open an interactive Codex CLI session and trust the VibeTrace handlers with /hooks before capture; desktop app sessions are not captured by this integration.',
   ];
   const preview = JSON.stringify(
     { path, before: original, after: next, warnings },
@@ -1848,6 +1848,59 @@ const assistantPayloadSchema = z
     ),
   })
   .catchall(jsonValueSchema);
+
+/** Read only the bounded rollout header so hook provenance reflects the running CLI. */
+async function readTranscriptSourceVersion(
+  path: string | null | undefined,
+  sourceSessionId: string,
+): Promise<string | undefined> {
+  if (!path) return undefined;
+  const metadata = await lstat(path).catch(() => undefined);
+  if (
+    !metadata ||
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.size === 0 ||
+    metadata.size > MAX_TRANSCRIPT_BYTES
+  )
+    return undefined;
+  const byteLimit = Math.min(metadata.size, MAX_TRANSCRIPT_LINE_BYTES + 1);
+  const handle = await open(path, 'r').catch(() => undefined);
+  if (!handle) return undefined;
+  try {
+    const buffer = Buffer.alloc(byteLimit);
+    const { bytesRead } = await handle.read(buffer, 0, byteLimit, 0);
+    const newline = buffer.indexOf(10, 0);
+    if (newline < 0 && metadata.size > bytesRead) return undefined;
+    const line = buffer.subarray(0, newline < 0 ? bytesRead : newline);
+    if (line.byteLength === 0 || line.byteLength > MAX_TRANSCRIPT_LINE_BYTES)
+      return undefined;
+    const row = rolloutRowSchema.safeParse(JSON.parse(line.toString('utf8')));
+    if (!row.success || row.data.type !== 'session_meta') return undefined;
+    const session = sessionMetaPayloadSchema.safeParse(row.data.payload);
+    if (!session.success || session.data.id !== sourceSessionId)
+      return undefined;
+    return normalizedSourceVersion(session.data.cli_version);
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
+function markDuplicateTranscriptMessage(
+  segment: SpoolSegment,
+  duplicateOfEventId: string,
+): SpoolSegment {
+  return SpoolSegmentSchema.parse({
+    ...segment,
+    event: {
+      ...segment.event,
+      subtype: `${segment.event.subtype ?? 'transcript.rollout-v1'}.duplicate`,
+      payload: { ...segment.event.payload, duplicateOfEventId },
+    },
+  });
+}
 
 function transcriptGap(
   context: SegmentContext,
@@ -2232,16 +2285,23 @@ export async function collectCodexHook(
   let paths: ReturnType<typeof spoolPaths>;
   let capturePolicy: CaptureProfilePolicy;
   try {
+    parsed = parseCodexHook(JSON.parse(text));
     state = resolveStateDir(options.stateDir);
     const manifest = await readCodexInstallManifest(state).catch(
       () => undefined,
     );
+    const transcriptVersion =
+      options.sourceVersion === undefined
+        ? await readTranscriptSourceVersion(
+            parsed.transcript_path,
+            parsed.session_id,
+          )
+        : undefined;
     sourceVersion = normalizedSourceVersion(
-      options.sourceVersion ?? manifest?.codexVersion,
+      options.sourceVersion ?? transcriptVersion ?? manifest?.codexVersion,
     );
     capturePolicy =
       options.captureProfile ?? (await readCaptureProfilePolicy(state));
-    parsed = parseCodexHook(JSON.parse(text));
     segment = normalizeCodexHook(parsed, {
       clock: options.clock,
       sourceVersion,
@@ -2342,10 +2402,24 @@ export async function collectCodexHook(
         clock: options.clock,
         invocationId: segment.raw.sourceEventId,
       });
-      for (const item of enrichment)
+      const duplicateIndex =
+        parsed.hook_event_name === 'Stop' &&
+        parsed.last_assistant_message !== null
+          ? enrichment.findLastIndex(
+              (item) =>
+                item.event.type === 'message.agent' &&
+                item.event.payload.content === parsed.last_assistant_message,
+            )
+          : -1;
+      for (const [index, item] of enrichment.entries())
         await writeSegment(
           paths,
-          applyCaptureProfilePolicy(item, capturePolicy),
+          applyCaptureProfilePolicy(
+            index === duplicateIndex
+              ? markDuplicateTranscriptMessage(item, segment.event.id)
+              : item,
+            capturePolicy,
+          ),
         );
     }
   } catch {
@@ -2462,7 +2536,7 @@ export async function doctorCodex(
         'hook-config',
         'fail',
         'VibeTrace Codex install manifest is missing or invalid.',
-        'Run vibetrace init codex, then review the handlers with /hooks.',
+        'Run vibetrace init codex, then review the handlers with /hooks in an interactive Codex CLI session.',
       ),
     );
   else if (manifest.hookPath !== hookPath || !(await regularFile(hookPath)))
@@ -2487,7 +2561,7 @@ export async function doctorCodex(
             'hook-config',
             'fail',
             `Expected ${CODEX_HOOK_EVENTS.length} exact handlers; found ${ownership.exact} exact and ${ownership.modified} modified.`,
-            'Run vibetrace init codex and review the updated definitions with /hooks.',
+            'Run vibetrace init codex and review the updated definitions with /hooks in an interactive Codex CLI session.',
           ),
         );
       else

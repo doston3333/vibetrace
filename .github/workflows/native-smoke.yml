@@ -46,7 +46,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: npm install --global @openai/codex@0.144.3
+      - run: npm install --global @openai/codex@0.146.1
       - run: pnpm build
       - name: Run native smoke
         run: pnpm native:smoke

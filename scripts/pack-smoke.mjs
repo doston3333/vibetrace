@@ -124,10 +124,10 @@ async function assertOwnerOnlyWindowsAcl(path) {
   if (process.platform !== 'win32') return;
   const targetVariable = 'VIBETRACE_SMOKE_ACL_TARGET';
   const script = [
-    `$acl = Get-Acl -LiteralPath $env:${targetVariable};`,
-    '$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name;',
-    '$identities = @($acl.Access | ForEach-Object { $_.IdentityReference.Value });',
-    '[PSCustomObject]@{ protected = $acl.AreAccessRulesProtected; current = $current; identities = $identities } | ConvertTo-Json -Compress;',
+    `$acl = [System.IO.Directory]::GetAccessControl($env:${targetVariable});`,
+    '$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;',
+    '$identities = @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value });',
+    '[PSCustomObject]@{ protected = $acl.AreAccessRulesProtected; currentSid = $current; identitySids = $identities } | ConvertTo-Json -Compress;',
   ].join(' ');
   const result = await run(
     'powershell.exe',
@@ -145,18 +145,28 @@ async function assertOwnerOnlyWindowsAcl(path) {
     },
   );
   const acl = JSON.parse(result.stdout);
-  const identities = Array.isArray(acl.identities)
-    ? acl.identities
-    : [acl.identities];
+  const identities = Array.isArray(acl.identitySids)
+    ? acl.identitySids
+    : [acl.identitySids];
   if (
     acl.protected !== true ||
     identities.length === 0 ||
     identities.some(
       (identity) =>
-        String(identity).toLowerCase() !== String(acl.current).toLowerCase(),
+        String(identity).toLowerCase() !== String(acl.currentSid).toLowerCase(),
     )
   )
-    throw new Error(`Directory does not have an owner-only ACL: ${path}`);
+    throw new Error(
+      `Directory does not have an owner-only ACL: ${path} (${JSON.stringify({
+        protected: acl.protected,
+        identityCount: identities.length,
+        currentIdentityMatches: identities.map(
+          (identity) =>
+            String(identity).toLowerCase() ===
+            String(acl.currentSid).toLowerCase(),
+        ),
+      })})`,
+    );
 }
 
 try {
@@ -405,26 +415,28 @@ try {
     throw new Error('Packed daemon AI prompt endpoint failed.');
   const aiPrompt = await aiPromptResponse.json();
   if (
-    aiPrompt.analyzerVersion !== '0.1.0' ||
+    aiPrompt.analyzerVersion !== '0.3.0' ||
     !/^[a-f0-9]{64}$/.test(String(aiPrompt.promptDigest)) ||
     aiPrompt.prompt?.networkAllowed !== false ||
     !Array.isArray(aiPrompt.prompt?.tools)
   )
     throw new Error('Packed daemon returned an unsafe AI prompt contract.');
-  const staleAiResponse = await fetch(
-    `${descriptor.origin}/api/v1/sessions/${encodeURIComponent(sessionId)}/ai-findings`,
+  const unconsentedAiResponse = await fetch(
+    `${descriptor.origin}/api/v1/sessions/${encodeURIComponent(sessionId)}/ai-analyze`,
     {
       method: 'POST',
       headers: { ...authorization, 'content-type': 'application/json' },
       body: JSON.stringify({
-        analyzerVersion: aiPrompt.analyzerVersion,
-        promptDigest: '0'.repeat(64),
-        hypotheses: [],
+        provider: 'direct-api',
+        endpoint: 'https://api.example.test/v1/chat/completions',
+        apiKey: 'pack-smoke-ephemeral-key',
+        model: 'pack-smoke-model',
+        consent: false,
       }),
     },
   );
-  if (staleAiResponse.status !== 409)
-    throw new Error('Packed daemon accepted a stale AI prompt response.');
+  if (unconsentedAiResponse.status !== 400)
+    throw new Error('Packed daemon accepted an unconsented AI request.');
   await cli(
     [
       'export',

@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/storage",
   "version": "0.1.0",
+  "private": true,
   "description": "Encrypted local SQLite metadata and blob storage for VibeTrace.",
   "type": "module",
   "exports": {

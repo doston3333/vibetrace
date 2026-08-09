@@ -1,6 +1,7 @@
 {
   "name": "@vibetrace/diagnostics",
   "version": "0.1.0",
+  "private": true,
   "description": "Deterministic, evidence-linked diagnostic rules for VibeTrace.",
   "type": "module",
   "exports": {

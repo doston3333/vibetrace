@@ -27,6 +27,10 @@ const ANSI_SEQUENCE = new RegExp(
   `${String.fromCharCode(27)}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${String.fromCharCode(7)}]*(?:${String.fromCharCode(7)}|${String.fromCharCode(27)}\\\\))`,
   'gu',
 );
+const UNSAFE_CONTROL_CHARACTER = new RegExp(
+  `[${String.fromCharCode(0)}-${String.fromCharCode(8)}${String.fromCharCode(11)}${String.fromCharCode(12)}${String.fromCharCode(14)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`,
+  'gu',
+);
 
 export function laneFor(type: string): TimelineLane {
   if (/^(message\.|turn\.|session\.)/.test(type)) return 'conversation';
@@ -46,14 +50,7 @@ function plain(value: unknown, limit = 180): string {
         : JSON.stringify(value);
   return text
     .replaceAll(ANSI_SEQUENCE, '')
-    .split('')
-    .filter((character) => {
-      const code = character.charCodeAt(0);
-      return (
-        code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127)
-      );
-    })
-    .join('')
+    .replaceAll(UNSAFE_CONTROL_CHARACTER, '')
     .replaceAll(/\s+/g, ' ')
     .trim()
     .slice(0, limit);
@@ -68,14 +65,7 @@ export function safeDisplayText(value: unknown, limit = 200_000): string {
         : JSON.stringify(value, null, 2);
   return text
     .replaceAll(ANSI_SEQUENCE, '')
-    .split('')
-    .filter((character) => {
-      const code = character.charCodeAt(0);
-      return (
-        code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127)
-      );
-    })
-    .join('')
+    .replaceAll(UNSAFE_CONTROL_CHARACTER, '')
     .slice(0, limit);
 }
 
@@ -136,7 +126,20 @@ export function eventDetail(event: TraceEvent): string {
     const text = plain(candidate);
     if (text) return text;
   }
-  return plain(value);
+  switch (event.type) {
+    case 'session.started':
+      return 'Codex started this captured session.';
+    case 'session.completed':
+      return 'Codex ended this captured session.';
+    case 'turn.completed':
+      return 'Codex finished this turn.';
+    case 'tool.started':
+      return `${event.toolName ?? 'Tool'} invocation began.`;
+    case 'tool.completed':
+      return `${event.toolName ?? 'Tool'} returned control to Codex.`;
+    default:
+      return 'No human-readable summary is available. Open Raw for the preserved source payload.';
+  }
 }
 
 export function eventTone(event: TraceEvent): TimelineItem['tone'] {
@@ -161,37 +164,61 @@ export function eventTone(event: TraceEvent): TimelineItem['tone'] {
 export function buildTimelineModel(
   events: readonly StoredEvent[],
 ): readonly TimelineItem[] {
-  return events.map((stored) => ({
-    id: stored.id,
-    sequence: stored.sequence,
-    timestamp: stored.timestamp,
-    type: stored.type,
-    lane: laneFor(stored.type),
-    title: eventTitle(stored.event),
-    detail: eventDetail(stored.event),
-    tone: eventTone(stored.event),
-    stored,
-  }));
+  const timeline: TimelineItem[] = [];
+  for (const stored of events) {
+    if (
+      stored.event.type === 'message.agent' &&
+      Object.hasOwn(stored.event.payload, 'duplicateOfEventId')
+    )
+      continue;
+    timeline.push({
+      id: stored.id,
+      sequence: stored.sequence,
+      timestamp: stored.timestamp,
+      type: stored.type,
+      lane: laneFor(stored.type),
+      title: eventTitle(stored.event),
+      detail: eventDetail(stored.event),
+      tone: eventTone(stored.event),
+      stored,
+    });
+  }
+  return timeline;
 }
 
-export function matchesEvent(
+export interface TimelineFilters {
+  readonly search: string;
+  readonly lane: TimelineLane | 'all';
+  readonly status: 'all' | 'failed' | 'gaps';
+}
+
+function matchesNormalizedEvent(
   item: TimelineItem,
-  filters: {
-    readonly search: string;
-    readonly lane: TimelineLane | 'all';
-    readonly status: 'all' | 'failed' | 'gaps';
-  },
+  filters: Omit<TimelineFilters, 'search'>,
+  search: string,
 ): boolean {
   if (filters.lane !== 'all' && item.lane !== filters.lane) return false;
   if (filters.status === 'failed' && item.tone !== 'failure') return false;
   if (filters.status === 'gaps' && item.tone !== 'gap') return false;
-  const search = filters.search.trim().toLocaleLowerCase();
   return (
     !search ||
-    `${item.title} ${item.detail} ${item.type}`
-      .toLocaleLowerCase()
-      .includes(search)
+    `${item.title} ${item.detail} ${item.type}`.toLowerCase().includes(search)
   );
+}
+
+/** Compile user filters once before scanning a large timeline. */
+export function createEventMatcher(
+  filters: TimelineFilters,
+): (item: TimelineItem) => boolean {
+  const search = filters.search.trim().toLowerCase();
+  return (item) => matchesNormalizedEvent(item, filters, search);
+}
+
+export function matchesEvent(
+  item: TimelineItem,
+  filters: TimelineFilters,
+): boolean {
+  return createEventMatcher(filters)(item);
 }
 
 export function relatedEvents(
