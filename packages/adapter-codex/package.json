@@ -21,7 +21,7 @@
     "@vibetrace/daemon": "workspace:*",
     "@vibetrace/enrichment": "workspace:*",
     "@vibetrace/schema": "workspace:*",
-    "zod": "4.3.6"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
